@@ -4,7 +4,7 @@ Agent Doctor uses deterministic failure modes. Each finding includes evidence qu
 
 ## repeated_user_correction
 
-Signals include phrases such as "I already told you", "我刚才说过", "你又", "不是这个", "not what I asked", and "again".
+Signals include phrases such as "I already told you", "我刚才说过", "你又", "不是这个", "not what I asked", and contextual repeat complaints like "you missed it again". A standalone "again" is not enough for this finding.
 
 Patch targets:
 
@@ -13,7 +13,7 @@ Patch targets:
 
 ## execution_discipline
 
-Signals include an assistant promising to check, run, test, verify, create, update, inspect, read, search, fix, or write, with no tool message before the next assistant or user message. It also catches user complaints about planning instead of acting.
+Signals include an assistant promising to check, run, test, verify, create, update, inspect, read, search, fix, or write, with no tool message before the next assistant or user message. It also catches user complaints about planning instead of acting. Capability statements such as "I can..." and offers such as "let me know if..." are not treated as promises.
 
 Patch targets:
 

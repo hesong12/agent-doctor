@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,93 @@ def test_ingest_normalizes_openclaw_payload_messages() -> None:
     assert [message.role for message in messages] == ["user", "tool", "assistant"]
     assert {message.source_format for message in messages} == {"openclaw"}
     assert messages[1].content == "Command failed with 500 timeout"
+
+
+def test_ingest_normalizes_hermes_nested_message_data_entry(tmp_path: Path) -> None:
+    transcript = tmp_path / ".hermes" / "sessions" / "nested-hermes.jsonl"
+    transcript.parent.mkdir(parents=True)
+    rows = [
+        {
+            "type": "message",
+            "data": {
+                "entry": {
+                    "session_id": "hermes-nested-001",
+                    "message": {
+                        "role": "user",
+                        "content": "Please update the runbook.",
+                    },
+                }
+            },
+        },
+        {
+            "type": "message",
+            "data": {
+                "entry": {
+                    "session_id": "hermes-nested-001",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"text": "I will update the runbook now."}],
+                    },
+                }
+            },
+        },
+    ]
+    transcript.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    messages = ingest_file(transcript)
+
+    assert [message.role for message in messages] == ["user", "assistant"]
+    assert [message.content for message in messages] == [
+        "Please update the runbook.",
+        "I will update the runbook now.",
+    ]
+    assert {message.session_id for message in messages} == {"hermes-nested-001"}
+    assert {message.source_format for message in messages} == {"hermes"}
+
+
+def test_ingest_autodetects_uuid_openclaw_nested_message_rows(tmp_path: Path) -> None:
+    transcript = tmp_path / "550e8400-e29b-41d4-a716-446655440000.jsonl"
+    rows = [
+        {
+            "id": "row-001",
+            "timestamp": "2026-05-04T12:00:00Z",
+            "payload": {
+                "session_id": "openclaw-nested-001",
+                "message": {
+                    "role": "user",
+                    "content": "Run the deploy check.",
+                },
+            },
+        },
+        {
+            "id": "row-002",
+            "timestamp": "2026-05-04T12:00:02Z",
+            "payload": {
+                "session_id": "openclaw-nested-001",
+                "message": {
+                    "role": "assistant",
+                    "content": "I will run the deploy check.",
+                },
+            },
+        },
+    ]
+    transcript.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    messages = ingest_file(transcript)
+
+    assert [message.role for message in messages] == ["user", "assistant"]
+    assert [message.content for message in messages] == [
+        "Run the deploy check.",
+        "I will run the deploy check.",
+    ]
+    assert {message.session_id for message in messages} == {"openclaw-nested-001"}
+    assert {message.source_format for message in messages} == {"openclaw"}
 
 
 def test_ingest_normalizes_generic_directory() -> None:

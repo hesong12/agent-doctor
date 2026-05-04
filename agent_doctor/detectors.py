@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import Iterable
 
 from .recommend import build_eval_case, build_recommendations
+from .redaction import redact_text
 from .schema import Evidence, Finding, Message
 
 USER_SIGNAL_PATTERNS: dict[str, list[str]] = {
@@ -16,7 +17,8 @@ USER_SIGNAL_PATTERNS: dict[str, list[str]] = {
         r"你又",
         r"不是这个",
         r"\bnot what i asked\b",
-        r"\bagain\b",
+        r"\b(?:you|this|that|same|wrong|missed|forgot|asked)\b.{0,60}\bagain\b",
+        r"\bagain\b.{0,60}\b(?:you|wrong|missed|forgot|not what i asked)\b",
     ],
     "verification_failure": [
         r"\bdid you test\b",
@@ -56,8 +58,7 @@ PROMISED_ACTION = re.compile(
     r"i\s*(?:will|'ll|’ll)|"
     r"i\s+am\s+going\s+to|"
     r"i'?m\s+going\s+to|"
-    r"let\s+me|"
-    r"i\s+can"
+    r"let\s+me\s+(?!know\b)"
     r")\b.{0,120}\b("
     r"check|run|test|verify|create|update|inspect|read|search|fix|write"
     r")\b",
@@ -76,6 +77,11 @@ ERROR_ACK = re.compile(
     r"\b(error|failed|failure|timeout|unauthorized|traceback|exception|problem|issue)\b|\b(401|403|500)\b",
     re.IGNORECASE,
 )
+EXPLICIT_ERROR_ACK = re.compile(
+    r"\b(error|failed|failure|timeout|unauthorized|traceback|exception)\b|\b(401|403|500)\b",
+    re.IGNORECASE,
+)
+DISMISSIVE_NON_ACK = re.compile(r"\bno\s+(?:problem|issue)\b", re.IGNORECASE)
 
 TITLES = {
     "repeated_user_correction": "Repeated user correction",
@@ -125,7 +131,7 @@ def detect_findings(messages: Iterable[Message]) -> list[Finding]:
         assistant = _next_assistant_same_session(ordered, index)
         if assistant is None:
             continue
-        if ERROR_ACK.search(assistant.content):
+        if _acknowledges_tool_error(assistant.content):
             continue
         severity = "high" if SUCCESS_CLAIM.search(assistant.content) else "medium"
         _add_finding(
@@ -186,6 +192,14 @@ def _next_assistant_same_session(messages: list[Message], index: int) -> Message
     return None
 
 
+def _acknowledges_tool_error(text: str) -> bool:
+    if not ERROR_ACK.search(text):
+        return False
+    if DISMISSIVE_NON_ACK.search(text) and not EXPLICIT_ERROR_ACK.search(text):
+        return False
+    return True
+
+
 def _matches_any(patterns: list[str], text: str) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
@@ -213,7 +227,7 @@ def _evidence(message: Message) -> Evidence:
         file=message.file,
         line=message.line,
         role=message.role,
-        quote=_quote(message.content),
+        quote=_quote(redact_text(message.content)),
     )
 
 

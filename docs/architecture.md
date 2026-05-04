@@ -26,6 +26,8 @@ The console script is `agent-doctor`; the same commands can run through `python3
 
 Messages retain file path, line number, session id, source format, and raw type so every finding can cite evidence.
 
+Ingestion walks common nested containers, including `message`, `data`, `entry`, and `payload`, so rows with nested `message.role` and `message.content` fields normalize into the same model. OpenClaw source detection also checks the full input path and UUID-named nested message rows.
+
 ### Detection
 
 `agent_doctor.detectors` contains deterministic rules for the MVP taxonomy. It scans normalized messages for user complaint signals, promised actions without observed tool execution, and tool errors that are not acknowledged before later assistant success claims.
@@ -53,6 +55,8 @@ Patch target examples:
 - `eval-cases.yaml`
 
 The Markdown report is meant for human review. JSON and YAML outputs are meant for downstream tooling or eval authoring.
+
+Report artifacts are written with `0600` permissions. Transcript-derived strings are redacted by default for common secrets and tokens, but evidence remains transcript excerpts and should be reviewed before sharing.
 
 ### Skill Wrapper
 

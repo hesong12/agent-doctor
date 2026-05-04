@@ -58,11 +58,11 @@ agent-doctor mcp
 
 `scan` writes three files into the output directory:
 
-- `report.md`: human-readable summary, evidence quotes, diagnoses, and recommendations.
-- `findings.json`: structured findings for review or downstream tooling.
+- `report.md`: human-readable summary, redacted evidence quotes, diagnoses, and recommendations.
+- `findings.json`: structured redacted findings for review or downstream tooling.
 - `eval-cases.yaml`: starter eval cases based on detected failure modes.
 
-Every finding includes transcript evidence with file, line, role, and quote.
+Every finding includes transcript evidence with file, line, role, and quote. Report artifacts are written with `0600` file permissions. Evidence quotes are redacted by default, but they are still transcript excerpts; review artifacts before sharing them outside your machine.
 
 ## Privacy Model
 
@@ -71,6 +71,7 @@ Agent Doctor is local-only by design.
 - It makes no network calls.
 - It does not call remote LLMs.
 - Default operation is read-only against agent state and transcript inputs.
+- Report output redacts common secrets, API keys, bearer tokens, and passwords by default.
 - The MVP install helper only writes a Markdown SOP file to the requested output directory.
 - Proposed memory, identity, skill, SOP, permission, routing, and eval patches are review artifacts. They are not applied automatically.
 
@@ -78,7 +79,7 @@ The generated host-agent SOP explicitly tells agents not to paste full transcrip
 
 ## Supported Inputs
 
-The MVP ingests JSONL files. It auto-detects Hermes-ish, OpenClaw-ish, and generic event shapes using common fields such as `role`, `actor`, `speaker`, `payload`, `content`, `message`, `text`, `output`, and `error`.
+The MVP ingests JSONL files. It auto-detects Hermes-ish, OpenClaw-ish, and generic event shapes using common fields such as `role`, `actor`, `speaker`, `payload`, `data`, `entry`, `content`, `message`, `text`, `output`, and `error`. Nested `message.role` and `message.content` values are normalized under common `message`, `data`, `entry`, and `payload` containers.
 
 Default paths:
 

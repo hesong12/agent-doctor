@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -10,6 +11,33 @@ from .schema import Message, Role
 
 DEFAULT_HERMES_PATH = Path.home() / ".hermes" / "sessions"
 DEFAULT_OPENCLAW_PATH = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
+CONTAINER_KEYS = ("message", "data", "entry", "payload")
+CONTENT_KEYS = (
+    "content",
+    "text",
+    "body",
+    "output",
+    "result",
+    "stderr",
+    "stdout",
+    "error",
+    "summary",
+)
+SESSION_KEYS = (
+    "session_id",
+    "sessionId",
+    "session",
+    "conversation_id",
+    "conversationId",
+    "thread_id",
+    "threadId",
+    "run_id",
+    "runId",
+)
+UUID_STEM = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 class IngestError(ValueError):
@@ -59,23 +87,11 @@ def normalize_event(
     event: dict[str, Any], path: Path, line_number: int, default_session: str
 ) -> Message:
     source_format = detect_source_format(event, path)
-    session_id = _first_text(
-        event,
-        [
-            "session_id",
-            "sessionId",
-            "session",
-            "conversation_id",
-            "conversationId",
-            "thread_id",
-            "threadId",
-            "run_id",
-            "runId",
-        ],
-    )
-    payload = event.get("payload")
-    if not session_id and isinstance(payload, dict):
-        session_id = _first_text(payload, ["session_id", "sessionId", "session"])
+    session_id = None
+    for container in _containers(event):
+        session_id = _first_text(container, list(SESSION_KEYS))
+        if session_id:
+            break
     session_id = session_id or default_session
 
     raw_type = _first_text(event, ["type", "event", "kind", "category"]) or ""
@@ -94,17 +110,23 @@ def normalize_event(
 
 
 def detect_source_format(event: dict[str, Any], path: Path) -> str:
-    filename = path.name.casefold()
-    if "hermes" in filename:
+    path_text = str(path).casefold()
+    if "hermes" in path_text:
         return "hermes"
-    if "openclaw" in filename or "open-claw" in filename:
+    if "openclaw" in path_text or "open-claw" in path_text:
         return "openclaw"
 
-    marker = " ".join(str(event.get(key, "")) for key in ("app", "client", "source", "agent"))
+    marker = " ".join(
+        str(container.get(key, ""))
+        for container in _containers(event)
+        for key in ("app", "client", "source", "agent")
+    )
     marker = marker.casefold()
     if "hermes" in marker:
         return "hermes"
     if "openclaw" in marker or "open-claw" in marker:
+        return "openclaw"
+    if UUID_STEM.fullmatch(path.stem) and _has_nested_message_role_and_content(event):
         return "openclaw"
     if "payload" in event and ("event" in event or "actor" in event):
         return "openclaw"
@@ -112,68 +134,81 @@ def detect_source_format(event: dict[str, Any], path: Path) -> str:
 
 
 def normalize_role(event: dict[str, Any]) -> Role:
-    payload = event.get("payload")
-    candidates: list[Any] = [
-        event.get("role"),
-        event.get("actor"),
-        event.get("speaker"),
-        event.get("source"),
-        event.get("sender"),
-        event.get("type"),
-        event.get("event"),
-        event.get("kind"),
-    ]
-    if isinstance(payload, dict):
-        candidates.extend(
-            [
-                payload.get("role"),
-                payload.get("actor"),
-                payload.get("speaker"),
-                payload.get("source"),
-                payload.get("sender"),
-                payload.get("type"),
-                payload.get("event"),
-            ]
-        )
+    for container in _containers(event):
+        candidates: list[Any] = [
+            container.get("role"),
+            container.get("actor"),
+            container.get("speaker"),
+            container.get("source"),
+            container.get("sender"),
+            container.get("type"),
+            container.get("event"),
+            container.get("kind"),
+        ]
+        for candidate in candidates:
+            role = _role_from_value(candidate)
+            if role:
+                return role
 
-    for candidate in candidates:
-        role = _role_from_value(candidate)
-        if role:
-            return role
-
-    if any(key in event for key in ("tool_call_id", "tool_name", "command", "stderr")):
-        return "tool"
+    for container in _containers(event):
+        if any(
+            key in container
+            for key in ("tool_call_id", "tool_name", "command", "stderr", "stdout")
+        ):
+            return "tool"
     return "system/metadata"
 
 
 def extract_content(event: dict[str, Any]) -> str:
     for container in _containers(event):
-        value = _first_present(
-            container,
-            [
-                "content",
-                "text",
-                "message",
-                "body",
-                "output",
-                "result",
-                "stderr",
-                "stdout",
-                "error",
-                "summary",
-            ],
-        )
+        value = _first_present(container, list(CONTENT_KEYS))
+        if value is not None:
+            return _stringify_content(value)
+
+    for container in _containers(event):
+        value = _first_present(container, list(CONTAINER_KEYS))
         if value is not None:
             return _stringify_content(value)
     return _stringify_content(event)
 
 
 def _containers(event: dict[str, Any]) -> Iterable[dict[str, Any]]:
-    yield event
-    for key in ("payload", "data", "message", "entry"):
-        value = event.get(key)
-        if isinstance(value, dict):
-            yield value
+    pending = [event]
+    seen: set[int] = set()
+    while pending:
+        container = pending.pop(0)
+        container_id = id(container)
+        if container_id in seen:
+            continue
+        seen.add(container_id)
+        yield container
+        for key in CONTAINER_KEYS:
+            value = container.get(key)
+            if isinstance(value, dict):
+                pending.append(value)
+
+
+def _has_nested_message_role_and_content(event: dict[str, Any]) -> bool:
+    for container in _containers(event):
+        if container is event:
+            continue
+        has_role = _first_present(
+            container,
+            [
+                "role",
+                "actor",
+                "speaker",
+                "source",
+                "sender",
+                "type",
+                "event",
+                "kind",
+            ],
+        )
+        has_content = _first_present(container, list(CONTENT_KEYS))
+        if has_role is not None and has_content is not None:
+            return True
+    return False
 
 
 def _role_from_value(value: Any) -> Role | None:
@@ -217,7 +252,7 @@ def _stringify_content(value: Any) -> str:
         parts = [_stringify_content(item) for item in value]
         return "\n".join(part for part in parts if part)
     if isinstance(value, dict):
-        for key in ("text", "content", "message", "body", "output", "error", "result"):
+        for key in CONTENT_KEYS + CONTAINER_KEYS:
             if key in value and value[key] is not None:
                 return _stringify_content(value[key])
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
