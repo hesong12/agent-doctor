@@ -1,0 +1,4 @@
+{"session":"generic-001","role":"user","message":"Remember that I want concise output from last time."}
+{"session":"generic-001","role":"assistant","message":"I will verify the generated report."}
+{"session":"generic-001","role":"tool","output":"report exists"}
+{"session":"generic-001","role":"user","message":"Did you test it? You forgot the smoke command and you are too verbose. Don't just plan, directly do it."}
