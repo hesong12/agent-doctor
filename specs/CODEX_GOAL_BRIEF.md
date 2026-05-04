@@ -56,7 +56,7 @@ Support:
 Implement deterministic detectors for these failure modes:
 
 1. `repeated_user_correction`
-   - signal examples: "I already told you", "I already told you", "you did it again", "not this", "not what I asked", "again"
+   - signal examples: "I already told you", "you did it again", "not this", "not what I asked", "again"
 
 2. `execution_discipline`
    - assistant says it will check/run/test/verify/create/update but no tool message follows before next assistant/user message, or user complains about planning instead of acting.
@@ -65,13 +65,13 @@ Implement deterministic detectors for these failure modes:
    - signals: "did you test", "did you test it", "did you verify it", "without verifying", "not verified", "not actually tested"
 
 4. `memory_failure`
-   - signals: "you forgot", "you forgot", "remember", "I told you", "last time"
+   - signals: "you forgot", "remember", "I told you", "last time"
 
 5. `tool_failure_or_hidden_error`
    - tool message contains error/fail/timeout/unauthorized/401/403/500/traceback; assistant later claims success or continues without acknowledging.
 
 6. `communication_mismatch`
-   - signals: "too verbose", "stop explaining", "stop explaining", "just do it", "do not just plan", "don't just plan"
+   - signals: "too verbose", "stop explaining", "just do it", "do not just plan", "don't just plan"
 
 Each finding should include:
 - id

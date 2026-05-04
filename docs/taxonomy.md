@@ -4,7 +4,7 @@ Agent Doctor uses deterministic failure modes. Each finding includes evidence qu
 
 ## repeated_user_correction
 
-Signals include phrases such as "I already told you", "I already told you", "you did it again", "not this", "not what I asked", and contextual repeat complaints like "you missed it again". A standalone "again" is not enough for this finding.
+Signals include phrases such as "I already told you", "you did it again", "not this", "not what I asked", and contextual repeat complaints like "you missed it again". A standalone "again" is not enough for this finding.
 
 Patch targets:
 
@@ -31,7 +31,7 @@ Patch targets:
 
 ## memory_failure
 
-Signals include phrases such as "you forgot", "you forgot", "remember", "I told you", and "last time".
+Signals include phrases such as "you forgot", "remember", "I told you", and "last time".
 
 Patch targets:
 
@@ -48,7 +48,7 @@ Patch targets:
 
 ## communication_mismatch
 
-Signals include phrases such as "too verbose", "stop explaining", "stop explaining", "just do it", "do not just plan", and "don't just plan".
+Signals include phrases such as "too verbose", "stop explaining", "just do it", "do not just plan", and "don't just plan".
 
 Patch targets:
 
