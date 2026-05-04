@@ -13,44 +13,44 @@ from .schema import Evidence, Finding, Message
 USER_SIGNAL_PATTERNS: dict[str, list[str]] = {
     "repeated_user_correction": [
         r"\bi already told you\b",
-        r"我刚才说过",
-        r"你又",
-        r"不是这个",
+        r"I already told you",
+        r"you did it again",
+        r"not this",
         r"\bnot what i asked\b",
         r"\b(?:you|this|that|same|wrong|missed|forgot|asked)\b.{0,60}\bagain\b",
         r"\bagain\b.{0,60}\b(?:you|wrong|missed|forgot|not what i asked)\b",
     ],
     "verification_failure": [
         r"\bdid you test\b",
-        r"你测了吗",
-        r"你验证了吗",
+        r"did you test it",
+        r"did you verify it",
         r"\bwithout verifying\b",
-        r"没验证",
+        r"not verified",
         r"\bnot actually tested\b",
     ],
     "memory_failure": [
         r"\byou forgot\b",
-        r"你忘了",
+        r"you forgot",
         r"\bremember\b",
-        r"我说过",
+        r"I told you",
         r"\blast time\b",
     ],
     "communication_mismatch": [
         r"\btoo verbose\b",
         r"\bstop explaining\b",
-        r"别废话",
-        r"直接做",
-        r"不要只给计划",
+        r"stop explaining",
+        r"just do it",
+        r"do not just plan",
         r"\bdon'?t just plan\b",
     ],
 }
 
 PLANNING_INSTEAD_OF_ACTING = [
-    r"不要只给计划",
+    r"do not just plan",
     r"\bdon'?t just plan\b",
     r"\bstop planning\b",
     r"\bplanning instead of acting\b",
-    r"直接做",
+    r"just do it",
 ]
 
 PROMISED_ACTION = re.compile(

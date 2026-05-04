@@ -4,7 +4,7 @@ Agent Doctor uses deterministic failure modes. Each finding includes evidence qu
 
 ## repeated_user_correction
 
-Signals include phrases such as "I already told you", "我刚才说过", "你又", "不是这个", "not what I asked", and contextual repeat complaints like "you missed it again". A standalone "again" is not enough for this finding.
+Signals include phrases such as "I already told you", "I already told you", "you did it again", "not this", "not what I asked", and contextual repeat complaints like "you missed it again". A standalone "again" is not enough for this finding.
 
 Patch targets:
 
@@ -22,7 +22,7 @@ Patch targets:
 
 ## verification_failure
 
-Signals include phrases such as "did you test", "你测了吗", "你验证了吗", "without verifying", "没验证", and "not actually tested".
+Signals include phrases such as "did you test", "did you test it", "did you verify it", "without verifying", "not verified", and "not actually tested".
 
 Patch targets:
 
@@ -31,7 +31,7 @@ Patch targets:
 
 ## memory_failure
 
-Signals include phrases such as "you forgot", "你忘了", "remember", "我说过", and "last time".
+Signals include phrases such as "you forgot", "you forgot", "remember", "I told you", and "last time".
 
 Patch targets:
 
@@ -48,7 +48,7 @@ Patch targets:
 
 ## communication_mismatch
 
-Signals include phrases such as "too verbose", "stop explaining", "别废话", "直接做", "不要只给计划", and "don't just plan".
+Signals include phrases such as "too verbose", "stop explaining", "stop explaining", "just do it", "do not just plan", and "don't just plan".
 
 Patch targets:
 
