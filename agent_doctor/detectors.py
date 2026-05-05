@@ -17,9 +17,10 @@ evidence quotes, not 20 separate medium findings.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 from .recommend import build_eval_case, build_recommendations
 from .redaction import redact_text
@@ -315,7 +316,176 @@ def _escalate_severity(bucket: list[_RawMatch]) -> Severity:
 
 
 def _has_real_tool_error(content: str) -> bool:
+    structured = _parse_json_payload(content)
+    if structured is not None:
+        return _structured_payload_has_failure(structured)
+    if _looks_like_truncated_structured_payload(content):
+        return _truncated_structured_payload_has_failure(content)
     cleaned = NEG_ERROR_PHRASES.sub("", content)
+    return bool(TOOL_ERROR.search(cleaned))
+
+
+def _parse_json_payload(content: str) -> Any | None:
+    stripped = content.strip()
+    if not stripped or stripped[0] not in "[{":
+        return None
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+
+
+def _looks_like_truncated_structured_payload(content: str) -> bool:
+    stripped = content.strip()
+    return bool(stripped) and stripped[0] in "[{" and "... [truncated]" in stripped
+
+
+def _truncated_structured_payload_has_failure(content: str) -> bool:
+    if re.search(
+        r'"(?:is[_-]?error|failed|failure)"\s*:\s*"?(?:true|[1-9]\d*)"?',
+        content,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r'"(?:ok|success)"\s*:\s*"?(?:false|0|no)"?',
+        content,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r'"(?:exit[_-]?code|return[_-]?code|status[_-]?code)"'
+        r'\s*:\s*"?(?:-[1-9]\d*|[1-9]\d*)"?',
+        content,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r'"(?:status|state)"\s*:\s*"(?:error|failed|failure|timeout|unauthorized|exception)"?',
+        content,
+        re.IGNORECASE,
+    ):
+        return True
+    for match in re.finditer(
+        r'"(?:error|errors|stderr|exception|traceback)"\s*:\s*"((?:\\.|[^"])*)"?',
+        content,
+        re.IGNORECASE,
+    ):
+        value = match.group(1).strip()
+        if not value or value.casefold() in {"none", "null", "false", "0", "ok"}:
+            continue
+        if TOOL_ERROR.search(NEG_ERROR_PHRASES.sub("", value)):
+            return True
+    return False
+
+
+def _structured_payload_has_failure(value: Any) -> bool:
+    """Return true only for explicit failure metadata in structured payloads.
+
+    Successful agent-tool wrappers often contain arbitrary nested text:
+    search snippets, transcript excerpts, markdown, JSON examples, or fields
+    such as ``parse_errors`` / ``textScore``. Scanning all of that text with a
+    keyword regex turns successful tool calls into hidden-tool-failure cards.
+    For structured JSON, require failure-shaped keys or non-zero status fields
+    instead of treating every quoted word as tool stderr.
+    """
+
+    if isinstance(value, list):
+        return any(_structured_payload_has_failure(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+
+    for key, item in value.items():
+        normalized = key.strip().casefold().replace("-", "_")
+        if normalized in {"is_error", "iserror", "failed", "failure"}:
+            if _truthy_failure_value(item):
+                return True
+            continue
+        if normalized in {"ok", "success"}:
+            if item is False or _string_is_false(item):
+                return True
+            continue
+        if normalized in {"exit_code", "returncode", "status_code"}:
+            if _nonzero_number(item):
+                return True
+            continue
+        if normalized in {"error", "errors", "stderr", "exception", "traceback"}:
+            if _error_field_has_failure(item):
+                return True
+            continue
+        if normalized in {"status", "state"} and _status_value_is_failure(item):
+            return True
+        if isinstance(item, (dict, list)) and _structured_payload_has_failure(item):
+            return True
+    return False
+
+
+def _truthy_failure_value(value: Any) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, str):
+        lowered = value.strip().casefold()
+        return lowered not in {"", "false", "0", "none", "null", "ok", "success"}
+    if isinstance(value, (int, float)):
+        return value != 0
+    return bool(value)
+
+
+def _string_is_false(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().casefold() in {
+        "false",
+        "no",
+        "0",
+        "failed",
+        "failure",
+        "error",
+    }
+
+
+def _nonzero_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return False
+        try:
+            return float(stripped) != 0
+        except ValueError:
+            return False
+    return False
+
+
+def _status_value_is_failure(value: Any) -> bool:
+    if _nonzero_number(value):
+        return True
+    if not isinstance(value, str):
+        return False
+    return value.strip().casefold() in {
+        "error",
+        "failed",
+        "failure",
+        "timeout",
+        "unauthorized",
+        "exception",
+    }
+
+
+def _error_field_has_failure(value: Any) -> bool:
+    if value in (None, False):
+        return False
+    if isinstance(value, (list, tuple)):
+        return any(_error_field_has_failure(item) for item in value)
+    if isinstance(value, dict):
+        return _structured_payload_has_failure(value) or any(
+            _error_field_has_failure(item) for item in value.values()
+        )
+    text = str(value).strip()
+    if not text or text.casefold() in {"none", "null", "false", "0", "ok"}:
+        return False
+    cleaned = NEG_ERROR_PHRASES.sub("", text)
     return bool(TOOL_ERROR.search(cleaned))
 
 
