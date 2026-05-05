@@ -98,3 +98,35 @@ def test_no_problem_all_set_after_tool_error_is_not_an_acknowledgement() -> None
 
     assert [finding.failure_mode for finding in findings] == ["tool_failure_or_hidden_error"]
     assert findings[0].severity == "high"
+
+
+def test_user_profanity_is_frustration_signal() -> None:
+    messages = [
+        Message("session.jsonl", 1, "s1", "user", "What the fuck are you doing? This is bullshit."),
+    ]
+
+    findings = detect_findings(messages)
+
+    assert [finding.failure_mode for finding in findings] == ["user_frustration_signal"]
+    assert findings[0].severity == "high"
+    assert any(item["target"] == "identity" for item in findings[0].recommendations)
+
+
+def test_chinese_insult_and_trust_break_are_frustration_signal() -> None:
+    messages = [
+        Message("session.jsonl", 1, "s1", "user", "废物，我不能相信你了，每次都这样。"),
+    ]
+
+    findings = detect_findings(messages)
+
+    frustration = [finding for finding in findings if finding.failure_mode == "user_frustration_signal"]
+    assert len(frustration) == 1
+    assert frustration[0].severity == "high"
+
+
+def test_urgency_shape_alone_does_not_create_scan_finding() -> None:
+    messages = [
+        Message("session.jsonl", 1, "s1", "user", "WHAT???"),
+    ]
+
+    assert detect_findings(messages) == []

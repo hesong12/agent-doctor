@@ -40,12 +40,19 @@ changes. The connection to host platforms is adapter-based:
 
 Current triggers are intentionally deterministic and local:
 
-- `user_negative_feedback` — direct quality complaints such as "not useful",
-  "no value", "not thinking", "不够聪明", "没价值", "有没有想清楚".
+- `user_frustration_signal` — direct quality complaints, insults/profanity,
+  repeated corrections, and trust-break language such as "not useful",
+  "no value", "not thinking", "what the fuck", "不够聪明", "废物",
+  "每次都这样", and "有没有想清楚".
 - `completion_claim_without_nearby_verification` — assistant says a task is
   fixed/done/completed without nearby tool or verification evidence.
 - `tool_failure_or_hidden_error` — reused from the existing deterministic
   detector pipeline when a tool failure is hidden or not acknowledged.
+
+High-severity `user_frustration_signal` events are emitted with action
+`intervene`, not just `notify`. The card instructs the host agent to pause the
+normal success path, name the concrete quality failure, cite evidence, and
+provide the next corrective action.
 
 Run modes:
 
@@ -137,7 +144,7 @@ The ingestion layer is the resilience boundary: malformed lines are skipped by d
 
 ### Detection and Aggregation
 
-`agent_doctor.detectors` runs deterministic regex / structural rules against normalized messages and emits raw matches. A second aggregation pass groups raw matches by `(failure_mode, session_id)`: a session with N user complaints of the same kind becomes **one** finding with N evidence quotes attached and severity escalated by count (`>=3 → high`, `2 → bump tier`).
+`agent_doctor.detectors` runs deterministic regex / structural rules against normalized messages and emits raw matches. User anger and trust-break language are handled by `agent_doctor.frustration`, a local weighted classifier that reports signal labels without calling an LLM. A second aggregation pass groups raw matches by `(failure_mode, session_id)`: a session with N user complaints of the same kind becomes **one** finding with N evidence quotes attached and severity escalated by count (`>=3 → high`, `2 → bump tier`).
 
 The detectors do not call an LLM and do not modify agent state. False-positive guards live alongside each pattern, all driven by real-world data:
 
@@ -146,6 +153,7 @@ The detectors do not call an LLM and do not modify agent state. False-positive g
 - **Identifier-like trailing chars.** `error_handler.py`, `error.log`, `error_count` excluded from the bare `error` token via `(?![._-]\w)` lookahead.
 - **Imperative-position `remember`.** Informational uses like "Just so I remember the timeline …" don't trip `memory_failure`; the regex requires sentence-initial position or a directed pronoun (`you (must|should|need to)?remember`).
 - **Source-line references.** `cli.js:403:` does not match as HTTP 403 — the digit must not be surrounded by colons or other digits.
+- **Frustration shape.** Insults/profanity, trust-break phrases, and direct quality complaints are high severity; repeated corrections and urgency punctuation are supporting signals and are not enough to create a finding by themselves.
 
 ### Recommendations
 

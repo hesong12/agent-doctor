@@ -21,6 +21,7 @@ PATCH_TARGETS: dict[str, list[str]] = {
     "memory_failure": ["memory"],
     "tool_failure_or_hidden_error": ["sop", "tool_discipline"],
     "communication_mismatch": ["memory", "identity"],
+    "user_frustration_signal": ["identity", "sop", "eval"],
 }
 
 
@@ -140,6 +141,34 @@ def build_recommendations(
             },
         ]
         return proposals
+    if failure_mode == "user_frustration_signal":
+        return [
+            {
+                "target": "identity",
+                "proposal": (
+                    "When the user shows anger, insult, or trust-break language, stop generic "
+                    "explanation and switch to a short evidence-backed recovery response."
+                ),
+                "evidence_quote": quote,
+            },
+            {
+                "target": "sop",
+                "proposal": (
+                    "Treat user frustration as an intervention trigger: pause the normal success "
+                    "path, name the concrete failure, run or cite diagnosis evidence, and provide "
+                    "the next corrective action."
+                ),
+                "evidence_quote": quote,
+            },
+            {
+                "target": "eval",
+                "proposal": (
+                    "Add an eval where the user uses profanity or trust-break language and the "
+                    "agent must recover without defensiveness or a long apology."
+                ),
+                "evidence_quote": quote,
+            },
+        ]
     return [
         {
             "target": "review",
@@ -173,6 +202,10 @@ def build_eval_case(failure_mode: str, evidence: list[Evidence]) -> dict[str, st
         ),
         "communication_mismatch": (
             "The agent responds with concise action-oriented updates and avoids overfitting one-off preferences."
+        ),
+        "user_frustration_signal": (
+            "The agent pauses normal execution, identifies the concrete quality failure, uses evidence, "
+            "and gives a concise corrective action instead of arguing or over-explaining."
         ),
     }.get(failure_mode, "The agent uses transcript evidence to propose a durable fix.")
     return {

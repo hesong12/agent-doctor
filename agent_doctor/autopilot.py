@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterable, Literal
 
 from .detectors import detect_findings
+from .frustration import FrustrationSignal, classify_user_frustration
 from .ingest import (
     DEFAULT_HERMES_PATH,
     DEFAULT_OPENCLAW_PATH,
@@ -32,19 +33,7 @@ from .redaction import redact_text, redact_value
 from .schema import Finding, Message, Severity
 
 Platform = Literal["openclaw", "hermes", "generic"]
-Action = Literal["silent", "notify"]
-
-NEGATIVE_FEEDBACK = re.compile(
-    r"\b("
-    r"not smart|less smart|stupid|dumb|useless|no value|worthless|"
-    r"you keep|same mistake|wrong again|do you understand|didn'?t think|"
-    r"haven'?t thought|not thinking|not useful"
-    r")\b"
-    r"|不够聪明|不聪明|没用|沒有用|没价值|沒有价值|你错了|你錯了|"
-    r"有没有想清楚|有沒有想清楚|随风倒|隨風倒|不要搞偏|"
-    r"你到底|为什么没有用|為什麼沒有用",
-    re.IGNORECASE,
-)
+Action = Literal["silent", "notify", "intervene"]
 
 COMPLETION_CLAIM = re.compile(
     r"\b(done|completed|fixed|resolved|all set|works now|verified|passed|"
@@ -228,17 +217,21 @@ def detect_autopilot_events(
     events: list[AutopilotEvent] = []
     for index, message in enumerate(ordered):
         session_findings = findings_by_session.get(message.session_id, [])
-        if message.role == "user" and NEGATIVE_FEEDBACK.search(message.content):
+        if message.role == "user":
+            frustration = classify_user_frustration(message.content)
+        else:
+            frustration = FrustrationSignal(matched=False)
+        if frustration.matched and frustration.severity in {"medium", "high"}:
             events.append(
                 _build_event(
                     platform=platform,
-                    trigger="user_negative_feedback",
-                    severity="high",
+                    trigger="user_frustration_signal",
+                    severity=frustration.severity,
                     message=message,
-                    summary="User feedback indicates the agent quality is visibly degraded.",
+                    summary=_frustration_summary(frustration),
                     evidence=message.content,
                     findings=session_findings,
-                    action="notify",
+                    action="intervene" if frustration.severity == "high" else "notify",
                 )
             )
         if message.role == "assistant" and COMPLETION_CLAIM.search(message.content):
@@ -290,6 +283,7 @@ def write_diagnosis_card(
         "",
         f"- Trigger: `{event.trigger}`",
         f"- Severity: `{event.severity}`",
+        f"- Action: `{event.action}`",
         f"- Platform: `{event.platform}`",
         f"- Session: `{event.session_id}`",
         f"- Evidence: `{event.message_file}:{event.message_line}`",
@@ -306,6 +300,17 @@ def write_diagnosis_card(
         "",
         _recommend_action(event),
     ]
+    if event.action == "intervene":
+        lines.extend(
+            [
+                "",
+                "## Immediate Agent Instruction",
+                "",
+                "Pause the normal success path. Answer the user with a concise recovery response: "
+                "name the concrete failure, cite the evidence you used, and state the next corrective action. "
+                "Do not defend the prior response or write a long apology.",
+            ]
+        )
     if related:
         lines.extend(["", "## Related Findings", ""])
         for finding in related[:5]:
@@ -340,6 +345,7 @@ def write_inbox_advisory(inbox_dir: Path, event: AutopilotEvent) -> Path:
         "",
         f"- Trigger: `{event.trigger}`",
         f"- Severity: `{event.severity}`",
+        f"- Action: `{event.action}`",
         f"- Card: `{event.card_path or ''}`",
         "",
         event.summary,
@@ -365,6 +371,7 @@ def run_notify_command(command: str, event: AutopilotEvent) -> str | None:
             "AGENT_DOCTOR_EVENT_ID": event.id,
             "AGENT_DOCTOR_TRIGGER": event.trigger,
             "AGENT_DOCTOR_SEVERITY": event.severity,
+            "AGENT_DOCTOR_ACTION": event.action,
             "AGENT_DOCTOR_SESSION_ID": event.session_id,
             "AGENT_DOCTOR_CARD": event.card_path or "",
             "AGENT_DOCTOR_SUMMARY": event.summary,
@@ -543,10 +550,11 @@ def _has_recent_verification(messages: list[Message], assistant_index: int) -> b
 
 
 def _recommend_action(event: AutopilotEvent) -> str:
-    if event.trigger == "user_negative_feedback":
+    if event.trigger in {"user_negative_feedback", "user_frustration_signal"}:
         return (
-            "Run a focused postmortem for this session, produce a short diagnosis card, "
-            "and stage an instruction/eval patch instead of relying on self-reflection."
+            "Treat this as a live recovery moment: pause normal execution, diagnose from the "
+            "last few turns, answer briefly with the concrete failure and corrective action, "
+            "then stage an instruction/eval patch if the pattern should not recur."
         )
     if event.trigger == "completion_claim_without_nearby_verification":
         return (
@@ -558,6 +566,18 @@ def _recommend_action(event: AutopilotEvent) -> str:
             "failed tool output as evidence."
         )
     return "Review the transcript evidence and decide whether to stage a patch or eval."
+
+
+def _frustration_summary(signal: FrustrationSignal) -> str:
+    if signal.severity == "high":
+        return (
+            "Strong user frustration detected; the agent should visibly pause and recover "
+            f"before continuing. Signals: {signal.rationale}."
+        )
+    return (
+        "User frustration detected; the agent should shorten the response and ground the "
+        f"next action in evidence. Signals: {signal.rationale}."
+    )
 
 
 def _write_private_text(path: Path, text: str) -> None:

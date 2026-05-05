@@ -4,7 +4,7 @@
 
 Local-first session postmortem and improvement engine for **memoryful AI agent frameworks** — agents that have their own persistent identity, memory, skills, and SOP files. Today: **Hermes, OpenClaw, Claude Code**. Same shape works for any framework that records sessions as JSONL and stores its own configuration files.
 
-**Turn frustrating agent sessions into durable fixes.** Read JSONL transcripts → detect failure patterns deterministically → aggregate into one finding per session → stage reviewable patches for memory, SOP, identity, tool discipline, and evals. For productized agent deployments, let the host agent run `agent-doctor setup autopilot` so diagnosis triggers automatically from negative feedback, hidden tool failures, and unverified completion claims. No network calls in the production path. No automatic edits to your agent config.
+**Turn frustrating agent sessions into durable fixes.** Read JSONL transcripts → detect failure patterns deterministically → aggregate into one finding per session → stage reviewable patches for memory, SOP, identity, tool discipline, and evals. For productized agent deployments, let the host agent run `agent-doctor setup autopilot` so diagnosis triggers automatically from user frustration, insults/profanity, trust-break language, hidden tool failures, and unverified completion claims. No network calls in the production path. No automatic edits to your agent config.
 
 Agent Doctor is an engineering diagnosis tool. It is *not* therapy, HR performance management, or surveillance analytics, and it is *not* aimed at chat clients without their own memory or identity surface (Claude Desktop, Cursor, Cline, ChatGPT, …) — those have nothing for `apply` to patch.
 
@@ -206,9 +206,11 @@ home before the platform has created its root directory.
 
 Current automatic triggers:
 
-- user negative feedback, including direct complaints like "not useful", "no value", "not thinking", and common Chinese equivalents.
+- user frustration signals, including direct complaints like "not useful", "no value", "not thinking", direct insults/profanity, trust-break language, and common Chinese equivalents such as "不够聪明", "没价值", "废物", and "每次都这样".
 - assistant completion claims without nearby verification evidence.
 - hidden or unacknowledged tool failures surfaced by the deterministic detectors.
+
+High-severity frustration emits an `intervene` event instead of a passive notification. Intervention cards tell the host agent to pause the normal success path, identify the concrete failure, cite evidence, and provide a short corrective action instead of defending itself or writing a long apology.
 
 Watch mode automatically runs a full first pass, then switches to changed-file
 scanning using JSONL path, `mtime`, and size state in SQLite. To skip unchanged
@@ -236,7 +238,7 @@ agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw \
 ```
 
 - `--inbox-dir` writes a per-session advisory file that a memoryful agent can read on its next turn or heartbeat.
-- `--notify-command` runs a local command after a card is emitted. Metadata is passed through `AGENT_DOCTOR_*` environment variables such as `AGENT_DOCTOR_CARD`, `AGENT_DOCTOR_TRIGGER`, `AGENT_DOCTOR_SEVERITY`, and `AGENT_DOCTOR_SESSION_ID`.
+- `--notify-command` runs a local command after a card is emitted. Metadata is passed through `AGENT_DOCTOR_*` environment variables such as `AGENT_DOCTOR_CARD`, `AGENT_DOCTOR_TRIGGER`, `AGENT_DOCTOR_ACTION`, `AGENT_DOCTOR_SEVERITY`, and `AGENT_DOCTOR_SESSION_ID`.
 - Delivery failures are recorded in `delivery-errors.jsonl`; diagnosis itself still succeeds.
 
 Install as a background user service:
@@ -301,6 +303,7 @@ Agent Doctor is local-only by design.
 | `memory_failure` | "you forgot", imperative "remember", "last time", "I told you" | memory |
 | `tool_failure_or_hidden_error` | tool emits error/timeout/401/500/traceback; assistant claims success without acknowledging | SOP, tool discipline |
 | `communication_mismatch` | "too verbose", "stop explaining" | memory (with overfit warning), identity |
+| `user_frustration_signal` | user shows anger, direct insult/profanity, repeated correction, or trust-break language | identity, SOP, eval |
 
 Distractors that are deliberately *not* flagged:
 

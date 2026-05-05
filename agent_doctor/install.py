@@ -163,7 +163,7 @@ Do not ask the user to manually edit host configuration.
 
 ## Detection taxonomy (what this skill catches)
 
-Agent Doctor detects six failure modes deterministically from transcript signals:
+Agent Doctor detects seven failure modes deterministically from transcript signals:
 
 - `repeated_user_correction` — "I already told you", "not what I asked", "X again".
 - `execution_discipline` — promised action without observed tool execution; "don't just plan".
@@ -171,6 +171,12 @@ Agent Doctor detects six failure modes deterministically from transcript signals
 - `memory_failure` — "you forgot", imperative "remember", "last time", "I told you".
 - `tool_failure_or_hidden_error` — tool emits error / timeout / 401 / 500 / traceback, assistant claims success.
 - `communication_mismatch` — "too verbose", "stop explaining".
+- `user_frustration_signal` — user anger, direct insult/profanity, trust-break language, or direct quality complaints.
+
+Autopilot emits high-severity user frustration with action `intervene`, not just
+`notify`. Treat an intervention as a live recovery moment: pause the normal
+success path, identify the concrete failure, cite evidence, and give the next
+corrective action without defensiveness or a long apology.
 
 ## Workflow
 

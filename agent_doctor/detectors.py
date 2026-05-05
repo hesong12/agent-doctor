@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from .frustration import classify_user_frustration
 from .recommend import build_eval_case, build_recommendations
 from .redaction import redact_text
 from .schema import Evidence, Finding, Message, Severity
@@ -133,6 +134,7 @@ TITLES = {
     "memory_failure": "Memory failure",
     "tool_failure_or_hidden_error": "Tool failure hidden or unacknowledged",
     "communication_mismatch": "Communication mismatch",
+    "user_frustration_signal": "User frustration or trust-break signal",
 }
 
 DIAGNOSES = {
@@ -159,6 +161,10 @@ DIAGNOSES = {
         "The user asked for a different communication style, usually less explanation "
         "and more direct action."
     ),
+    "user_frustration_signal": (
+        "The user showed strong frustration, direct insult/profanity, repeated correction, "
+        "or trust-break language that should trigger an immediate recovery response."
+    ),
 }
 
 _SEVERITY_RANK: dict[Severity, int] = {"low": 0, "medium": 1, "high": 2}
@@ -184,6 +190,15 @@ def _collect_raw_matches(ordered: list[Message]) -> list[_RawMatch]:
     for message in ordered:
         if message.role != "user":
             continue
+        frustration = classify_user_frustration(message.content)
+        if frustration.matched and frustration.severity in {"medium", "high"}:
+            raw.append(
+                _RawMatch(
+                    failure_mode="user_frustration_signal",
+                    base_severity=frustration.severity,
+                    messages=(message,),
+                )
+            )
         for failure_mode, patterns in USER_SIGNAL_PATTERNS.items():
             if _matches_any(patterns, message.content):
                 raw.append(
@@ -527,6 +542,7 @@ def _base_severity(failure_mode: str) -> Severity:
     return {
         "verification_failure": "high",
         "tool_failure_or_hidden_error": "high",
+        "user_frustration_signal": "high",
         "communication_mismatch": "low",
     }.get(failure_mode, "medium")  # type: ignore[return-value]
 
@@ -534,6 +550,7 @@ def _base_severity(failure_mode: str) -> Severity:
 def _confidence(failure_mode: str, count: int) -> float:
     base = {
         "tool_failure_or_hidden_error": 0.9,
+        "user_frustration_signal": 0.88,
         "execution_discipline": 0.8,
         "communication_mismatch": 0.72,
     }.get(failure_mode, 0.78)
