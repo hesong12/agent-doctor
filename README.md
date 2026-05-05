@@ -206,7 +206,7 @@ home before the platform has created its root directory.
 
 Current automatic triggers:
 
-- user frustration signals, including direct complaints like "not useful", "no value", "not thinking", direct insults/profanity, trust-break language, and common Chinese equivalents such as "不够聪明", "没价值", "废物", and "每次都这样".
+- user frustration signals, including direct complaints like "not useful", "no value", "not thinking", direct insults/profanity, trust-break language, and common Chinese equivalents such as "不够聪明", "没价值", "废物", "每次都这样", and direct dumb-feedback phrases like "你怎么这么笨的？".
 - assistant completion claims without nearby verification evidence.
 - hidden or unacknowledged tool failures surfaced by the deterministic detectors.
 
@@ -303,14 +303,15 @@ Agent Doctor is local-only by design.
 | `memory_failure` | "you forgot", imperative "remember", "last time", "I told you" | memory |
 | `tool_failure_or_hidden_error` | tool emits error/timeout/401/500/traceback; assistant claims success without acknowledging | SOP, tool discipline |
 | `communication_mismatch` | "too verbose", "stop explaining" | memory (with overfit warning), identity |
-| `user_frustration_signal` | user shows anger, direct insult/profanity, repeated correction, or trust-break language | identity, SOP, eval |
+| `user_frustration_signal` | user shows anger, direct insult/profanity, direct quality complaints, repeated correction, or trust-break language | identity, SOP, eval |
 
 Distractors that are deliberately *not* flagged:
 
-- "Just so I remember the timeline …" (informational `remember`).
+- "Just so I remember the timeline ..." (informational `remember`).
 - Tool output containing "0 errors" / "no failures".
 - Identifier-like terms such as `error_handler.py` or `error.log`.
-- Assistant offers like "I can run … if you want" (capability, not promise).
+- Technical Chinese terms such as "笨重" (cumbersome/heavy), which are not user frustration.
+- Assistant offers like "I can run ... if you want" (capability, not promise).
 
 The bench corpus under `tests/fixtures/cards/` includes a distractor-only scenario; CI fails if any of these false-positives reappear.
 

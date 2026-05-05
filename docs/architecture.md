@@ -43,7 +43,9 @@ Current triggers are intentionally deterministic and local:
 - `user_frustration_signal` — direct quality complaints, insults/profanity,
   repeated corrections, and trust-break language such as "not useful",
   "no value", "not thinking", "what the fuck", "不够聪明", "废物",
-  "每次都这样", and "有没有想清楚".
+  "每次都这样", "有没有想清楚", and direct dumb-feedback phrases like
+  "你怎么这么笨的？". Technical terms such as "笨重" are guarded as
+  non-frustration distractors.
 - `completion_claim_without_nearby_verification` — assistant says a task is
   fixed/done/completed without nearby tool or verification evidence.
 - `tool_failure_or_hidden_error` — reused from the existing deterministic

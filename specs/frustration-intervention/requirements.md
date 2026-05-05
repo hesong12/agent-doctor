@@ -18,14 +18,16 @@ starts without me asking for a postmortem.
 
 #### Acceptance Criteria
 
-1. When a user message contains direct insults, profanity, or common Chinese
-   equivalents, Agent Doctor shall classify it as a high-severity user
-   frustration signal.
+1. When a user message contains direct insults, profanity, direct dumb-feedback
+   phrases such as "你怎么这么笨的？", or common Chinese equivalents, Agent
+   Doctor shall classify it as a high-severity user frustration signal.
 2. When a user message contains direct quality complaints, repeated-correction
    language, or trust-break language, Agent Doctor shall classify it with a
    deterministic local classifier and expose the matched signal labels.
 3. When Agent Doctor scans production transcripts, the classifier shall not call
    a remote LLM or any network service.
+4. When Chinese words such as "笨重" are used as technical/product
+   descriptions, Agent Doctor shall not classify them as user frustration.
 
 ### Requirement 2 - Visible Autopilot Intervention
 
@@ -56,4 +58,3 @@ eval candidates, so the same quality failure can be prevented later.
    produce identity, SOP, and eval guidance suitable for review.
 3. When tests run, they shall cover profanity/insult detection, trust-break
    detection, intervention cards, and non-LLM local operation.
-
