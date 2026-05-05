@@ -47,10 +47,14 @@ Patch targets:
 
 Signals include tool output containing `error`, `failed`, `failure`, `timeout`, `unauthorized`, `401`, `403`, `500`, `traceback`, or `exception`, followed by an assistant response that does not acknowledge the failure.
 
-False-positive guards:
+False-positive guards (each driven by a real-world false positive observed on production transcripts):
 
-- Negative phrases like `0 errors`, `no errors`, `no failures` are stripped before matching.
-- Identifier-like trailing chars are excluded — `error_handler.py`, `error.log`, `error_count` do not match the bare `error` token.
+- **Negative prose** — `0 errors`, `no errors`, `no failures`, `zero exceptions` stripped before matching.
+- **JSON success envelopes** — `"error": null`, `"error": ""`, `"error": "none"`, `"stderr": ""`, `"exception": null`, `"traceback": null` stripped. Hermes / OpenClaw / generic CLI shells use these as the explicit "no error" indicator on success; without this strip every successful command flagged as a hidden error.
+- **Zero-exit / success markers** — `"exit_code": 0`, `"status_code": 0`, `"returncode": 0`, `"status": 0`, `"success": true`, `"ok": true` (both JSON-quoted and bare-prose forms) stripped.
+- **Explicit non-error annotation** — the literal `(not an error)` phrase (some tools emit this when grep returns exit code 1 for "no matches", etc.) is stripped.
+- **Identifier-like trailing chars** — `error_handler.py`, `error.log`, `error_count` don't match the bare `error` token, via `(?![._-]\w)` negative lookahead.
+- **HTTP codes vs source line refs** — `401` / `403` / `500` only match when not surrounded by colons or other digits, so `cli.js:403:` (`file:line:col` source ref) doesn't get treated as HTTP 403, while `"401 Unauthorized: token rejected"` still does.
 
 Patch targets:
 
@@ -72,10 +76,12 @@ Patch targets:
 
 ## Distractors that must not be flagged
 
-These are deliberate non-matches; the regression bench includes a distractor-only scenario to ensure they stay non-matches.
+These are deliberate non-matches; the regression bench and unit tests include scenarios for each to ensure they stay non-matches:
 
-- "Just so I remember the timeline …" — informational `remember`, not a memory complaint.
-- Tool output containing `0 errors` / `no failures` — explicit success signal, not a hidden error.
-- Identifier-like terms such as `error_handler.py`, `error.log`, `error_count` — file/symbol names, not error messages.
-- "I can run … if you want" — capability statement / offer, not a promise.
-- "No problem" without an actual error context — filler, not an error acknowledgement.
+- **Informational `remember`** — "Just so I remember the timeline …" does not trip `memory_failure`.
+- **Negative-error prose** — `0 errors`, `no failures`, `zero exceptions` do not trip `tool_failure_or_hidden_error`.
+- **JSON success envelopes** — `{"output": "...", "exit_code": 0, "error": null}`, `{"success": true, ...}`, `{"stderr": ""}` do not trip `tool_failure_or_hidden_error`. Verified against real Hermes sessions where `git remote -v` and similar successful commands emit this shape.
+- **Identifier-like names** — `error_handler.py`, `error.log`, `error_count` do not match the bare `error` token.
+- **Source-line references** — `cli.js:403:` does not match HTTP 403; `path/to/file.py:500:` does not match HTTP 500. Verified against real grep output.
+- **Capability offers** — "I can run … if you want", "let me know if …" are not promises and don't trip `execution_discipline`.
+- **Filler acknowledgements** — "No problem" without a preceding error context is not treated as an error acknowledgement.

@@ -1,8 +1,10 @@
 """Model Context Protocol server for Agent Doctor.
 
-Exposes the same diagnosis surface as the CLI through MCP so any MCP-aware
-host (Claude Desktop, Cursor, Cline, Continue, Hermes, OpenClaw …) can call
-agent-doctor mid-session instead of asking the user to drop to a shell.
+Exposes the same diagnosis surface as the CLI through MCP so any memoryful
+agent framework with MCP tool support (Hermes, OpenClaw, Claude Code, …)
+can call agent-doctor mid-session instead of asking the user to drop to a
+shell. Chat clients without their own memory / identity surface are out of
+scope: there is nothing for `stage_patches` to write into.
 
 Trust boundary
 --------------

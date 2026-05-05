@@ -2,35 +2,42 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE) [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
 
-Local-first session postmortem and improvement engine for memoryful AI agents (Hermes, OpenClaw, Claude Code, …).
+Local-first session postmortem and improvement engine for **memoryful AI agent frameworks** — agents that have their own persistent identity, memory, skills, and SOP files. Today: **Hermes, OpenClaw, Claude Code**. Same shape works for any framework that records sessions as JSONL and stores its own configuration files.
 
 **Turn frustrating agent sessions into durable fixes.** Read JSONL transcripts → detect failure patterns deterministically → aggregate into one finding per session → stage reviewable patches for memory, SOP, identity, tool discipline, and evals. No network calls in the production path. No automatic edits to your agent config.
 
-Agent Doctor is an engineering diagnosis tool. It is *not* therapy, HR performance management, or surveillance analytics.
+Agent Doctor is an engineering diagnosis tool. It is *not* therapy, HR performance management, or surveillance analytics, and it is *not* aimed at chat clients without their own memory or identity surface (Claude Desktop, Cursor, Cline, ChatGPT, …) — those have nothing for `apply` to patch.
 
 ## Install
 
-One line, from GitHub:
+**One line.** Detects pipx vs pip, installs Agent Doctor, writes skills into every detected memoryful agent framework on the machine, and invalidates host skill caches so the new skill is live on the next session — no manual restart needed where supported.
 
 ```bash
-pip install git+https://github.com/hesong12/agent-doctor.git
-agent-doctor bootstrap
+curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh
 ```
 
-`bootstrap` auto-detects `~/.hermes`, `~/.openclaw`, and `~/.claude/skills` and writes the right skill format into each host (Markdown SOP for Hermes / OpenClaw, `SKILL.md` with YAML frontmatter for Claude Code). It also prints the MCP configuration snippet you can paste into Claude Desktop, Cursor, Cline, Continue, or any MCP-aware client.
-
-Optional extras:
+With extras:
 
 ```bash
-# Enable the MCP stdio server
-pip install "agent-doctor[mcp] @ git+https://github.com/hesong12/agent-doctor.git"
-
-# Enable LLM-backed eval (synthetic generator + closed-loop replay)
-pip install "agent-doctor[llm] @ git+https://github.com/hesong12/agent-doctor.git"
+# Include the MCP stdio server
+curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-mcp
 
 # Everything
-pip install "agent-doctor[mcp,llm] @ git+https://github.com/hesong12/agent-doctor.git"
+curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-all
 ```
+
+After install, just say to your AI agent: *"review my last session"* / *"diagnose this transcript"* / *"why does the agent keep doing X"*. The host's skill router will match against the `SKILL.md` we wrote into each detected memoryful framework's skill directory and load Agent Doctor's workflow.
+
+If you'd rather not run a remote shell script, the manual two-step works equally well:
+
+```bash
+pipx install git+https://github.com/hesong12/agent-doctor.git
+agent-doctor bootstrap --invalidate-cache
+```
+
+(On Ubuntu 24.04+ / Debian 12+ install pipx first: `sudo apt-get install -y pipx && pipx ensurepath`. The `install.sh` script handles this automatically.)
+
+`bootstrap` auto-detects `~/.hermes`, `~/.openclaw`, and `~/.claude/skills` and writes a `SKILL.md` with YAML frontmatter into the right place for each host. Hermes gets `~/.hermes/skills/autonomous-ai-agents/agent-doctor/SKILL.md` (the categorized layout 124+ existing Hermes skills use); OpenClaw and Claude Code get `~/.<host>/skills/agent-doctor/SKILL.md`. It also prints the MCP configuration snippet you can paste into any MCP-aware host.
 
 For local development:
 
@@ -45,7 +52,7 @@ The package exposes the `agent-doctor` console script and can also be run with `
 
 ## For AI agents
 
-Read this section if you are an AI agent (Claude Code, Cursor, Cline, OpenClaw, Hermes, …) deciding whether to invoke Agent Doctor.
+Read this section if you are an AI agent inside a memoryful framework (Hermes, OpenClaw, Claude Code, …) deciding whether to invoke Agent Doctor.
 
 **When to invoke:**
 
@@ -212,7 +219,7 @@ python3 -m agent_doctor.cli eval bench --corpus /tmp/ad-corpus --out /tmp/ad-ben
 
 ## MCP server
 
-Agent Doctor ships a stdio MCP server that exposes the same diagnosis surface as the CLI. Install the optional extra and let any MCP-aware host (Claude Desktop, Cursor, Cline, Continue, Hermes, OpenClaw …) call it mid-session:
+Agent Doctor ships a stdio MCP server that exposes the same diagnosis surface as the CLI. Install the optional extra and let any memoryful MCP-aware agent framework (Hermes, OpenClaw, Claude Code, or any framework that supports MCP tools and has its own memory / identity files) call it mid-session:
 
 ```bash
 pip install 'agent-doctor[mcp]'

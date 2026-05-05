@@ -122,6 +122,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Install for hosts whose home directory does not exist yet.",
     )
+    boot.add_argument(
+        "--invalidate-cache",
+        action="store_true",
+        help="Best-effort invalidate host skill caches so the new SKILL.md is picked up without a manual restart.",
+    )
     boot.set_defaults(func=_cmd_bootstrap)
 
     mcp = subparsers.add_parser(
@@ -230,7 +235,33 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         print(f"Wrote report: {output_paths['report']}")
         print(f"Wrote findings: {output_paths['findings']}")
         print(f"Wrote eval cases: {output_paths['eval_cases']}")
+        _print_first_run_hint_if_needed()
     return 0
+
+
+def _print_first_run_hint_if_needed() -> None:
+    """If no SKILL.md is installed in any host, hint the user to bootstrap.
+
+    The hint is printed to stderr so it doesn't pollute machine-readable
+    pipelines, and is suppressed when running under JSON-format scans or
+    when the file has been installed at least once.
+    """
+
+    try:
+        from .bootstrap import detect_hosts
+
+        for host in detect_hosts():
+            skill_md = host.skill_dir / "agent-doctor" / "SKILL.md"
+            categorized_skill_md = host.skill_dir / "autonomous-ai-agents" / "agent-doctor" / "SKILL.md"
+            if skill_md.exists() or categorized_skill_md.exists():
+                return
+        print(
+            "\nTip: run `agent-doctor bootstrap --invalidate-cache` so your AI agent\n"
+            "     can run this for you next time without you typing the command.",
+            file=sys.stderr,
+        )
+    except Exception:  # pragma: no cover — never let the hint crash the CLI
+        return
 
 
 def _cmd_apply(args: argparse.Namespace) -> int:
@@ -273,9 +304,10 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
         extra_targets=args.target or None,
         dry_run=args.dry_run,
         force=args.force,
+        invalidate_cache=args.invalidate_cache,
     )
     print(render_bootstrap_summary(result))
-    return 0 if result.installed() or args.dry_run else 0
+    return 0
 
 
 def _cmd_mcp(_: argparse.Namespace) -> int:
