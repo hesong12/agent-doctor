@@ -1,8 +1,10 @@
 __pycache__/
 .pytest_cache/
+.venv/
 *.pyc
 *.egg-info/
 dist/
 build/
 .coverage
 /agent-doctor-report/
+/uv.lock

@@ -4,7 +4,7 @@
 
 Local-first session postmortem and improvement engine for **memoryful AI agent frameworks** — agents that have their own persistent identity, memory, skills, and SOP files. Today: **Hermes, OpenClaw, Claude Code**. Same shape works for any framework that records sessions as JSONL and stores its own configuration files.
 
-**Turn frustrating agent sessions into durable fixes.** Read JSONL transcripts → detect failure patterns deterministically → aggregate into one finding per session → stage reviewable patches for memory, SOP, identity, tool discipline, and evals. No network calls in the production path. No automatic edits to your agent config.
+**Turn frustrating agent sessions into durable fixes.** Read JSONL transcripts → detect failure patterns deterministically → aggregate into one finding per session → stage reviewable patches for memory, SOP, identity, tool discipline, and evals. For productized agent deployments, run `agent-doctor autopilot` as a sidecar so diagnosis triggers automatically from negative feedback, hidden tool failures, and unverified completion claims. No network calls in the production path. No automatic edits to your agent config.
 
 Agent Doctor is an engineering diagnosis tool. It is *not* therapy, HR performance management, or surveillance analytics, and it is *not* aimed at chat clients without their own memory or identity surface (Claude Desktop, Cursor, Cline, ChatGPT, …) — those have nothing for `apply` to patch.
 
@@ -27,6 +27,23 @@ curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.
 ```
 
 After install, just say to your AI agent: *"review my last session"* / *"diagnose this transcript"* / *"why does the agent keep doing X"*. The host's skill router will match against the `SKILL.md` we wrote into each detected memoryful framework's skill directory and load Agent Doctor's workflow.
+
+For always-on deployments where the user should not have to remember to ask for diagnosis, run the sidecar:
+
+```bash
+# One-shot check using each platform's default transcript path
+agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw
+agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes
+
+# Long-running sidecar mode. Use launchd on macOS or systemd on Linux.
+agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw --watch
+
+# Install as a user service without changing OpenClaw/Hermes.
+agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw \
+  --inbox-dir ~/.agent-doctor/inbox/openclaw --start
+```
+
+`autopilot` is outside-in: it reads existing transcript/log JSONL, keeps its own SQLite state for cooldown/de-duplication, and writes short diagnosis cards plus `events.jsonl` under `--out`. It does **not** require OpenClaw/Hermes runtime hooks, source changes, or platform cooperation.
 
 If you'd rather not run a remote shell script, the manual two-step works equally well:
 
@@ -129,6 +146,9 @@ staging/
 
 ```bash
 agent-doctor doctor                                          # environment + privacy info
+agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw
+agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes --watch
+agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw --start
 agent-doctor bootstrap                                       # auto-detect hosts and install skills into each
 agent-doctor bootstrap --dry-run                             # preview without writing
 agent-doctor bootstrap --target claude-code --force          # force into a specific host
@@ -138,6 +158,61 @@ pip install 'agent-doctor[mcp]' && agent-doctor mcp serve    # run the stdio MCP
 ```
 
 Supported `--target` values: `hermes`, `openclaw`, `claude-code`, `generic`. The `claude-code` target writes a `SKILL.md` with the YAML frontmatter Claude Code expects under `~/.claude/skills/agent-doctor/`. Hermes and OpenClaw get a Markdown SOP file.
+
+### Autopilot sidecar
+
+`autopilot` is the no-runtime-modification product path. It is intended to run as a local daemon, not as a dashboard and not as a cron-only batch job:
+
+```bash
+agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw --watch --interval 15
+agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes --watch --interval 15
+agent-doctor autopilot --platform generic --path ./sessions --out ./doctor-autopilot
+```
+
+Current automatic triggers:
+
+- user negative feedback, including direct complaints like "not useful", "no value", "not thinking", and common Chinese equivalents.
+- assistant completion claims without nearby verification evidence.
+- hidden or unacknowledged tool failures surfaced by the deterministic detectors.
+
+Artifacts:
+
+```
+~/.agent-doctor/openclaw/
+  state.sqlite3       # local de-dupe / cooldown state
+  events.jsonl        # machine-readable emitted interventions
+  latest.md           # most recent short diagnosis card
+  cards/<event>.md    # one card per emitted event
+```
+
+This is the Agent Doctor "self-healing layer" boundary: observe from the outside, diagnose locally, notify through existing channels, and stage durable fixes. It does not block host runtime execution or patch live configuration.
+
+Delivery options stay outside the host runtime:
+
+```bash
+agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw \
+  --inbox-dir ~/.agent-doctor/inbox/openclaw \
+  --notify-command "/usr/local/bin/send-agent-doctor-card"
+```
+
+- `--inbox-dir` writes a per-session advisory file that a memoryful agent can read on its next turn or heartbeat.
+- `--notify-command` runs a local command after a card is emitted. Metadata is passed through `AGENT_DOCTOR_*` environment variables such as `AGENT_DOCTOR_CARD`, `AGENT_DOCTOR_TRIGGER`, `AGENT_DOCTOR_SEVERITY`, and `AGENT_DOCTOR_SESSION_ID`.
+- Delivery failures are recorded in `delivery-errors.jsonl`; diagnosis itself still succeeds.
+
+Install as a background user service:
+
+```bash
+# macOS: writes ~/Library/LaunchAgents/com.agentdoctor.openclaw.plist
+# Linux: writes ~/.config/systemd/user/agent-doctor-openclaw.service
+agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw \
+  --inbox-dir ~/.agent-doctor/inbox/openclaw --start
+```
+
+The installer also supports this as an opt-in:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-autopilot
+```
 
 ### Eval harness (LLM-first)
 

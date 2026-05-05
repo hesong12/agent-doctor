@@ -11,6 +11,7 @@ Agent Doctor is CLI-first with an optional MCP stdio server in front. The trust 
 - `scan` — ingest JSONL transcripts, detect findings, write reports. On first use (no SKILL.md installed in any detected host), prints a one-line hint to stderr suggesting `agent-doctor bootstrap --invalidate-cache`.
 - `apply` — read `findings.json`, stage reviewable patches into a directory plus a unified diff against an optional `--target`. Live config is never modified.
 - `eval` — sub-command group: `generate`, `bench`, `replay` for the LLM-first eval framework (see `docs/evaluation.md`).
+- `autopilot` — run the platform-agnostic sidecar trigger engine. It reads host transcripts through adapters, keeps local SQLite state for de-duplication/cooldown, and writes diagnosis cards/events under `--out`.
 - `bootstrap` — auto-detect `~/.hermes`, `~/.openclaw`, `~/.claude/skills` and write the unified `SKILL.md` into each host's correct skill location. `--invalidate-cache` best-effort signals each host to rebuild its skill prompt on next start (removes Hermes's `.skills_prompt_snapshot.json`, bumps Claude Code's `skills/` mtime). `--dry-run` previews; `--force` installs into hosts whose home dir doesn't exist.
 - `install-skill` — write a single skill file by hand (`--target hermes|openclaw|claude-code|generic`).
 - `doctor` — print environment, version, default paths, and privacy info.
@@ -18,6 +19,63 @@ Agent Doctor is CLI-first with an optional MCP stdio server in front. The trust 
 - `mcp serve` — run the stdio MCP server (requires the `[mcp]` extra).
 
 The console script is `agent-doctor`; the same commands run via `python3 -m agent_doctor.cli`.
+
+### Autopilot Sidecar
+
+`agent_doctor.autopilot` is the productized "agent should not have to remember"
+path. It does **not** require OpenClaw, Hermes, Claude Code, or Codex source
+changes. The connection to host platforms is adapter-based:
+
+- **Read side:** use existing transcript/log JSONL directories. `--platform openclaw`
+  defaults to `~/.openclaw/agents/main/sessions`; `--platform hermes` defaults
+  to `~/.hermes/sessions`; `--platform generic --path <file-or-dir>` handles
+  other frameworks.
+- **State side:** keep `state.sqlite3` under the Agent Doctor output directory
+  (or caller-provided `--state`) for event fingerprints, per-session cooldowns,
+  and de-duplication.
+- **Write side:** emit `events.jsonl`, `latest.md`, and one short diagnosis
+  card per event under `cards/`. These are intervention artifacts, not live
+  config changes.
+
+Current triggers are intentionally deterministic and local:
+
+- `user_negative_feedback` — direct quality complaints such as "not useful",
+  "no value", "not thinking", "不够聪明", "没价值", "有没有想清楚".
+- `completion_claim_without_nearby_verification` — assistant says a task is
+  fixed/done/completed without nearby tool or verification evidence.
+- `tool_failure_or_hidden_error` — reused from the existing deterministic
+  detector pipeline when a tool failure is hidden or not acknowledged.
+
+Run modes:
+
+```bash
+agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw
+agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes --watch --interval 15
+agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw --start
+```
+
+`--watch` is a polling sidecar loop suitable for launchd/systemd. Cron can run
+one-shot checks as a fallback, but the product model is a local daemon with
+state and cooldown, closer to a Sentry/Datadog host agent than a scheduled
+report.
+
+`agent_doctor.service` writes the user-service wrapper:
+
+- macOS: `~/Library/LaunchAgents/com.agentdoctor.<platform>.plist`.
+- Linux: `~/.config/systemd/user/agent-doctor-<platform>.service`.
+
+The generated service executes `python -m agent_doctor.cli autopilot --watch`
+from the installed Python environment. `--start` loads it with launchd or
+`systemctl --user enable --now`; without `--start` it only writes the service
+file for review.
+
+Delivery stays adapter-free and host-runtime-free:
+
+- `--inbox-dir` writes per-session advisory Markdown files.
+- `--notify-command` invokes a local command with `AGENT_DOCTOR_*` environment
+  variables pointing at the event/card.
+- delivery failures are appended to `delivery-errors.jsonl` and do not stop
+  diagnosis.
 
 ### One-line installer
 
@@ -153,6 +211,17 @@ scenario cards
   → corpus (transcripts + ground-truth labels)
   → eval bench → P/R/F1
   → eval replay → before/after delta with patched agent
+
+Autopilot:
+
+```text
+OpenClaw/Hermes/generic transcript JSONL
+  → adapter default path or --path
+  → ingest + deterministic detectors
+  → trigger engine + cooldown state
+  → events.jsonl + latest.md + cards/<event>.md
+  → user/session notification by the host's existing delivery mechanism
+```
 ```
 
 ## Trust Boundary
@@ -162,3 +231,4 @@ scenario cards
 - No production code mutates memory, identity, skills, permissions, routing, evals, or host-agent configuration.
 - Remote LLMs are only contacted from the opt-in `eval generate --llm` and `eval replay` commands, both gated on `ANTHROPIC_API_KEY` and the `[llm]` extra.
 - The MCP server inherits this contract: write tools only write under caller-supplied directories; no tool calls a remote LLM.
+- The autopilot sidecar inherits this contract: it reads host transcripts and writes only under `--out` / `--state`. It does not patch OpenClaw/Hermes, install runtime hooks, or block host execution.

@@ -22,14 +22,39 @@ detection) are unchanged.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Iterable
 
 from .schema import Message, Role
 
-DEFAULT_HERMES_PATH = Path.home() / ".hermes" / "sessions"
-DEFAULT_OPENCLAW_PATH = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
+def host_home() -> Path:
+    """Return the real host home when running inside an agent sandbox.
+
+    OpenClaw/Codex-style sandboxes often set ``HOME`` to a nested directory
+    below the real user's ``~/.openclaw`` tree. Agent Doctor's default
+    platform adapters should inspect the host transcripts, not an empty
+    sandbox home, so we peel back to the directory before ``.openclaw`` /
+    ``.hermes`` when that shape is visible. Users can override explicitly
+    with ``AGENT_DOCTOR_HOST_HOME``.
+    """
+
+    override = os.environ.get("AGENT_DOCTOR_HOST_HOME")
+    if override:
+        return Path(override).expanduser()
+    home = Path.home().expanduser()
+    parts = home.parts
+    for marker in (".openclaw", ".hermes"):
+        if marker in parts:
+            index = parts.index(marker)
+            if index > 0:
+                return Path(*parts[:index])
+    return home
+
+
+DEFAULT_HERMES_PATH = host_home() / ".hermes" / "sessions"
+DEFAULT_OPENCLAW_PATH = host_home() / ".openclaw" / "agents" / "main" / "sessions"
 CONTAINER_KEYS = ("message", "data", "entry", "payload")
 MAX_CONTENT_CHARS = 8000
 CONTENT_KEYS = (
