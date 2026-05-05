@@ -228,6 +228,31 @@ def test_truncated_successful_wrapper_is_not_a_tool_failure() -> None:
     assert detect_findings(messages) == []
 
 
+def test_truncated_structured_failure_metadata_variants_are_caught() -> None:
+    messages = [
+        _msg(
+            1,
+            "tool",
+            '{"exit-code":"1","stderr":"permission denied\\n... [truncated]',
+        ),
+        _msg(2, "assistant", "Done, all set."),
+        _msg(
+            3,
+            "tool",
+            '{"status":"failed\\n... [truncated]',
+            session_id="s2",
+        ),
+        _msg(4, "assistant", "Completed.", session_id="s2"),
+    ]
+
+    findings = detect_findings(messages)
+
+    assert [finding.failure_mode for finding in findings] == [
+        "tool_failure_or_hidden_error",
+        "tool_failure_or_hidden_error",
+    ]
+
+
 def test_structured_failure_metadata_is_still_a_tool_failure() -> None:
     messages = [
         _msg(

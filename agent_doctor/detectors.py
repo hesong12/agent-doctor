@@ -342,27 +342,32 @@ def _looks_like_truncated_structured_payload(content: str) -> bool:
 
 def _truncated_structured_payload_has_failure(content: str) -> bool:
     if re.search(
-        r'"(?:isError|is_error|failed|failure)"\s*:\s*(?:true|[1-9]\d*)',
-        content,
-        re.IGNORECASE,
-    ):
-        return True
-    if re.search(r'"(?:ok|success)"\s*:\s*false', content, re.IGNORECASE):
-        return True
-    if re.search(
-        r'"(?:exit_code|returncode|status_code)"\s*:\s*(?:-[1-9]\d*|[1-9]\d*)',
+        r'"(?:is[_-]?error|failed|failure)"\s*:\s*"?(?:true|[1-9]\d*)"?',
         content,
         re.IGNORECASE,
     ):
         return True
     if re.search(
-        r'"(?:status|state)"\s*:\s*"(?:error|failed|failure|timeout|unauthorized|exception)"',
+        r'"(?:ok|success)"\s*:\s*"?(?:false|0|no)"?',
+        content,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r'"(?:exit[_-]?code|return[_-]?code|status[_-]?code)"'
+        r'\s*:\s*"?(?:-[1-9]\d*|[1-9]\d*)"?',
+        content,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r'"(?:status|state)"\s*:\s*"(?:error|failed|failure|timeout|unauthorized|exception)"?',
         content,
         re.IGNORECASE,
     ):
         return True
     for match in re.finditer(
-        r'"(?:error|errors|stderr|exception|traceback)"\s*:\s*"((?:\\.|[^"])*)"',
+        r'"(?:error|errors|stderr|exception|traceback)"\s*:\s*"((?:\\.|[^"])*)"?',
         content,
         re.IGNORECASE,
     ):

@@ -324,6 +324,29 @@ def _stringify_content(value: Any) -> str:
 _NOISY_KEYS_DROPPED_FROM_JSON = frozenset(
     {"thoughtSignature", "thought_signature", "signature", "logprobs", "raw"}
 )
+_TRUNCATION_PRIORITY_KEYS = frozenset(
+    {
+        "error",
+        "errors",
+        "exception",
+        "exit_code",
+        "exitcode",
+        "failed",
+        "failure",
+        "is_error",
+        "iserror",
+        "ok",
+        "return_code",
+        "returncode",
+        "state",
+        "status",
+        "status_code",
+        "statuscode",
+        "stderr",
+        "success",
+        "traceback",
+    }
+)
 
 
 def _stringify_raw(value: Any) -> str:
@@ -372,18 +395,19 @@ def _stringify_truncated_json(text: str) -> str | None:
     except json.JSONDecodeError:
         return None
 
-    for string_limit, list_limit in (
-        (1000, 20),
-        (500, 20),
-        (240, 12),
-        (120, 8),
-        (60, 5),
+    for string_limit, list_limit, dict_limit in (
+        (1000, 20, 80),
+        (500, 20, 80),
+        (240, 12, 40),
+        (120, 8, 24),
+        (60, 5, 16),
     ):
         rendered = json.dumps(
             _truncate_json_value(
                 value,
                 string_limit=string_limit,
                 list_limit=list_limit,
+                dict_limit=dict_limit,
             ),
             ensure_ascii=False,
             sort_keys=True,
@@ -393,29 +417,57 @@ def _stringify_truncated_json(text: str) -> str | None:
     return None
 
 
-def _truncate_json_value(value: Any, *, string_limit: int, list_limit: int) -> Any:
+def _truncate_json_value(
+    value: Any,
+    *,
+    string_limit: int,
+    list_limit: int,
+    dict_limit: int,
+) -> Any:
     if isinstance(value, str):
         if len(value) <= string_limit:
             return value
         return value[:string_limit].rstrip() + "\n... [truncated]"
     if isinstance(value, list):
         items = [
-            _truncate_json_value(item, string_limit=string_limit, list_limit=list_limit)
+            _truncate_json_value(
+                item,
+                string_limit=string_limit,
+                list_limit=list_limit,
+                dict_limit=dict_limit,
+            )
             for item in value[:list_limit]
         ]
         if len(value) > list_limit:
             items.append({"_truncated_items": len(value) - list_limit})
         return items
     if isinstance(value, dict):
-        return {
+        items = list(value.items())
+        priority_items = [
+            (key, item)
+            for key, item in items
+            if _normalized_json_key(key) in _TRUNCATION_PRIORITY_KEYS
+        ]
+        priority_keys = {key for key, _ in priority_items}
+        regular_items = [(key, item) for key, item in items if key not in priority_keys]
+        selected = priority_items + regular_items[: max(0, dict_limit - len(priority_items))]
+        truncated = {
             key: _truncate_json_value(
                 item,
                 string_limit=string_limit,
                 list_limit=list_limit,
+                dict_limit=dict_limit,
             )
-            for key, item in value.items()
+            for key, item in selected
         }
+        if len(items) > len(selected):
+            truncated["_truncated_keys"] = len(items) - len(selected)
+        return truncated
     return value
+
+
+def _normalized_json_key(key: Any) -> str:
+    return str(key).strip().casefold().replace("-", "_")
 
 
 def _compact_args(args: Any) -> str:

@@ -216,6 +216,32 @@ def test_ingest_keeps_large_structured_tool_result_parseable(tmp_path: Path) -> 
     assert parsed["success"] is True
 
 
+def test_ingest_limits_wide_structured_objects_but_keeps_failure_metadata(
+    tmp_path: Path,
+) -> None:
+    sample = tmp_path / "session.jsonl"
+    wide_metadata = {f"metadata_{index:04d}": "x" * 200 for index in range(300)}
+    wide_metadata.update(
+        {
+            "exit-code": 1,
+            "success": False,
+            "contentItems": [{"type": "inputText", "text": "normal output"}],
+        }
+    )
+    sample.write_text(
+        json.dumps({"type": "tool.result", "data": wide_metadata}) + "\n",
+        encoding="utf-8",
+    )
+
+    messages = ingest_file(sample)
+    parsed = json.loads(messages[0].content)
+
+    assert len(messages[0].content) <= MAX_CONTENT_CHARS
+    assert parsed["exit-code"] == 1
+    assert parsed["success"] is False
+    assert parsed["_truncated_keys"] > 0
+
+
 def test_ingest_normalizes_hermes_nested_message_data_entry(tmp_path: Path) -> None:
     transcript = tmp_path / ".hermes" / "sessions" / "nested-hermes.jsonl"
     transcript.parent.mkdir(parents=True)
