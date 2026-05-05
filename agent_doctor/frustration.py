@@ -24,9 +24,13 @@ class FrustrationSignal:
 
 PROFANITY_OR_INSULT = re.compile(
     r"\b("
-    r"fuck|fucking|wtf|bullshit|shit|idiot|moron|stupid|dumb|useless|"
-    r"worthless|garbage|trash|clown|pathetic"
+    r"fuck|fucking|wtf|bullshit|shit|idiot|moron|stupid|useless|"
+    r"worthless|clown|pathetic"
     r")\b"
+    r"|\bdumb\s+(?:agent|answer|response|idea|thing|mistake)\b"
+    r"|\b(?:this|that|your|the)\s+(?:agent|answer|response|result|output)\s+"
+    r"(?:is\s+)?(?:garbage|trash)\b"
+    r"|\b(?:garbage|trash)\s+(?:agent|answer|response|result|output)\b"
     r"|傻逼|傻[屌吊]|蠢货|蠢貨|废物|廢物|垃圾|滚|滾|脑子有病|腦子有病",
     re.IGNORECASE,
 )
@@ -34,19 +38,20 @@ PROFANITY_OR_INSULT = re.compile(
 DIRECT_QUALITY_COMPLAINT = re.compile(
     r"\b("
     r"not smart|less smart|not intelligent|not useful|no value|"
-    r"not thinking|haven'?t thought|didn'?t think|do you understand|"
+    r"not thinking|haven'?t thought|didn'?t think|"
     r"what are you doing|what the hell|same mistake|wrong again"
     r")\b"
     r"|不够聪明|不夠聰明|不聪明|不聰明|没用|沒有用|没价值|沒有价值|"
     r"有没有想清楚|有沒有想清楚|你到底|为什么没有用|為什麼沒有用|"
-    r"你在干嘛|你在幹嘛|你是不是没想|你是不是沒想|不要搞偏|随风倒|隨風倒",
+    r"你在干嘛|你在幹嘛|你是不是没想|你是不是沒想|不要搞偏|随风倒|隨風倒"
+    r"|你错了|你錯了|你说错了|你說錯了",
     re.IGNORECASE,
 )
 
 TRUST_BREAK = re.compile(
     r"\b("
     r"can'?t trust you|cannot trust you|don'?t trust you|lost trust|"
-    r"i give up|this keeps happening|you keep doing this|same problem"
+    r"i give up|this keeps happening|you keep doing this"
     r")\b"
     r"|不能相信你|不信任你|信任崩|又来了|又來了|一直这样|一直這樣|"
     r"每次都这样|每次都這樣|你又错了|你又錯了|你又搞错|你又搞錯",
@@ -59,6 +64,11 @@ REPEATED_CORRECTION = re.compile(
     r"you did it again|missed it again"
     r")\b"
     r"|我已经说过|我已經說過|不是这个|不是這個|不是我要的|又不是",
+    re.IGNORECASE,
+)
+
+AMBIGUOUS_SUPPORTING_SIGNAL = re.compile(
+    r"\b(do you understand|same problem)\b",
     re.IGNORECASE,
 )
 
@@ -80,6 +90,9 @@ def classify_user_frustration(text: str) -> FrustrationSignal:
         score += 3
     if REPEATED_CORRECTION.search(text):
         labels.append("repeated_correction")
+        score += 1
+    if AMBIGUOUS_SUPPORTING_SIGNAL.search(text):
+        labels.append("ambiguous_supporting_signal")
         score += 1
     if _has_urgency_shape(text):
         labels.append("high_urgency_shape")
@@ -108,8 +121,19 @@ def _has_urgency_shape(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
         return False
+    if _looks_like_technical_token(stripped):
+        return False
     if len(re.findall(r"[!?！？]", stripped)) >= 2:
         return True
     letters = re.findall(r"[A-Z]", stripped)
     alpha = re.findall(r"[A-Za-z]", stripped)
     return len(alpha) >= 8 and len(letters) / max(1, len(alpha)) >= 0.75
+
+
+def _looks_like_technical_token(text: str) -> bool:
+    token = text.strip("!?！？`'\"")
+    if not token or re.search(r"\s", token):
+        return False
+    if "_" in token or "/" in token:
+        return True
+    return bool(re.search(r"\.[A-Za-z0-9]{1,8}$", token))
