@@ -8,6 +8,7 @@ from typing import Literal
 
 from .autopilot import Platform
 from .bootstrap import BootstrapResult, bootstrap, detect_hosts
+from .delivery import default_openclaw_notify_command
 from .ingest import host_home
 from .schema import Severity
 from .service import ServiceResult, install_sidecar_service
@@ -121,7 +122,7 @@ def setup_autopilot(
             interval=interval,
             cooldown_seconds=cooldown_seconds,
             min_severity=min_severity,
-            notify_command=notify_command,
+            notify_command=_notify_command_for_platform(platform, notify_command),
             inbox_dir=inbox_dir,
             start=start,
             baseline_existing=baseline_existing,
@@ -206,3 +207,11 @@ def _host_root(home: Path, platform: SetupPlatform) -> Path:
 
 def _service_platform(platform: SetupPlatform) -> Platform:
     return platform
+
+
+def _notify_command_for_platform(platform: SetupPlatform, explicit: str | None) -> str | None:
+    if explicit is not None:
+        return explicit
+    if platform == "openclaw":
+        return default_openclaw_notify_command()
+    return None

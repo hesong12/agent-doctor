@@ -31,6 +31,9 @@ The classifier uses weighted local signals:
 - profanity or direct insults: high weight
 - trust-break language: high weight
 - direct quality complaints: high weight
+- direct dumb-feedback phrases such as "Why are you so dumb?",
+  "Are you stupid?", "你怎么这么笨的？", "好笨", and "笨死了": high
+  weight, with guards for technical terms such as "笨重"
 - repeated corrections: low supporting weight
 - urgency shape: low weight
 

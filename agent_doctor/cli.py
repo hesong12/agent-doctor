@@ -245,6 +245,27 @@ def build_parser() -> argparse.ArgumentParser:
     service_status.add_argument("--name")
     service_status.set_defaults(func=_cmd_service_status)
 
+    notify = subparsers.add_parser(
+        "notify",
+        help="Host-native delivery adapters for autopilot events.",
+    )
+    notify_subs = notify.add_subparsers(dest="notify_command_name", required=True)
+    openclaw_event = notify_subs.add_parser(
+        "openclaw-system-event",
+        help="Inject an autopilot intervention into OpenClaw via `openclaw system event`.",
+    )
+    openclaw_event.add_argument("--openclaw-bin", default="openclaw")
+    openclaw_event.add_argument("--mode", choices=["now", "next-heartbeat"], default="now")
+    openclaw_event.add_argument("--timeout-ms", type=int, default=30000)
+    openclaw_event.add_argument("--include-card-chars", type=int, default=6000)
+    openclaw_event.add_argument(
+        "--all-actions",
+        action="store_true",
+        help="Deliver notify events too. By default only action=intervene wakes OpenClaw.",
+    )
+    openclaw_event.add_argument("--dry-run", action="store_true")
+    openclaw_event.set_defaults(func=_cmd_notify_openclaw_system_event)
+
     install = subparsers.add_parser("install-skill", help="Generate a safe host-agent SOP file.")
     install.add_argument(
         "--target",
@@ -528,6 +549,37 @@ def _cmd_service_status(args: argparse.Namespace) -> int:
 
     path = expected_service_path(platform=args.platform, name=args.name)
     print(json.dumps({"platform": args.platform, "service_file": str(path), "exists": path.exists()}, indent=2))
+    return 0
+
+
+def _cmd_notify_openclaw_system_event(args: argparse.Namespace) -> int:
+    from .delivery import notify_openclaw_system_event
+
+    try:
+        result = notify_openclaw_system_event(
+            openclaw_bin=args.openclaw_bin,
+            mode=args.mode,
+            timeout_ms=args.timeout_ms,
+            include_card_chars=args.include_card_chars,
+            all_actions=args.all_actions,
+            dry_run=args.dry_run,
+        )
+    except RuntimeError as exc:
+        print(f"agent-doctor: error: {exc}", file=sys.stderr)
+        return 1
+    print(
+        json.dumps(
+            {
+                "delivered": result.delivered,
+                "skipped": result.skipped,
+                "command": result.command,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

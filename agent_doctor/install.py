@@ -149,6 +149,7 @@ to remember to ask the agent for diagnosis.
 - Hermes: `agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes`
 - Long-running mode: add `--watch`
 - Zero-touch setup: `agent-doctor setup autopilot`
+- OpenClaw live delivery: `agent-doctor notify openclaw-system-event`
 - Service install: `agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw --inbox-dir ~/.agent-doctor/inbox/openclaw --start`
 
 The sidecar only reads existing transcript/log JSONL through Agent Doctor's
@@ -159,6 +160,10 @@ When the user asks you to enable proactive diagnosis, prefer
 `agent-doctor setup autopilot`. It detects OpenClaw/Hermes, installs or
 refreshes Agent Doctor skills, baselines existing transcripts, writes the
 right launchd/systemd user services, and starts them with changed-file scanning.
+For OpenClaw, setup also installs a notify command that sends high-severity
+intervention cards through `openclaw system event --mode now`, so the active
+agent receives the recovery instruction without modifying OpenClaw runtime
+configuration.
 Do not ask the user to manually edit host configuration.
 
 ## Detection taxonomy (what this skill catches)
@@ -171,7 +176,7 @@ Agent Doctor detects seven failure modes deterministically from transcript signa
 - `memory_failure` — "you forgot", imperative "remember", "last time", "I told you".
 - `tool_failure_or_hidden_error` — tool emits error / timeout / 401 / 500 / traceback, assistant claims success.
 - `communication_mismatch` — "too verbose", "stop explaining".
-- `user_frustration_signal` — user anger, direct insult/profanity, trust-break language, or direct quality complaints.
+- `user_frustration_signal` — user anger, direct insult/profanity, trust-break language, direct dumb/stupid feedback, or direct quality complaints.
 
 Autopilot emits high-severity user frustration with action `intervene`, not just
 `notify`. Treat an intervention as a live recovery moment: pause the normal

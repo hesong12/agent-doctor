@@ -38,6 +38,13 @@ def test_setup_autopilot_detects_hosts_bootstraps_and_installs_services(
         assert "--watch" in args
         assert "--changed-only" in args
         assert "--inbox-dir" in args
+        if target.platform == "openclaw":
+            assert "--notify-command" in args
+            notify_command = args[args.index("--notify-command") + 1]
+            assert notify_command.startswith(sys.executable)
+            assert "notify openclaw-system-event" in notify_command
+        else:
+            assert "--notify-command" not in args
         assert target.service.started is True
 
 
@@ -61,6 +68,27 @@ def test_setup_autopilot_dry_run_writes_nothing(tmp_path: Path, monkeypatch) -> 
     assert "[dry-run] openclaw" in text
     assert "would install service" in text
     assert not (tmp_path / "Library" / "LaunchAgents").exists()
+
+
+def test_setup_autopilot_preserves_explicit_notify_command(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("agent_doctor.setup.host_home", lambda: tmp_path)
+    monkeypatch.setattr("agent_doctor.service.service_home", lambda: tmp_path)
+    monkeypatch.setattr("agent_doctor.service._service_kind", lambda: "launchd")
+    monkeypatch.setattr(
+        "agent_doctor.service.subprocess.run",
+        lambda command, text, capture_output: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    (tmp_path / ".openclaw" / "agents" / "main" / "sessions").mkdir(parents=True)
+
+    result = setup_autopilot(
+        platforms=["openclaw"],
+        notify_command="/tmp/custom-notify",
+    )
+
+    target = result.installed()[0]
+    assert target.service is not None
+    args = plistlib.loads(target.service.service_file.read_bytes())["ProgramArguments"]
+    assert args[args.index("--notify-command") + 1] == "/tmp/custom-notify"
 
 
 def test_cli_setup_autopilot_dry_run(tmp_path: Path, monkeypatch) -> None:

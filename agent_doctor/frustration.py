@@ -27,10 +27,13 @@ PROFANITY_OR_INSULT = re.compile(
     r"fuck|fucking|wtf|bullshit|shit|idiot|moron|clown"
     r")\b"
     r"|\b(?:this|that|your|the)\s+(?:agent|answer|response|result|output|thing)\s+"
-    r"(?:is\s+)?(?:stupid|useless|worthless|pathetic)\b"
+    r"(?:is\s+)?(?:dumb|stupid|useless|worthless|pathetic)\b"
     r"|\bthis\s+is\s+(?:stupid|useless|worthless|pathetic)\b"
     r"|\b(?:stupid|useless|worthless|pathetic)\s+(?:agent|answer|response|result|output)\b"
     r"|\bdumb\s+(?:agent|answer|response|idea|thing)\b"
+    r"|\b(?:you(?:'re| are)|youre|are you)\s+(?:so\s+|this\s+)?(?:dumb|stupid|useless|worthless|pathetic)\b"
+    r"|\bwhy\s+are\s+you\s+(?:so\s+|this\s+)?(?:dumb|stupid)\b"
+    r"|\bhow\s+(?:are|can)\s+you\s+(?:be\s+)?(?:so\s+|this\s+)?(?:dumb|stupid)\b"
     r"|\b(?:this|that|your|the)\s+(?:agent|answer|response|result|output)\s+"
     r"(?:is\s+)?(?:garbage|trash)\b"
     r"|\b(?:garbage|trash)\s+(?:agent|answer|response|result|output)\b"
@@ -47,7 +50,9 @@ DIRECT_QUALITY_COMPLAINT = re.compile(
     r")\b"
     r"|不够聪明|不夠聰明|不聪明|不聰明|没用|沒有用|没价值|沒有价值|"
     r"有没有想清楚|有沒有想清楚|你到底|为什么没有用|為什麼沒有用|"
-    r"你在干嘛|你在幹嘛|你是不是没想|你是不是沒想|不要搞偏|随风倒|隨風倒",
+    r"你在干嘛|你在幹嘛|你是不是没想|你是不是沒想|不要搞偏|随风倒|隨風倒"
+    r"|你(?:怎么|怎麼)?(?:这么|這麼|那么|那麼|很|好)?笨(?!重)"
+    r"|(?:这么|這麼|那么|那麼|太|真|很|好)笨(?!重)|笨蛋|笨死",
     re.IGNORECASE,
 )
 

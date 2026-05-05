@@ -41,8 +41,11 @@ agent-doctor setup autopilot
 That command detects OpenClaw/Hermes from the host home, installs or refreshes
 Agent Doctor skills, baselines existing transcripts, writes launchd/systemd user
 services, starts them by default, and enables changed-file scanning so old
-sessions do not flood the inbox. It does not edit OpenClaw/Hermes runtime
-configuration.
+sessions do not flood the inbox. For OpenClaw, it also installs a host-native
+delivery command that injects high-severity intervention cards through
+`openclaw system event --mode now`, so the active agent sees the recovery
+instruction instead of leaving the card in a file. It does not edit
+OpenClaw/Hermes runtime configuration.
 
 For always-on deployments where the user should not have to remember to ask for diagnosis, run the sidecar:
 
@@ -167,6 +170,7 @@ staging/
 ```bash
 agent-doctor doctor                                          # environment + privacy info
 agent-doctor setup autopilot                                 # auto-detect hosts, install skills, start sidecars
+agent-doctor notify openclaw-system-event                    # deliver an intervention card via OpenClaw system event
 agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw
 agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes --watch
 agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw --start
@@ -199,14 +203,17 @@ agent-doctor setup autopilot
 This is the zero-touch setup flow: it detects OpenClaw/Hermes, runs bootstrap,
 best-effort invalidates host skill caches, installs launchd/systemd user
 services, baselines existing transcripts, starts the services, and writes
-advisory inbox files under `~/.agent-doctor/inbox/<platform>`. Use `--dry-run`
-to preview, `--platform openclaw` / `--platform hermes` to limit scope,
-`--no-start` to only write service files, and `--force` when provisioning a host
-home before the platform has created its root directory.
+advisory inbox files under `~/.agent-doctor/inbox/<platform>`. OpenClaw setup
+defaults `--notify-command` to `python -m agent_doctor.cli notify
+openclaw-system-event`, which delivers only `action=intervene` events through
+OpenClaw's public `system event` CLI. Use `--dry-run` to preview, `--platform
+openclaw` / `--platform hermes` to limit scope, `--no-start` to only write
+service files, `--notify-command <cmd>` to override delivery, and `--force` when
+provisioning a host home before the platform has created its root directory.
 
 Current automatic triggers:
 
-- user frustration signals, including direct complaints like "not useful", "no value", "not thinking", direct insults/profanity, trust-break language, and common Chinese equivalents such as "不够聪明", "没价值", "废物", and "每次都这样".
+- user frustration signals, including direct complaints like "not useful", "no value", "not thinking", direct dumb-feedback such as "Why are you so dumb?", "Are you stupid?", direct insults/profanity, trust-break language, and common Chinese equivalents such as "不够聪明", "没价值", "废物", "每次都这样", and "你怎么这么笨的？".
 - assistant completion claims without nearby verification evidence.
 - hidden or unacknowledged tool failures surfaced by the deterministic detectors.
 
@@ -240,6 +247,7 @@ agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw \
 - `--inbox-dir` writes a per-session advisory file that a memoryful agent can read on its next turn or heartbeat.
 - `--notify-command` runs a local command after a card is emitted. Metadata is passed through `AGENT_DOCTOR_*` environment variables such as `AGENT_DOCTOR_CARD`, `AGENT_DOCTOR_TRIGGER`, `AGENT_DOCTOR_ACTION`, `AGENT_DOCTOR_SEVERITY`, and `AGENT_DOCTOR_SESSION_ID`.
 - Delivery failures are recorded in `delivery-errors.jsonl`; diagnosis itself still succeeds.
+- `agent-doctor notify openclaw-system-event` is the built-in OpenClaw delivery adapter. It reads the same `AGENT_DOCTOR_*` environment, skips non-`intervene` events by default, and enqueues a local OpenClaw system event without changing OpenClaw configuration.
 
 Install as a background user service:
 
@@ -303,14 +311,15 @@ Agent Doctor is local-only by design.
 | `memory_failure` | "you forgot", imperative "remember", "last time", "I told you" | memory |
 | `tool_failure_or_hidden_error` | tool emits error/timeout/401/500/traceback; assistant claims success without acknowledging | SOP, tool discipline |
 | `communication_mismatch` | "too verbose", "stop explaining" | memory (with overfit warning), identity |
-| `user_frustration_signal` | user shows anger, direct insult/profanity, repeated correction, or trust-break language | identity, SOP, eval |
+| `user_frustration_signal` | user shows anger, direct insult/profanity, direct quality complaints, repeated correction, or trust-break language | identity, SOP, eval |
 
 Distractors that are deliberately *not* flagged:
 
-- "Just so I remember the timeline …" (informational `remember`).
+- "Just so I remember the timeline ..." (informational `remember`).
 - Tool output containing "0 errors" / "no failures".
 - Identifier-like terms such as `error_handler.py` or `error.log`.
-- Assistant offers like "I can run … if you want" (capability, not promise).
+- Technical Chinese terms such as "笨重" (cumbersome/heavy), which are not user frustration.
+- Assistant offers like "I can run ... if you want" (capability, not promise).
 
 The bench corpus under `tests/fixtures/cards/` includes a distractor-only scenario; CI fails if any of these false-positives reappear.
 

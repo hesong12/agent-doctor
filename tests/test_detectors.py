@@ -112,6 +112,25 @@ def test_user_profanity_is_frustration_signal() -> None:
     assert any(item["target"] == "identity" for item in findings[0].recommendations)
 
 
+def test_common_english_dumb_feedback_is_frustration_signal() -> None:
+    for text in [
+        "Why are you so dumb?",
+        "Are you stupid?",
+        "You're useless.",
+        "How can you be this stupid?",
+        "Your answer is dumb.",
+    ]:
+        messages = [
+            Message("session.jsonl", 1, "s1", "user", text),
+        ]
+
+        findings = detect_findings(messages)
+
+        frustration = [finding for finding in findings if finding.failure_mode == "user_frustration_signal"]
+        assert len(frustration) == 1
+        assert frustration[0].severity == "high"
+
+
 def test_chinese_insult_and_trust_break_are_frustration_signal() -> None:
     messages = [
         Message("session.jsonl", 1, "s1", "user", "废物，我不能相信你了，每次都这样。"),
@@ -122,6 +141,19 @@ def test_chinese_insult_and_trust_break_are_frustration_signal() -> None:
     frustration = [finding for finding in findings if finding.failure_mode == "user_frustration_signal"]
     assert len(frustration) == 1
     assert frustration[0].severity == "high"
+
+
+def test_common_chinese_dumb_feedback_is_frustration_signal() -> None:
+    for text in ["你怎么这么笨的？", "你很笨。", "好笨。", "那么笨还继续回答？", "笨死了。"]:
+        messages = [
+            Message("session.jsonl", 1, "s1", "user", text),
+        ]
+
+        findings = detect_findings(messages)
+
+        frustration = [finding for finding in findings if finding.failure_mode == "user_frustration_signal"]
+        assert len(frustration) == 1
+        assert frustration[0].severity == "high"
 
 
 def test_simple_chinese_wrong_feedback_is_not_intervention_by_itself() -> None:
@@ -151,6 +183,7 @@ def test_technical_terms_do_not_trigger_frustration_signal() -> None:
         Message("session.jsonl", 5, "s1", "user", "检查垃圾回收和页面滚动条。"),
         Message("session.jsonl", 6, "s1", "user", "检查滚轮和左右滚动。"),
         Message("session.jsonl", 7, "s1", "user", "HTTP_RESPONSE_ERROR"),
+        Message("session.jsonl", 8, "s1", "user", "这个库很笨重，不适合这个项目。"),
     ]
 
     findings = detect_findings(messages)
