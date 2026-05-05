@@ -27,6 +27,64 @@ def test_ingest_normalizes_openclaw_payload_messages() -> None:
     assert messages[1].content == "Command failed with 500 timeout"
 
 
+def test_ingest_unwraps_openclaw_typed_content_parts(tmp_path: Path) -> None:
+    """OpenClaw `content: [typed parts]` arrays unwrap to readable text.
+
+    Real OpenClaw transcripts wrap user/assistant content in arrays of typed
+    parts (`text`, `thinking`, `tool_use`, `toolResult`). The detector reads
+    the `Message.content` string, so the typed-part unwrapping has to produce
+    something a regex actually matches — not a JSON-stringified blob.
+    """
+
+    sample = tmp_path / "session.jsonl"
+    sample.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "message",
+                        "id": "abc",
+                        "message": {
+                            "role": "user",
+                            "content": [{"type": "text", "text": "I already told you to skip the migration."}],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "message",
+                        "id": "def",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "thinking", "thinking": "Should I run the test or just describe?"},
+                                {
+                                    "type": "tool_use",
+                                    "name": "exec",
+                                    "input": {"command": "pytest -q"},
+                                    "thoughtSignature": "QQQQQQQQ" * 200,
+                                },
+                            ],
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    messages = ingest_file(sample)
+
+    assert [message.role for message in messages] == ["user", "assistant"]
+    assert messages[0].content == "I already told you to skip the migration."
+    assert "[thinking]" in messages[1].content
+    assert "[tool_call: exec(" in messages[1].content
+    assert "QQQQQQQQ" not in messages[1].content, (
+        "thoughtSignature noise must be stripped from the rendered content"
+    )
+
+
 def test_ingest_normalizes_hermes_nested_message_data_entry(tmp_path: Path) -> None:
     transcript = tmp_path / ".hermes" / "sessions" / "nested-hermes.jsonl"
     transcript.parent.mkdir(parents=True)

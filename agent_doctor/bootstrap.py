@@ -2,9 +2,10 @@
 
 This is the entry point for the "install agent-doctor" experience. A user
 running ``pip install git+https://…/agent-doctor.git`` followed by
-``agent-doctor bootstrap`` should end up with skill files in every host they
-already use, plus an MCP config snippet they can paste into MCP-aware
-clients (Claude Desktop, Cursor, Cline, Continue, …).
+``agent-doctor bootstrap`` should end up with skill files in every memoryful
+agent framework they already have on the machine (Hermes, OpenClaw, Claude
+Code), plus an MCP config snippet they can paste into any MCP-aware host
+that supports stdio servers.
 
 We never modify a host agent's runtime configuration directly; the skill
 files are inert Markdown SOPs. The MCP snippet is printed for the user to

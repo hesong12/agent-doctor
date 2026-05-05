@@ -293,6 +293,11 @@ def _stringify_content(value: Any) -> str:
     return text
 
 
+_NOISY_KEYS_DROPPED_FROM_JSON = frozenset(
+    {"thoughtSignature", "thought_signature", "signature", "logprobs", "raw"}
+)
+
+
 def _stringify_raw(value: Any) -> str:
     if value is None:
         return ""
@@ -302,8 +307,41 @@ def _stringify_raw(value: Any) -> str:
         parts = [_stringify_raw(item) for item in value]
         return "\n".join(part for part in parts if part)
     if isinstance(value, dict):
+        # OpenClaw / Anthropic / OpenAI-style typed content parts. We unwrap to
+        # the most informative inner field so report quotes read like real
+        # transcript excerpts instead of stringified JSON.
+        part_type = str(value.get("type", "")).strip().casefold()
+        if part_type in {"text", "input_text", "output_text"} and isinstance(value.get("text"), str):
+            return value["text"].strip()
+        if part_type == "thinking" and isinstance(value.get("thinking"), str):
+            return f"[thinking] {value['thinking'].strip()}"
+        if part_type in {"toolcall", "tool_use", "tool_call", "function_call"}:
+            name = value.get("name") or value.get("tool") or "tool"
+            args = value.get("arguments") or value.get("input") or {}
+            return f"[tool_call: {name}({_compact_args(args)})]"
+        if part_type in {"toolresult", "tool_result", "function_result"}:
+            inner = value.get("content") or value.get("output") or value.get("result") or value
+            return _stringify_raw(inner)
         for key in CONTENT_KEYS + CONTAINER_KEYS:
             if key in value and value[key] is not None:
                 return _stringify_raw(value[key])
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        cleaned = {k: v for k, v in value.items() if k not in _NOISY_KEYS_DROPPED_FROM_JSON}
+        return json.dumps(cleaned, ensure_ascii=False, sort_keys=True)
     return str(value).strip()
+
+
+def _compact_args(args: Any) -> str:
+    if isinstance(args, str):
+        return args.strip()[:200]
+    if isinstance(args, dict):
+        parts = []
+        for key, val in list(args.items())[:6]:
+            if key in _NOISY_KEYS_DROPPED_FROM_JSON:
+                continue
+            text = val if isinstance(val, str) else json.dumps(val, ensure_ascii=False)
+            text = text.strip()
+            if len(text) > 80:
+                text = text[:77] + "..."
+            parts.append(f"{key}={text}")
+        return ", ".join(parts)
+    return str(args)[:200]

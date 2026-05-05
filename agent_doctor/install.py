@@ -209,7 +209,7 @@ See `docs/evaluation.md` in the agent-doctor repo for the full LLM-first framewo
 
 If the user runs an MCP-aware host, agent-doctor ships a stdio MCP server: `agent-doctor mcp serve` (requires `pip install agent-doctor[mcp]`). It exposes `scan`, `list_findings`, `read_finding`, `bench`, `stage_patches`, and `generate_corpus`. The trust boundary matches the CLI: write tools only write under caller-supplied `staging_dir` / `out_dir`, and no tool calls a remote LLM.
 
-Configuration snippet (paste into Claude Desktop / Cursor / Cline / Continue):
+Configuration snippet (paste into any memoryful MCP-aware agent framework that supports stdio MCP servers):
 
 ```json
 {
