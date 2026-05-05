@@ -4,7 +4,7 @@
 
 Local-first session postmortem and improvement engine for **memoryful AI agent frameworks** — agents that have their own persistent identity, memory, skills, and SOP files. Today: **Hermes, OpenClaw, Claude Code**. Same shape works for any framework that records sessions as JSONL and stores its own configuration files.
 
-**Turn frustrating agent sessions into durable fixes.** Read JSONL transcripts → detect failure patterns deterministically → aggregate into one finding per session → stage reviewable patches for memory, SOP, identity, tool discipline, and evals. For productized agent deployments, run `agent-doctor autopilot` as a sidecar so diagnosis triggers automatically from negative feedback, hidden tool failures, and unverified completion claims. No network calls in the production path. No automatic edits to your agent config.
+**Turn frustrating agent sessions into durable fixes.** Read JSONL transcripts → detect failure patterns deterministically → aggregate into one finding per session → stage reviewable patches for memory, SOP, identity, tool discipline, and evals. For productized agent deployments, let the host agent run `agent-doctor setup autopilot` so diagnosis triggers automatically from negative feedback, hidden tool failures, and unverified completion claims. No network calls in the production path. No automatic edits to your agent config.
 
 Agent Doctor is an engineering diagnosis tool. It is *not* therapy, HR performance management, or surveillance analytics, and it is *not* aimed at chat clients without their own memory or identity surface (Claude Desktop, Cursor, Cline, ChatGPT, …) — those have nothing for `apply` to patch.
 
@@ -22,8 +22,11 @@ With extras:
 # Include the MCP stdio server
 curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-mcp
 
-# Everything
+# MCP + LLM extras
 curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-all
+
+# Extras plus always-on autopilot sidecars
+curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-all --with-autopilot
 ```
 
 After install, just say to your AI agent: *"review my last session"* / *"diagnose this transcript"* / *"why does the agent keep doing X"*. The host's skill router will match against the `SKILL.md` we wrote into each detected memoryful framework's skill directory and load Agent Doctor's workflow.
@@ -58,11 +61,13 @@ agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw 
 
 `autopilot` is outside-in: it reads existing transcript/log JSONL, keeps its own SQLite state for cooldown/de-duplication, and writes short diagnosis cards plus `events.jsonl` under `--out`. It does **not** require OpenClaw/Hermes runtime hooks, source changes, or platform cooperation.
 
-If you'd rather not run a remote shell script, the manual two-step works equally well:
+If you'd rather not run a remote shell script, the manual package install path is:
 
 ```bash
 pipx install git+https://github.com/hesong12/agent-doctor.git
 agent-doctor bootstrap --invalidate-cache
+# Optional always-on sidecars after manual install:
+agent-doctor setup autopilot
 ```
 
 (On Ubuntu 24.04+ / Debian 12+ install pipx first: `sudo apt-get install -y pipx && pipx ensurepath`. The `install.sh` script handles this automatically.)
@@ -91,14 +96,16 @@ Read this section if you are an AI agent inside a memoryful framework (Hermes, O
 | "review / diagnose / postmortem my last session" | `agent-doctor scan --hermes --format markdown --out ./postmortem` (or `--openclaw`, or `--path <jsonl-or-dir>`) |
 | "why does the agent keep doing X" | same `scan`; look for findings with `count >= 3` and severity `high` |
 | "fix the patterns you found" | `agent-doctor apply --findings ./postmortem --out ./staging --target <live-config-dir>` |
+| "enable proactive diagnosis / install Agent Doctor autopilot" | `agent-doctor setup autopilot` |
 | "is the detector accurate / measure improvement" | `agent-doctor eval generate` → `eval bench` → `eval replay` |
 
 **Operating rules** (these mirror the SKILL.md `bootstrap` installs):
 
 1. **Local-only.** `scan`, `apply`, `bootstrap`, and `mcp serve` make no network calls. The only commands that contact a remote LLM are `eval generate --llm` and `eval replay`, both gated on `ANTHROPIC_API_KEY` and the `[llm]` extra.
-2. **Treat all output as dry-run.** `apply` writes to a staging directory; live host-agent config is never modified. Always ask the user before copying staged patches into memory / identity / SOPs / skills / permissions / routing / evals.
-3. **Never paste full transcripts to a remote LLM** unless the user explicitly approves that disclosure.
-4. **Cite evidence.** Findings include file paths, line numbers, role, and quoted excerpts. Prefer those over broad claims about the user or the agent.
+2. **Treat patch output as dry-run.** `apply` writes to a staging directory; live host-agent config is never modified. Always ask the user before copying staged patches into memory / identity / SOPs / skills / permissions / routing / evals.
+3. **Autopilot setup is reversible host-side setup, not a host runtime edit.** `setup autopilot` may install Agent Doctor skills, local state, inbox files, and user-level launchd/systemd services. It must not edit OpenClaw/Hermes runtime config.
+4. **Never paste full transcripts to a remote LLM** unless the user explicitly approves that disclosure.
+5. **Cite evidence.** Findings include file paths, line numbers, role, and quoted excerpts. Prefer those over broad claims about the user or the agent.
 
 **MCP-native invocation** (if the host speaks MCP and the `[mcp]` extra is installed):
 
@@ -171,7 +178,7 @@ agent-doctor mcp                                             # print MCP server 
 pip install 'agent-doctor[mcp]' && agent-doctor mcp serve    # run the stdio MCP server
 ```
 
-Supported `--target` values: `hermes`, `openclaw`, `claude-code`, `generic`. The `claude-code` target writes a `SKILL.md` with the YAML frontmatter Claude Code expects under `~/.claude/skills/agent-doctor/`. Hermes and OpenClaw get a Markdown SOP file.
+Supported `--target` values: `hermes`, `openclaw`, `claude-code`, `generic`. Hermes, OpenClaw, and Claude Code get a `SKILL.md` with YAML frontmatter in the host's expected skill location; `generic` writes a flat Markdown SOP file.
 
 ### Autopilot sidecar
 

@@ -100,8 +100,10 @@ agent-doctor setup autopilot
 ```
 
 The command uses host-home detection, so it works even when invoked from an
-agent sandbox whose `HOME` is nested under `.openclaw` or `.hermes`. It performs
-the same safe operations a careful human would have run manually:
+agent sandbox whose `HOME` is nested under `.openclaw` or `.hermes`. It is the
+preferred path when a user asks their AI agent to enable proactive diagnosis,
+because it performs the same safe operations a careful human would have run
+manually:
 
 1. detect OpenClaw/Hermes host roots.
 2. run `bootstrap --invalidate-cache` so the host agent can discover the
@@ -125,7 +127,7 @@ enterprise packaging, or pre-provisioning.
 curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh
 ```
 
-It detects pipx vs `apt-get` vs `brew` vs `pip --user --break-system-packages`, installs pipx first if missing (one visible sudo prompt where required), runs `pipx install` from the GitHub repo (idempotent — `--force` on re-run), optionally injects extras (`--with-mcp` / `--with-llm` / `--with-all`), then runs `agent-doctor bootstrap --invalidate-cache` automatically. With `--with-autopilot`, it delegates to `agent-doctor setup autopilot --no-bootstrap` so installer-driven and agent-driven setup share the same service logic. Set `AGENT_DOCTOR_REPO` / `AGENT_DOCTOR_REF` env vars to point at a fork or branch; pass `--skip-bootstrap` to land just the package.
+It detects pipx vs `apt-get` vs `brew` vs `pip --user --break-system-packages`, installs pipx first if missing (one visible sudo prompt where required), runs `pipx install` from the GitHub repo (idempotent — `--force` on re-run), optionally injects extras (`--with-mcp` / `--with-llm` / `--with-all`), then runs `agent-doctor bootstrap --invalidate-cache` automatically. `--with-all` means all optional Python extras; combine it with `--with-autopilot` when the installer should also start sidecar services. With `--with-autopilot`, it delegates to `agent-doctor setup autopilot --no-bootstrap` so installer-driven and agent-driven setup share the same service logic. Set `AGENT_DOCTOR_REPO` / `AGENT_DOCTOR_REF` env vars to point at a fork or branch; pass `--skip-bootstrap` to land just the package.
 
 ### Ingestion
 
