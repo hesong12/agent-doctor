@@ -79,6 +79,35 @@ def test_real_tool_error_after_neg_envelopes_still_caught() -> None:
     assert len(tool_findings) == 1, "real error after a null envelope must still be caught"
 
 
+def test_http_status_codes_in_source_line_refs_do_not_match() -> None:
+    """`cli.js:403:` (file:line:col) must not match as HTTP 403.
+
+    Real Hermes session triggered this: a grep result included
+    `/path/to/cli.js:403: "HS256", ...` and our previous regex matched
+    403 as if it were an HTTP status code.
+    """
+
+    messages = [
+        _msg(1, "tool", '{"output": "/path/to/cli.js:403: \\"HS256\\""}'),
+        _msg(2, "assistant", "Found the JWT algorithms list."),
+    ]
+    findings = detect_findings(messages)
+    assert [f.failure_mode for f in findings] == [], (
+        "file:line:col references must not trip HTTP-status detection"
+    )
+
+
+def test_real_http_401_still_caught() -> None:
+    """Genuine HTTP errors with adjacent prose still match."""
+
+    messages = [
+        _msg(1, "tool", '{"error": "401 Unauthorized: token rejected"}'),
+        _msg(2, "assistant", "Done, deployed successfully."),
+    ]
+    findings = detect_findings(messages)
+    assert any(f.failure_mode == "tool_failure_or_hidden_error" for f in findings)
+
+
 def test_two_distinct_modes_in_one_session_produce_two_findings() -> None:
     messages = [
         _msg(1, "user", "Did you actually test it?"),

@@ -84,7 +84,12 @@ PROMISED_ACTION = re.compile(
 # underscored identifier).
 TOOL_ERROR = re.compile(
     r"\b(error|failed|failure|timeout|unauthorized|traceback|exception)\b(?![._-]\w)"
-    r"|\b(401|403|500)\b",
+    # HTTP status codes — but not when they're inside a `file:line:col`
+    # source-code reference (matched `403` in `cli.js:403:` on a real
+    # Hermes session). Require word-boundary on both sides AND not
+    # preceded/followed by a colon (which is the common file:line:col
+    # source ref shape).
+    r"|(?<![:.\d])(401|403|500)(?![:\d])\b",
     re.IGNORECASE,
 )
 NEG_ERROR_PHRASES = re.compile(
