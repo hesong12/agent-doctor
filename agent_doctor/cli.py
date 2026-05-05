@@ -20,10 +20,12 @@ import argparse
 import json
 import platform
 import sys
+import time
 from pathlib import Path
 
 from . import __version__
 from .apply import load_findings, render_apply_summary, stage_patches
+from .autopilot import run_autopilot_once
 from .bootstrap import bootstrap, render_bootstrap_summary
 from .detectors import detect_findings
 from .ingest import (
@@ -90,6 +92,92 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser("doctor", help="Print environment and readiness info.")
     doctor.set_defaults(func=_cmd_doctor)
+
+    autopilot = subparsers.add_parser(
+        "autopilot",
+        help="Run the platform-agnostic sidecar trigger engine without host runtime hooks.",
+    )
+    autopilot.add_argument(
+        "--platform",
+        choices=["openclaw", "hermes", "generic"],
+        required=True,
+        help="Host transcript adapter to use. This only selects read-only defaults.",
+    )
+    autopilot.add_argument(
+        "--path",
+        type=Path,
+        help="Override transcript JSONL file/directory. Required for generic.",
+    )
+    autopilot.add_argument("--out", type=Path, required=True, help="Autopilot artifact directory.")
+    autopilot.add_argument(
+        "--state",
+        type=Path,
+        help="SQLite state path. Defaults to <out>/state.sqlite3.",
+    )
+    autopilot.add_argument(
+        "--watch",
+        action="store_true",
+        help="Keep polling instead of running one pass.",
+    )
+    autopilot.add_argument(
+        "--interval",
+        type=float,
+        default=15.0,
+        help="Polling interval in seconds when --watch is set.",
+    )
+    autopilot.add_argument(
+        "--cooldown-seconds",
+        type=int,
+        default=3600,
+        help="Suppress repeated notifications for the same session/trigger.",
+    )
+    autopilot.add_argument(
+        "--min-severity",
+        choices=["low", "medium", "high"],
+        default="medium",
+        help="Minimum trigger severity to emit.",
+    )
+    autopilot.add_argument(
+        "--notify-command",
+        help="Optional local command to run after emitting a card. Event metadata is passed in AGENT_DOCTOR_* env vars.",
+    )
+    autopilot.add_argument(
+        "--inbox-dir",
+        type=Path,
+        help="Optional directory for per-session advisory files that agents can read.",
+    )
+    autopilot.add_argument(
+        "--changed-only",
+        action="store_true",
+        help="Only scan JSONL files whose mtime/size changed since the last run.",
+    )
+    autopilot.set_defaults(func=_cmd_autopilot)
+
+    service = subparsers.add_parser(
+        "service",
+        help="Install or manage the local autopilot sidecar service.",
+    )
+    service_subs = service.add_subparsers(dest="service_command", required=True)
+    service_install = service_subs.add_parser(
+        "install",
+        help="Write a launchd/systemd user service for `agent-doctor autopilot --watch`.",
+    )
+    service_install.add_argument("--platform", choices=["openclaw", "hermes", "generic"], required=True)
+    service_install.add_argument("--path", type=Path, help="Transcript path override; required for generic.")
+    service_install.add_argument("--out", type=Path, required=True, help="Autopilot artifact directory.")
+    service_install.add_argument("--interval", type=float, default=15.0)
+    service_install.add_argument("--cooldown-seconds", type=int, default=3600)
+    service_install.add_argument("--min-severity", choices=["low", "medium", "high"], default="medium")
+    service_install.add_argument("--notify-command")
+    service_install.add_argument("--inbox-dir", type=Path)
+    service_install.add_argument("--name", help="Service name suffix. Defaults to platform.")
+    service_install.add_argument("--start", action="store_true", help="Start/enable the service after writing it.")
+    service_install.set_defaults(func=_cmd_service_install)
+
+    service_status = service_subs.add_parser("status", help="Print expected service file locations.")
+    service_status.add_argument("--platform", choices=["openclaw", "hermes", "generic"], required=True)
+    service_status.add_argument("--name")
+    service_status.set_defaults(func=_cmd_service_status)
 
     install = subparsers.add_parser("install-skill", help="Generate a safe host-agent SOP file.")
     install.add_argument(
@@ -290,6 +378,67 @@ def _cmd_doctor(_: argparse.Namespace) -> int:
         f"  OpenClaw: {DEFAULT_OPENCLAW_PATH} (exists: {_exists(DEFAULT_OPENCLAW_PATH)})",
     ]
     print("\n".join(lines))
+    return 0
+
+
+def _cmd_autopilot(args: argparse.Namespace) -> int:
+    if args.platform == "generic" and args.path is None:
+        raise ValueError("generic autopilot requires --path.")
+
+    first_watch_pass = True
+
+    def run_once(*, changed_only: bool) -> None:
+        result = run_autopilot_once(
+            platform=args.platform,
+            path=args.path,
+            out_dir=args.out,
+            state_path=args.state,
+            cooldown_seconds=args.cooldown_seconds,
+            min_severity=args.min_severity,
+            notify_command=args.notify_command,
+            inbox_dir=args.inbox_dir,
+            changed_only=changed_only,
+        )
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+
+    if not args.watch:
+        run_once(changed_only=args.changed_only)
+        return 0
+
+    if args.interval <= 0:
+        raise ValueError("--interval must be positive.")
+    while True:
+        run_once(changed_only=args.changed_only or not first_watch_pass)
+        first_watch_pass = False
+        time.sleep(args.interval)
+
+
+def _cmd_service_install(args: argparse.Namespace) -> int:
+    if args.platform == "generic" and args.path is None:
+        raise ValueError("generic service install requires --path.")
+    from .service import install_sidecar_service, render_service_result
+
+    result = install_sidecar_service(
+        platform=args.platform,
+        out_dir=args.out,
+        transcript_path=args.path,
+        interval=args.interval,
+        cooldown_seconds=args.cooldown_seconds,
+        min_severity=args.min_severity,
+        notify_command=args.notify_command,
+        inbox_dir=args.inbox_dir,
+        name=args.name,
+        start=args.start,
+    )
+    print(render_service_result(result))
+    return 0
+
+
+def _cmd_service_status(args: argparse.Namespace) -> int:
+    from .service import expected_service_path
+
+    path = expected_service_path(platform=args.platform, name=args.name)
+    print(json.dumps({"platform": args.platform, "service_file": str(path), "exists": path.exists()}, indent=2))
     return 0
 
 

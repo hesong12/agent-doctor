@@ -139,6 +139,21 @@ Use Agent Doctor as a local-first engineering diagnosis tool for agent session p
 - A pattern of failure is suspected across recent sessions.
 - Reviewing a transcript before changing memory, SOP, or identity.
 
+## Autopilot sidecar
+
+Agent Doctor can also run outside the host runtime as a platform-agnostic
+sidecar. This is for productized deployments where the user should not have
+to remember to ask the agent for diagnosis.
+
+- OpenClaw: `agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw`
+- Hermes: `agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes`
+- Long-running mode: add `--watch`
+- Service install: `agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw --inbox-dir ~/.agent-doctor/inbox/openclaw --start`
+
+The sidecar only reads existing transcript/log JSONL through Agent Doctor's
+ingestion layer and writes diagnosis cards/events under `--out`. It does not
+modify OpenClaw, Hermes, or live agent configuration.
+
 ## Detection taxonomy (what this skill catches)
 
 Agent Doctor detects six failure modes deterministically from transcript signals:

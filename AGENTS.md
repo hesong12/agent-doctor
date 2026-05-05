@@ -29,6 +29,8 @@ agent_doctor/
   apply.py           # findings.json → staging dir + DIFF.txt
   install.py         # unified SKILL.md template (YAML frontmatter + body)
   bootstrap.py       # auto-detect hosts + invalidate caches
+  autopilot.py       # outside-in sidecar trigger engine
+  service.py         # launchd/systemd user-service installer for autopilot
   mcp.py             # MCP stdio server + pure-Python tool handlers
   redaction.py       # secret redaction patterns
   cli.py             # argparse subcommands; thin wrappers around modules

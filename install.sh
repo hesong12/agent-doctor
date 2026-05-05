@@ -4,6 +4,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh
 #   curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-mcp
+#   curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-autopilot
 #   curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-all
 #
 # What this does, in order:
@@ -14,6 +15,8 @@
 #   5. Run `agent-doctor bootstrap --invalidate-cache` so every detected
 #      memoryful agent framework on the machine picks up the new skill on
 #      its next session, no manual restart needed where supported.
+#   6. With --with-autopilot, install and start user-level sidecar services
+#      for detected OpenClaw/Hermes homes. This does not modify host runtimes.
 #
 # This script never sudo's silently — if it needs a sudo prompt (apt
 # install pipx) the user sees it. It exits non-zero on any failure so AI
@@ -25,6 +28,7 @@ REPO_URL="${AGENT_DOCTOR_REPO:-https://github.com/hesong12/agent-doctor.git}"
 REF="${AGENT_DOCTOR_REF:-main}"
 EXTRAS=""
 SKIP_BOOTSTRAP=0
+WITH_AUTOPILOT=0
 QUIET=0
 
 log() { [ "$QUIET" -eq 0 ] && printf '%s\n' "$*"; }
@@ -40,6 +44,9 @@ while [ "$#" -gt 0 ]; do
             ;;
         --with-all)
             EXTRAS="$EXTRAS mcp>=1.0 anthropic>=0.34"
+            ;;
+        --with-autopilot)
+            WITH_AUTOPILOT=1
             ;;
         --skip-bootstrap)
             SKIP_BOOTSTRAP=1
@@ -156,7 +163,27 @@ if [ "$SKIP_BOOTSTRAP" -eq 0 ]; then
     agent-doctor bootstrap --invalidate-cache
 fi
 
+if [ "$WITH_AUTOPILOT" -eq 1 ]; then
+    log ""
+    log "Installing Agent Doctor autopilot sidecar services..."
+    if [ -d "$HOME/.openclaw" ]; then
+        agent-doctor service install \
+            --platform openclaw \
+            --out "$HOME/.agent-doctor/openclaw" \
+            --inbox-dir "$HOME/.agent-doctor/inbox/openclaw" \
+            --start
+    fi
+    if [ -d "$HOME/.hermes" ]; then
+        agent-doctor service install \
+            --platform hermes \
+            --out "$HOME/.agent-doctor/hermes" \
+            --inbox-dir "$HOME/.agent-doctor/inbox/hermes" \
+            --start
+    fi
+fi
+
 log ""
 log "✓ Agent Doctor is ready."
 log "  Try: agent-doctor doctor"
+log "  Autopilot: agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw"
 log "  Or just say to your AI agent: 'review my last session'."

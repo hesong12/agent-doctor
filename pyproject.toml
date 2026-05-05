@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-doctor"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local-first session postmortem and improvement engine for memoryful AI agents."
 readme = "README.md"
 requires-python = ">=3.11"
