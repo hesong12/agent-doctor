@@ -28,6 +28,19 @@ curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.
 
 After install, just say to your AI agent: *"review my last session"* / *"diagnose this transcript"* / *"why does the agent keep doing X"*. The host's skill router will match against the `SKILL.md` we wrote into each detected memoryful framework's skill directory and load Agent Doctor's workflow.
 
+For AI-agent-managed deployments, the agent should use the opinionated setup
+command instead of asking the user to configure paths or service managers:
+
+```bash
+agent-doctor setup autopilot
+```
+
+That command detects OpenClaw/Hermes from the host home, installs or refreshes
+Agent Doctor skills, baselines existing transcripts, writes launchd/systemd user
+services, starts them by default, and enables changed-file scanning so old
+sessions do not flood the inbox. It does not edit OpenClaw/Hermes runtime
+configuration.
+
 For always-on deployments where the user should not have to remember to ask for diagnosis, run the sidecar:
 
 ```bash
@@ -146,6 +159,7 @@ staging/
 
 ```bash
 agent-doctor doctor                                          # environment + privacy info
+agent-doctor setup autopilot                                 # auto-detect hosts, install skills, start sidecars
 agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw
 agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes --watch
 agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw --start
@@ -168,6 +182,20 @@ agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw --watc
 agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes --watch --interval 15
 agent-doctor autopilot --platform generic --path ./sessions --out ./doctor-autopilot
 ```
+
+For an AI agent configuring Agent Doctor on the user's behalf, prefer:
+
+```bash
+agent-doctor setup autopilot
+```
+
+This is the zero-touch setup flow: it detects OpenClaw/Hermes, runs bootstrap,
+best-effort invalidates host skill caches, installs launchd/systemd user
+services, baselines existing transcripts, starts the services, and writes
+advisory inbox files under `~/.agent-doctor/inbox/<platform>`. Use `--dry-run`
+to preview, `--platform openclaw` / `--platform hermes` to limit scope,
+`--no-start` to only write service files, and `--force` when provisioning a host
+home before the platform has created its root directory.
 
 Current automatic triggers:
 

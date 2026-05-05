@@ -153,6 +153,67 @@ def build_parser() -> argparse.ArgumentParser:
     )
     autopilot.set_defaults(func=_cmd_autopilot)
 
+    setup = subparsers.add_parser(
+        "setup",
+        help="Opinionated setup flows for agents installing Agent Doctor for users.",
+    )
+    setup_subs = setup.add_subparsers(dest="setup_command", required=True)
+    setup_autopilot = setup_subs.add_parser(
+        "autopilot",
+        help="Auto-detect OpenClaw/Hermes, install skills, and start autopilot sidecar services.",
+    )
+    setup_autopilot.add_argument(
+        "--platform",
+        action="append",
+        choices=["openclaw", "hermes"],
+        help="Limit setup to one platform. Repeat to install both. Defaults to all detected platforms.",
+    )
+    setup_autopilot.add_argument(
+        "--out-root",
+        type=Path,
+        help="Root artifact directory. Defaults to ~/.agent-doctor.",
+    )
+    setup_autopilot.add_argument(
+        "--inbox-root",
+        type=Path,
+        help="Root inbox directory. Defaults to <out-root>/inbox.",
+    )
+    setup_autopilot.add_argument("--interval", type=float, default=15.0)
+    setup_autopilot.add_argument("--cooldown-seconds", type=int, default=3600)
+    setup_autopilot.add_argument("--min-severity", choices=["low", "medium", "high"], default="high")
+    setup_autopilot.add_argument("--notify-command")
+    setup_autopilot.add_argument(
+        "--no-start",
+        action="store_true",
+        help="Write services but do not start/enable them.",
+    )
+    setup_autopilot.add_argument(
+        "--no-bootstrap",
+        action="store_true",
+        help="Do not install/update Agent Doctor skills before installing services.",
+    )
+    setup_autopilot.add_argument(
+        "--no-invalidate-cache",
+        action="store_true",
+        help="Do not best-effort invalidate host skill caches after bootstrap.",
+    )
+    setup_autopilot.add_argument(
+        "--no-baseline-existing",
+        action="store_true",
+        help="Do not mark existing transcript files as already seen before starting services.",
+    )
+    setup_autopilot.add_argument(
+        "--force",
+        action="store_true",
+        help="Install even if the host root was not auto-detected.",
+    )
+    setup_autopilot.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be installed without writing files.",
+    )
+    setup_autopilot.set_defaults(func=_cmd_setup_autopilot)
+
     service = subparsers.add_parser(
         "service",
         help="Install or manage the local autopilot sidecar service.",
@@ -437,6 +498,28 @@ def _cmd_service_install(args: argparse.Namespace) -> int:
         baseline_existing=not args.no_baseline_existing,
     )
     print(render_service_result(result))
+    return 0
+
+
+def _cmd_setup_autopilot(args: argparse.Namespace) -> int:
+    from .setup import render_autopilot_setup_result, setup_autopilot
+
+    result = setup_autopilot(
+        platforms=args.platform,
+        out_root=args.out_root,
+        inbox_root=args.inbox_root,
+        start=not args.no_start,
+        bootstrap_hosts=not args.no_bootstrap,
+        invalidate_cache=not args.no_invalidate_cache,
+        force=args.force,
+        dry_run=args.dry_run,
+        interval=args.interval,
+        cooldown_seconds=args.cooldown_seconds,
+        min_severity=args.min_severity,
+        notify_command=args.notify_command,
+        baseline_existing=not args.no_baseline_existing,
+    )
+    print(render_autopilot_setup_result(result))
     return 0
 
 

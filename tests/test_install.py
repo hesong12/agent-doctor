@@ -163,6 +163,7 @@ def test_render_bootstrap_summary_lists_each_host(tmp_path: Path) -> None:
 
 def test_cli_bootstrap_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_DOCTOR_HOST_HOME", str(tmp_path))
     (tmp_path / ".claude" / "skills").mkdir(parents=True)
 
     result = subprocess.run(
@@ -179,6 +180,7 @@ def test_cli_bootstrap_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 def test_cli_bootstrap_dry_run_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_DOCTOR_HOST_HOME", str(tmp_path))
     (tmp_path / ".claude" / "skills").mkdir(parents=True)
 
     subprocess.run(
