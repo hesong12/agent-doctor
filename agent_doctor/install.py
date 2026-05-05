@@ -148,11 +148,18 @@ to remember to ask the agent for diagnosis.
 - OpenClaw: `agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw`
 - Hermes: `agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes`
 - Long-running mode: add `--watch`
+- Zero-touch setup: `agent-doctor setup autopilot`
 - Service install: `agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw --inbox-dir ~/.agent-doctor/inbox/openclaw --start`
 
 The sidecar only reads existing transcript/log JSONL through Agent Doctor's
 ingestion layer and writes diagnosis cards/events under `--out`. It does not
 modify OpenClaw, Hermes, or live agent configuration.
+
+When the user asks you to enable proactive diagnosis, prefer
+`agent-doctor setup autopilot`. It detects OpenClaw/Hermes, installs or
+refreshes Agent Doctor skills, baselines existing transcripts, writes the
+right launchd/systemd user services, and starts them with changed-file scanning.
+Do not ask the user to manually edit host configuration.
 
 ## Detection taxonomy (what this skill catches)
 

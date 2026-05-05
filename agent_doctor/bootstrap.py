@@ -24,6 +24,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .ingest import host_home
 from .install import install_skill
 
 
@@ -62,7 +63,7 @@ class BootstrapResult:
 def detect_hosts(home: Path | None = None) -> list[HostInstall]:
     """Return one ``HostInstall`` per known host, with ``detected`` set."""
 
-    home = (home or Path.home()).expanduser()
+    home = (home or host_home()).expanduser()
     candidates: list[HostInstall] = []
 
     hermes_root = home / ".hermes"
@@ -117,7 +118,7 @@ def bootstrap(
     """
 
     detected = detect_hosts(home=home)
-    extra = _build_extra(extra_targets, home=home or Path.home())
+    extra = _build_extra(extra_targets, home=home or host_home())
     seen_targets: set[str] = set()
     hosts: list[HostInstall] = []
     for host in detected + extra:
@@ -175,7 +176,7 @@ def bootstrap(
 
     invalidations: list[CacheInvalidation] = []
     if invalidate_cache and not dry_run:
-        invalidations = invalidate_host_caches(hosts, home=home or Path.home())
+        invalidations = invalidate_host_caches(hosts, home=home or host_home())
 
     return BootstrapResult(
         hosts=hosts,
@@ -203,7 +204,7 @@ def invalidate_host_caches(
     the bootstrap.
     """
 
-    home_dir = (home or Path.home()).expanduser()
+    home_dir = (home or host_home()).expanduser()
     out: list[CacheInvalidation] = []
     installed = [host for host in hosts if host.written_path is not None]
 

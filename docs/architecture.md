@@ -12,6 +12,7 @@ Agent Doctor is CLI-first with an optional MCP stdio server in front. The trust 
 - `apply` — read `findings.json`, stage reviewable patches into a directory plus a unified diff against an optional `--target`. Live config is never modified.
 - `eval` — sub-command group: `generate`, `bench`, `replay` for the LLM-first eval framework (see `docs/evaluation.md`).
 - `autopilot` — run the platform-agnostic sidecar trigger engine. It reads host transcripts through adapters, keeps local SQLite state for de-duplication/cooldown, and writes diagnosis cards/events under `--out`.
+- `setup autopilot` — opinionated agent-managed installation: detect OpenClaw/Hermes, bootstrap skills, baseline existing transcripts, write launchd/systemd user services, and start the sidecar with safe defaults.
 - `bootstrap` — auto-detect `~/.hermes`, `~/.openclaw`, `~/.claude/skills` and write the unified `SKILL.md` into each host's correct skill location. `--invalidate-cache` best-effort signals each host to rebuild its skill prompt on next start (removes Hermes's `.skills_prompt_snapshot.json`, bumps Claude Code's `skills/` mtime). `--dry-run` previews; `--force` installs into hosts whose home dir doesn't exist.
 - `install-skill` — write a single skill file by hand (`--target hermes|openclaw|claude-code|generic`).
 - `doctor` — print environment, version, default paths, and privacy info.
@@ -89,6 +90,33 @@ Delivery stays adapter-free and host-runtime-free:
 - delivery failures are appended to `delivery-errors.jsonl` and do not stop
   diagnosis.
 
+### Agent-Managed Setup
+
+`agent_doctor.setup` is the zero-touch entry point meant for OpenClaw/Hermes (or
+another supervising agent) to run on the user's behalf:
+
+```bash
+agent-doctor setup autopilot
+```
+
+The command uses host-home detection, so it works even when invoked from an
+agent sandbox whose `HOME` is nested under `.openclaw` or `.hermes`. It performs
+the same safe operations a careful human would have run manually:
+
+1. detect OpenClaw/Hermes host roots.
+2. run `bootstrap --invalidate-cache` so the host agent can discover the
+   Agent Doctor skill.
+3. install one launchd/systemd user service per detected platform.
+4. baseline current JSONL transcript snapshots before start.
+5. start services by default with `--changed-only` enabled.
+
+This is deliberately a wrapper around existing public APIs (`bootstrap` and
+`service install`) rather than a runtime integration. The user-visible contract
+is "the AI agent can install and configure Agent Doctor for me"; the technical
+boundary remains outside-in and reversible. Flags such as `--dry-run`,
+`--platform`, `--no-start`, and `--force` make the same path usable for tests,
+enterprise packaging, or pre-provisioning.
+
 ### One-line installer
 
 `install.sh` (top-level) is the canonical user-facing install path:
@@ -97,7 +125,7 @@ Delivery stays adapter-free and host-runtime-free:
 curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh
 ```
 
-It detects pipx vs `apt-get` vs `brew` vs `pip --user --break-system-packages`, installs pipx first if missing (one visible sudo prompt where required), runs `pipx install` from the GitHub repo (idempotent — `--force` on re-run), optionally injects extras (`--with-mcp` / `--with-llm` / `--with-all`), then runs `agent-doctor bootstrap --invalidate-cache` automatically. Set `AGENT_DOCTOR_REPO` / `AGENT_DOCTOR_REF` env vars to point at a fork or branch; pass `--skip-bootstrap` to land just the package.
+It detects pipx vs `apt-get` vs `brew` vs `pip --user --break-system-packages`, installs pipx first if missing (one visible sudo prompt where required), runs `pipx install` from the GitHub repo (idempotent — `--force` on re-run), optionally injects extras (`--with-mcp` / `--with-llm` / `--with-all`), then runs `agent-doctor bootstrap --invalidate-cache` automatically. With `--with-autopilot`, it delegates to `agent-doctor setup autopilot --no-bootstrap` so installer-driven and agent-driven setup share the same service logic. Set `AGENT_DOCTOR_REPO` / `AGENT_DOCTOR_REF` env vars to point at a fork or branch; pass `--skip-bootstrap` to land just the package.
 
 ### Ingestion
 
