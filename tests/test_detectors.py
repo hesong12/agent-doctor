@@ -199,3 +199,143 @@ def test_medium_frustration_does_not_duplicate_existing_user_signal() -> None:
     findings = detect_findings(messages)
 
     assert [finding.failure_mode for finding in findings] == ["repeated_user_correction"]
+
+
+def test_chinese_trust_degradation_phrase_is_high_severity() -> None:
+    """The phrase '你最近怎么越来越笨了' is a regression-tested trust-degradation signal.
+
+    Reported as a real-world miss in the original detector. It must be a
+    high-severity user_frustration_signal regardless of any neighboring turn.
+    """
+
+    messages = [
+        Message("session.jsonl", 1, "s1", "user", "你最近怎么越来越笨了"),
+    ]
+
+    findings = detect_findings(messages)
+    frustration = [f for f in findings if f.failure_mode == "user_frustration_signal"]
+    assert len(frustration) == 1
+    assert frustration[0].severity == "high"
+
+
+def test_english_trust_degradation_phrase_is_high_severity() -> None:
+    messages = [
+        Message("session.jsonl", 1, "s1", "user", "You are getting worse and worse."),
+    ]
+    findings = detect_findings(messages)
+    frustration = [f for f in findings if f.failure_mode == "user_frustration_signal"]
+    assert len(frustration) == 1
+    assert frustration[0].severity == "high"
+
+
+def test_episode_aggregates_multiple_frustration_or_correction_messages() -> None:
+    """Multiple frustration / correction signals across nearby turns roll up.
+
+    Acceptance from issue #11: 'episode aggregation across multiple user
+    corrections / frustration messages'.
+    """
+
+    messages = [
+        Message("a.jsonl", 1, "s1", "user", "You forgot what I told you last time."),
+        Message("a.jsonl", 2, "s1", "assistant", "Sorry, will do that."),
+        Message("a.jsonl", 3, "s1", "user", "Did you actually test it?"),
+        Message("a.jsonl", 4, "s1", "user", "你最近怎么越来越笨了"),
+    ]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+
+    assert "trust_degradation_episode" in modes
+    episode = next(f for f in findings if f.failure_mode == "trust_degradation_episode")
+    assert episode.severity == "high"
+    assert episode.confidence >= 0.9
+    # Episode evidence must include the trust-degradation quote so the card
+    # surfaces the cumulative pattern, not just one turn.
+    quotes = [item.quote for item in episode.evidence]
+    assert any("越来越笨" in quote for quote in quotes)
+
+
+def test_single_frustration_message_does_not_become_episode() -> None:
+    """One signal alone is a normal frustration finding, not an episode."""
+
+    messages = [
+        Message("a.jsonl", 1, "s1", "user", "你最近怎么越来越笨了"),
+    ]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "trust_degradation_episode" not in modes
+    assert "user_frustration_signal" in modes
+
+
+def test_unsupported_completion_claim_without_recent_verification() -> None:
+    messages = [
+        Message("a.jsonl", 1, "s1", "user", "Please apply the migration."),
+        Message("a.jsonl", 2, "s1", "assistant", "Done. The migration has been applied."),
+    ]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "unsupported_completion_claim" in modes
+
+
+def test_completion_claim_with_recent_tool_action_is_not_unsupported() -> None:
+    messages = [
+        Message("a.jsonl", 1, "s1", "user", "Please apply the migration."),
+        Message("a.jsonl", 2, "s1", "tool", "Applied 3 statements; 0 errors."),
+        Message("a.jsonl", 3, "s1", "assistant", "Done. The migration has been applied."),
+    ]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "unsupported_completion_claim" not in modes
+
+
+def test_user_pushback_on_completion_claim_is_high_severity_unsupported() -> None:
+    messages = [
+        Message("a.jsonl", 1, "s1", "user", "Apply it now."),
+        Message("a.jsonl", 2, "s1", "assistant", "Done, fixed and verified."),
+        Message("a.jsonl", 3, "s1", "user", "Are you sure? It's not done."),
+    ]
+    findings = detect_findings(messages)
+    unsupported = [f for f in findings if f.failure_mode == "unsupported_completion_claim"]
+    assert unsupported
+    assert any(f.severity == "high" for f in unsupported)
+
+
+def test_instruction_drift_detects_unrequested_scope_expansion() -> None:
+    messages = [
+        Message(
+            "a.jsonl",
+            1,
+            "s1",
+            "user",
+            "I didn't ask you to refactor the helpers. Just fix the bug.",
+        ),
+    ]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "instruction_drift" in modes
+
+
+def test_missed_core_question_detected() -> None:
+    messages = [
+        Message("a.jsonl", 1, "s1", "user", "你没回答我的问题"),
+    ]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "missed_core_question" in modes
+
+
+def test_over_process_response_detected_in_long_assistant_message() -> None:
+    long_message = " ".join(
+        [
+            "Let me start by reading the file.",
+            "First, I will check the imports.",
+            "Then I will look at the function.",
+            "Next, I'll trace the data flow.",
+            "After that, I'll plan the change.",
+            "Finally, I'm going to implement it carefully and double check everything.",
+        ]
+        * 3
+    )
+    messages = [Message("a.jsonl", 1, "s1", "assistant", long_message)]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "over_process_response" in modes

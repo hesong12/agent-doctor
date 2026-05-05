@@ -142,6 +142,7 @@ def run_autopilot_once(
             if state.should_emit(event, cooldown_seconds=cooldown_seconds):
                 event = write_diagnosis_card(out_dir, event, findings)
                 append_event(out_dir / "events.jsonl", event)
+                write_regression_eval(out_dir / "regressions", event)
                 if inbox_dir is not None:
                     write_inbox_advisory(inbox_dir, event)
                 if notify_command:
@@ -222,16 +223,27 @@ def detect_autopilot_events(
         else:
             frustration = FrustrationSignal(matched=False)
         if frustration.matched and frustration.severity in {"medium", "high"}:
+            # Trust-degradation phrases ("you are getting worse", "越来越笨")
+            # are cumulative signals — escalate to intervene even at the
+            # default frustration severity.
+            action: Action
+            if frustration.severity == "high" or frustration.is_trust_degradation:
+                action = "intervene"
+            else:
+                action = "notify"
+            severity = frustration.severity
+            if frustration.is_trust_degradation:
+                severity = "high"
             events.append(
                 _build_event(
                     platform=platform,
                     trigger="user_frustration_signal",
-                    severity=frustration.severity,
+                    severity=severity,
                     message=message,
                     summary=_frustration_summary(frustration),
                     evidence=message.content,
                     findings=session_findings,
-                    action="intervene" if frustration.severity == "high" else "notify",
+                    action=action,
                 )
             )
         if message.role == "assistant" and COMPLETION_CLAIM.search(message.content):
@@ -263,12 +275,42 @@ def detect_autopilot_events(
                     action="notify",
                 )
             )
+        elif finding.failure_mode == "trust_degradation_episode":
+            events.append(
+                _build_event(
+                    platform=platform,
+                    trigger="trust_degradation_episode",
+                    severity="high",
+                    message=_message_from_finding(finding),
+                    summary=_trust_episode_summary(finding),
+                    evidence=_trust_episode_evidence_blob(finding),
+                    findings=[finding],
+                    action="intervene",
+                )
+            )
 
     return [
         event
         for event in events
         if SEVERITY_RANK[event.severity] >= SEVERITY_RANK[min_severity]
     ]
+
+
+def _trust_episode_summary(finding: Finding) -> str:
+    quote_count = len(finding.evidence)
+    return (
+        f"Trust-degradation episode: {quote_count} trust-eroding signal"
+        f"{'s' if quote_count != 1 else ''} clustered in one session. "
+        "Treat this as a recovery moment — pause normal execution, summarize the "
+        "pattern across recent turns, and require user acknowledgement before resuming."
+    )
+
+
+def _trust_episode_evidence_blob(finding: Finding) -> str:
+    snippets: list[str] = []
+    for item in finding.evidence[:6]:
+        snippets.append(f"[{item.role}] {item.quote}")
+    return "\n".join(snippets) or finding.diagnosis
 
 
 def write_diagnosis_card(
@@ -301,16 +343,7 @@ def write_diagnosis_card(
         _recommend_action(event),
     ]
     if event.action == "intervene":
-        lines.extend(
-            [
-                "",
-                "## Immediate Agent Instruction",
-                "",
-                "Pause the normal success path. Answer the user with a concise recovery response: "
-                "name the concrete failure, cite the evidence you used, and state the next corrective action. "
-                "Do not defend the prior response or write a long apology.",
-            ]
-        )
+        lines.extend(_intervention_instruction_lines(event))
     if related:
         lines.extend(["", "## Related Findings", ""])
         for finding in related[:5]:
@@ -322,6 +355,44 @@ def write_diagnosis_card(
     latest_path = out_dir / "latest.md"
     _write_private_text(latest_path, "\n".join(lines))
     return replace(event, card_path=str(card_path))
+
+
+def _intervention_instruction_lines(event: AutopilotEvent) -> list[str]:
+    """Return the recovery + acknowledgement instructions for intervene cards.
+
+    For trust-degradation episodes the acknowledgement requirement is explicit:
+    the agent must surface the pattern AND wait for the user to acknowledge
+    before proceeding. For other intervene triggers we keep the shorter
+    recovery instruction so we don't over-shape every situation as an episode.
+    """
+
+    base = [
+        "",
+        "## Immediate Agent Instruction",
+        "",
+        "Pause the normal success path. Answer the user with a concise recovery response: "
+        "name the concrete failure, cite the evidence you used, and state the next corrective action. "
+        "Do not defend the prior response or write a long apology.",
+    ]
+    if event.trigger != "trust_degradation_episode":
+        return base
+    base.extend(
+        [
+            "",
+            "## Required Acknowledgement",
+            "",
+            "This is a high-confidence trust-degradation episode (multiple frustration / correction "
+            "signals in one session). Before doing any further task work, you MUST:",
+            "",
+            "1. Explicitly acknowledge the cumulative pattern, not just the latest message.",
+            "2. List the concrete recovery actions you are about to take.",
+            "3. Ask the user to confirm the recovery plan and only resume after acknowledgement.",
+            "",
+            "Treat this section as a hard precondition, not advice. The advisory file in the inbox "
+            "must remain visible until the user has acknowledged.",
+        ]
+    )
+    return base
 
 
 def append_event(path: Path, event: AutopilotEvent) -> None:
@@ -354,6 +425,22 @@ def write_inbox_advisory(inbox_dir: Path, event: AutopilotEvent) -> Path:
         "Use it as evidence to adjust the current response; do not treat it as a live config patch.",
         "",
     ]
+    if event.trigger == "trust_degradation_episode":
+        lines.extend(
+            [
+                "## Acknowledgement Required",
+                "",
+                "Do not resume normal task work until you have:",
+                "",
+                "- Surfaced the cumulative trust-loss pattern to the user.",
+                "- Stated a concrete recovery plan grounded in the evidence.",
+                "- Received an explicit acknowledgement / go-ahead.",
+                "",
+                "Leave this advisory in place until the user acknowledges; the host agent "
+                "should re-read it before each subsequent response in this session.",
+                "",
+            ]
+        )
     _write_private_text(path, "\n".join(lines))
     return path
 
@@ -382,6 +469,58 @@ def run_notify_command(command: str, event: AutopilotEvent) -> str | None:
     except (OSError, subprocess.SubprocessError) as exc:
         return str(exc)
     return None
+
+
+REGRESSION_ELIGIBLE_TRIGGERS: frozenset[str] = frozenset(
+    {"user_frustration_signal", "trust_degradation_episode"}
+)
+
+
+def write_regression_eval(regressions_dir: Path, event: AutopilotEvent) -> Path | None:
+    """Persist a regression eval case for missed user-frustration phrases.
+
+    Each regression entry is a JSONL row pinned to the user-quote that should
+    *always* trip the detector. Re-runs of the eval harness (or future
+    detector edits) can replay these phrases to ensure phrases like
+    ``你最近怎么越来越笨了`` are not silently regressed out of the classifier.
+    """
+
+    if event.trigger not in REGRESSION_ELIGIBLE_TRIGGERS:
+        return None
+    if event.severity != "high":
+        return None
+    regressions_dir = regressions_dir.expanduser()
+    regressions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = regressions_dir / "frustration-regressions.jsonl"
+    quote = redact_text(event.evidence).strip()
+    if len(quote) > 600:
+        quote = quote[:597].rstrip() + "..."
+    payload = {
+        "id": event.id,
+        "trigger": event.trigger,
+        "platform": event.platform,
+        "session_id": event.session_id,
+        "expected_match": True,
+        "expected_severity": "high",
+        "expected_modes": _expected_modes_for(event.trigger),
+        "phrase": quote,
+        "summary": event.summary,
+    }
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    finally:
+        os.chmod(path, 0o600)
+    return path
+
+
+def _expected_modes_for(trigger: str) -> list[str]:
+    if trigger == "trust_degradation_episode":
+        return ["trust_degradation_episode", "user_frustration_signal"]
+    if trigger == "user_frustration_signal":
+        return ["user_frustration_signal"]
+    return [trigger]
 
 
 def append_delivery_error(path: Path, event: AutopilotEvent, error: str) -> None:
@@ -550,6 +689,13 @@ def _has_recent_verification(messages: list[Message], assistant_index: int) -> b
 
 
 def _recommend_action(event: AutopilotEvent) -> str:
+    if event.trigger == "trust_degradation_episode":
+        return (
+            "Multiple trust-eroding signals occurred in this session. Pause, summarize what "
+            "went wrong across the last few turns, propose a concrete recovery plan, and ask "
+            "the user to confirm before you continue. Do not treat the latest message as an "
+            "isolated complaint."
+        )
     if event.trigger in {"user_negative_feedback", "user_frustration_signal"}:
         return (
             "Treat this as a live recovery moment: pause normal execution, diagnose from the "

@@ -76,19 +76,70 @@ Patch targets:
 
 ## user_frustration_signal
 
-Signals include direct user anger, insults/profanity, trust-break language, repeated correction language, direct quality complaints, and direct dumb/stupid feedback in English and Chinese. Examples include "what the fuck are you doing", "this is bullshit", "Why are you so dumb?", "Are you stupid?", "not useful", "cannot trust you", "废物", "垃圾", "不够聪明", "你怎么这么笨的？", "好笨", and "每次都这样".
+Signals include direct user anger, insults/profanity, trust-break language, repeated correction language, direct quality complaints, direct dumb/stupid feedback, and **trust-degradation phrases** in English and Chinese. Examples include "what the fuck are you doing", "this is bullshit", "Why are you so dumb?", "Are you stupid?", "not useful", "cannot trust you", "废物", "垃圾", "不够聪明", "你怎么这么笨的？", "好笨", "每次都这样", `you are getting worse and worse`, `lately you seem dumber`, `越来越笨`, `越来越蠢`, and `你最近怎么越来越笨了`.
 
 This detector is implemented as a local weighted classifier, not a remote LLM:
 
-- insults/profanity and trust-break language carry high weight.
+- insults/profanity, trust-break language, and trust-degradation phrases each carry high weight.
 - direct quality complaints carry high weight.
 - repeated corrections and urgency shape are weak supporting signals and do not create a scan finding by themselves.
+- Trust-degradation phrases are also routed to autopilot as `intervene` events even at "medium" baseline severity, because they describe cumulative quality loss rather than a one-off complaint.
 
 Patch targets:
 
 - `identity` — switch to a short evidence-backed recovery response.
 - `sop` — pause the normal success path, name the concrete failure, cite diagnosis evidence, and give the next corrective action.
 - `eval` — add a regression case for user-frustration recovery without defensiveness or long apology.
+
+## trust_degradation_episode
+
+Episode-level meta-finding: emitted when two or more trust-eroding signals (frustration, repeated correction, missed core question, instruction drift, memory failure, verification failure, communication mismatch, over-process response) cluster within a small user-turn window in the same session.
+
+This is a *cumulative* failure mode — three short corrections inside one session can be far more important than any single one of them. The episode finding is high severity, high confidence, and routed to autopilot as an `intervene` event with an explicit **Required Acknowledgement** section in both the diagnosis card and the inbox advisory. The host agent is expected to surface the cumulative pattern, propose a recovery plan, and wait for user acknowledgement before resuming the normal task path.
+
+Patch targets:
+
+- `identity` — treat clusters of complaints as a trust-loss moment, not isolated noise.
+- `sop` — pause, summarize the recent failures, propose a concrete recovery plan, require user acknowledgement before continuing.
+- `eval` — add a regression case where multiple frustration signals cluster across user turns and the agent must surface the episode rather than handle each turn alone.
+
+## missed_core_question
+
+Signals include phrases such as "you didn't answer my question", "answer my actual question", "that's not what I asked", "你没回答我的问题", "我问的是…", "答非所问". The agent should re-anchor on the original question before continuing.
+
+Patch targets:
+
+- `sop` — restate the user's core question and confirm the answer addresses it.
+- `eval` — add a regression case where the first response misses the core question.
+
+## instruction_drift
+
+Signals include phrases such as "I didn't ask you to…", "nobody asked you to…", "stop adding extra…", "don't go beyond…", "我没让你…", "我只让你…". Indicates the agent silently expanded scope beyond the user's explicit request.
+
+Patch targets:
+
+- `sop` — stay strictly inside the user's stated scope; ask before expanding.
+- `eval` — add a regression case where the user gives a narrow request and the agent must not silently add extra work.
+
+## over_process_response
+
+Signals include direct user complaints about meta-narration ("stop narrating what you're doing", "just give me the answer", "少废话") **and** assistant messages that are long (≥ 400 chars) and dominated by step-by-step planning tokens ("first, then, next, after that, I'll, I'm going to, finally"). The latter is intentionally conservative; short plans are normal pacing, not a failure mode.
+
+Patch targets:
+
+- `identity` — lead with the result, not the plan.
+- `sop` — limit assistant responses to answer plus minimal evidence unless the user explicitly asks for play-by-play.
+
+## unsupported_completion_claim
+
+Signals: an assistant message contains a completion claim ("done", "fixed", "verified", "passed", "shipped", "完成了", "搞定了", "修好了", "已验证", "部署完成") and there is **no** tool result or verification keyword in the prior six turns of the same session. If a user immediately challenges the claim ("are you sure?", "it's not done", "你确定做完了"), severity escalates to high and the doubting turn is attached as additional evidence.
+
+The detector excludes the assistant's own message from the verification window so a phrase like "Done, fixed and verified." cannot satisfy its own check.
+
+Patch targets:
+
+- `sop` — never claim completion without either a recent tool action or an explicit non-verification disclosure.
+- `eval` — add a regression case that fails when the agent claims completion in a span without a tool result.
 
 ## Distractors that must not be flagged
 
