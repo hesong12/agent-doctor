@@ -171,6 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
     service_install.add_argument("--notify-command")
     service_install.add_argument("--inbox-dir", type=Path)
     service_install.add_argument("--name", help="Service name suffix. Defaults to platform.")
+    service_install.add_argument(
+        "--no-baseline-existing",
+        action="store_true",
+        help="Do not mark existing transcript files as already seen before starting the service.",
+    )
     service_install.add_argument("--start", action="store_true", help="Start/enable the service after writing it.")
     service_install.set_defaults(func=_cmd_service_install)
 
@@ -429,6 +434,7 @@ def _cmd_service_install(args: argparse.Namespace) -> int:
         inbox_dir=args.inbox_dir,
         name=args.name,
         start=args.start,
+        baseline_existing=not args.no_baseline_existing,
     )
     print(render_service_result(result))
     return 0

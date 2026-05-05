@@ -59,6 +59,12 @@ one-shot checks as a fallback, but the product model is a local daemon with
 state and cooldown, closer to a Sentry/Datadog host agent than a scheduled
 report.
 
+The first watch pass scans the selected transcript tree and records JSONL
+`mtime`/size snapshots in SQLite. Later watch passes scan only changed JSONL
+files, preventing the daemon from reprocessing the full session history on
+every poll. One-shot invocations or watch mode restarts can opt into the same
+behavior with `--changed-only`.
+
 `agent_doctor.service` writes the user-service wrapper:
 
 - macOS: `~/Library/LaunchAgents/com.agentdoctor.<platform>.plist`.
@@ -68,6 +74,12 @@ The generated service executes `python -m agent_doctor.cli autopilot --watch`
 from the installed Python environment. `--start` loads it with launchd or
 `systemctl --user enable --now`; without `--start` it only writes the service
 file for review.
+
+Before starting, service installation records the current JSONL file snapshots
+in the sidecar SQLite state and adds `--changed-only` to the generated service
+command by default. This baselines historical transcripts and prevents a new
+daemon from emitting old findings into the user inbox. `--no-baseline-existing`
+disables that behavior for deliberate backfills.
 
 Delivery stays adapter-free and host-runtime-free:
 

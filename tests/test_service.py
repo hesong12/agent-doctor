@@ -9,10 +9,14 @@ from agent_doctor.service import install_sidecar_service
 def test_service_install_writes_launchd_plist_without_starting(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("agent_doctor.service.service_home", lambda: tmp_path)
     monkeypatch.setattr("agent_doctor.service._service_kind", lambda: "launchd")
+    sessions = tmp_path / ".openclaw" / "agents" / "main" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "old.jsonl").write_text('{"role":"user","content":"not useful"}\n', encoding="utf-8")
 
     result = install_sidecar_service(
         platform="openclaw",
         out_dir=tmp_path / "doctor",
+        transcript_path=sessions,
         interval=3,
         cooldown_seconds=7,
         inbox_dir=tmp_path / "inbox",
@@ -28,7 +32,9 @@ def test_service_install_writes_launchd_plist_without_starting(tmp_path: Path, m
     assert args[:4] == [sys.executable, "-m", "agent_doctor.cli", "autopilot"]
     assert "--watch" in args
     assert "--inbox-dir" in args
+    assert "--changed-only" in args
     assert payload["EnvironmentVariables"]["AGENT_DOCTOR_HOST_HOME"] == str(tmp_path)
+    assert (tmp_path / "doctor" / "state.sqlite3").exists()
 
 
 def test_service_install_writes_systemd_unit_without_starting(tmp_path: Path, monkeypatch) -> None:
