@@ -149,9 +149,20 @@ def test_technical_terms_do_not_trigger_frustration_signal() -> None:
         Message("session.jsonl", 3, "s1", "user", "The CI log says TERM=dumb."),
         Message("session.jsonl", 4, "s1", "user", "Remove this useless variable and the stupid mistake in the code."),
         Message("session.jsonl", 5, "s1", "user", "检查垃圾回收和页面滚动条。"),
-        Message("session.jsonl", 6, "s1", "user", "HTTP_RESPONSE_ERROR"),
+        Message("session.jsonl", 6, "s1", "user", "检查滚轮和左右滚动。"),
+        Message("session.jsonl", 7, "s1", "user", "HTTP_RESPONSE_ERROR"),
     ]
 
     findings = detect_findings(messages)
 
     assert [finding.failure_mode for finding in findings] == []
+
+
+def test_medium_frustration_does_not_duplicate_existing_user_signal() -> None:
+    messages = [
+        Message("session.jsonl", 1, "s1", "user", "I already told you!!!"),
+    ]
+
+    findings = detect_findings(messages)
+
+    assert [finding.failure_mode for finding in findings] == ["repeated_user_correction"]

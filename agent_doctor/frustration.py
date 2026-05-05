@@ -35,7 +35,7 @@ PROFANITY_OR_INSULT = re.compile(
     r"(?:is\s+)?(?:garbage|trash)\b"
     r"|\b(?:garbage|trash)\s+(?:agent|answer|response|result|output)\b"
     r"|傻逼|傻[屌吊]|蠢货|蠢貨|废物|廢物|垃圾(?!回收|桶|箱|分类|分類|文件|目录|目錄|数据|資料)"
-    r"|滚(?!动)|滾(?!動)|脑子有病|腦子有病",
+    r"|滚(?:吧|开|蛋|$|[！!。.?？\s])|滾(?:吧|開|蛋|$|[！!。.?？\s])|脑子有病|腦子有病",
     re.IGNORECASE,
 )
 

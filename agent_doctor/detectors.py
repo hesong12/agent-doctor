@@ -191,7 +191,11 @@ def _collect_raw_matches(ordered: list[Message]) -> list[_RawMatch]:
         if message.role != "user":
             continue
         frustration = classify_user_frustration(message.content)
-        if frustration.matched and frustration.severity in {"medium", "high"}:
+        overlaps_existing_user_signal = _matches_existing_user_signal(message.content)
+        if frustration.matched and (
+            frustration.severity == "high"
+            or (frustration.severity == "medium" and not overlaps_existing_user_signal)
+        ):
             raw.append(
                 _RawMatch(
                     failure_mode="user_frustration_signal",
@@ -536,6 +540,12 @@ def _acknowledges_tool_error(text: str) -> bool:
 
 def _matches_any(patterns: list[str], text: str) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def _matches_existing_user_signal(text: str) -> bool:
+    if any(_matches_any(patterns, text) for patterns in USER_SIGNAL_PATTERNS.values()):
+        return True
+    return _matches_any(PLANNING_INSTEAD_OF_ACTING, text)
 
 
 def _base_severity(failure_mode: str) -> Severity:
