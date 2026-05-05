@@ -1,40 +1,80 @@
 # Agent Doctor
 
-Agent Doctor is a local-first session postmortem and improvement engine for memoryful AI agents such as Hermes, OpenClaw, and Claude Code.
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE) [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
 
-**Turn frustrating agent sessions into durable fixes.**
+Local-first session postmortem and improvement engine for memoryful AI agents (Hermes, OpenClaw, Claude Code, …).
 
-It reads JSONL session transcripts, detects deterministic frustration and failure patterns, aggregates repeated occurrences into one finding per session, and writes reviewable patch artifacts you can copy into your agent's memory, SOP, identity, and eval files. It is an engineering diagnosis tool: evidence → root cause → patch proposal → eval → measurable improvement.
+**Turn frustrating agent sessions into durable fixes.** Read JSONL transcripts → detect failure patterns deterministically → aggregate into one finding per session → stage reviewable patches for memory, SOP, identity, tool discipline, and evals. No network calls in the production path. No automatic edits to your agent config.
 
-Agent Doctor is not AI therapy, HR performance management, or surveillance analytics.
+Agent Doctor is an engineering diagnosis tool. It is *not* therapy, HR performance management, or surveillance analytics.
 
-## Quick install
+## Install
+
+One line, from GitHub:
 
 ```bash
-# 1. Install from GitHub
-pip install git+https://github.com/USER/agent-doctor.git
-
-# 2. Auto-detect installed agent frameworks and write skill files into each
+pip install git+https://github.com/hesong12/agent-doctor.git
 agent-doctor bootstrap
-
-# 3. (Optional) Enable LLM-backed eval modes
-pip install "agent-doctor[llm] @ git+https://github.com/USER/agent-doctor.git"
 ```
 
-`bootstrap` looks for `~/.hermes`, `~/.openclaw`, and `~/.claude` and writes the right skill format into each. It also prints the MCP configuration snippet you can paste into Claude Desktop, Cursor, Cline, Continue, or any MCP-aware client.
+`bootstrap` auto-detects `~/.hermes`, `~/.openclaw`, and `~/.claude/skills` and writes the right skill format into each host (Markdown SOP for Hermes / OpenClaw, `SKILL.md` with YAML frontmatter for Claude Code). It also prints the MCP configuration snippet you can paste into Claude Desktop, Cursor, Cline, Continue, or any MCP-aware client.
 
-After install, an AI agent that knows about Agent Doctor can run it directly. From inside Claude Code, for example, the user can say *"diagnose my last session"* and the agent invokes `agent-doctor scan` per the installed SKILL.md.
-
-Replace `USER` above with the actual GitHub owner once the repo is published. For local development:
+Optional extras:
 
 ```bash
-git clone https://github.com/USER/agent-doctor.git
+# Enable the MCP stdio server
+pip install "agent-doctor[mcp] @ git+https://github.com/hesong12/agent-doctor.git"
+
+# Enable LLM-backed eval (synthetic generator + closed-loop replay)
+pip install "agent-doctor[llm] @ git+https://github.com/hesong12/agent-doctor.git"
+
+# Everything
+pip install "agent-doctor[mcp,llm] @ git+https://github.com/hesong12/agent-doctor.git"
+```
+
+For local development:
+
+```bash
+git clone https://github.com/hesong12/agent-doctor.git
 cd agent-doctor
 python3 -m pip install -e ".[dev]"
-python3 -m agent_doctor.cli doctor
+python3 -m pytest -q
 ```
 
 The package exposes the `agent-doctor` console script and can also be run with `python3 -m agent_doctor.cli`.
+
+## For AI agents
+
+Read this section if you are an AI agent (Claude Code, Cursor, Cline, OpenClaw, Hermes, …) deciding whether to invoke Agent Doctor.
+
+**When to invoke:**
+
+| User intent | Command |
+|---|---|
+| "review / diagnose / postmortem my last session" | `agent-doctor scan --hermes --format markdown --out ./postmortem` (or `--openclaw`, or `--path <jsonl-or-dir>`) |
+| "why does the agent keep doing X" | same `scan`; look for findings with `count >= 3` and severity `high` |
+| "fix the patterns you found" | `agent-doctor apply --findings ./postmortem --out ./staging --target <live-config-dir>` |
+| "is the detector accurate / measure improvement" | `agent-doctor eval generate` → `eval bench` → `eval replay` |
+
+**Operating rules** (these mirror the SKILL.md `bootstrap` installs):
+
+1. **Local-only.** `scan`, `apply`, `bootstrap`, and `mcp serve` make no network calls. The only commands that contact a remote LLM are `eval generate --llm` and `eval replay`, both gated on `ANTHROPIC_API_KEY` and the `[llm]` extra.
+2. **Treat all output as dry-run.** `apply` writes to a staging directory; live host-agent config is never modified. Always ask the user before copying staged patches into memory / identity / SOPs / skills / permissions / routing / evals.
+3. **Never paste full transcripts to a remote LLM** unless the user explicitly approves that disclosure.
+4. **Cite evidence.** Findings include file paths, line numbers, role, and quoted excerpts. Prefer those over broad claims about the user or the agent.
+
+**MCP-native invocation** (if the host speaks MCP and the `[mcp]` extra is installed):
+
+The server exposes six tools (`scan`, `list_findings`, `read_finding`, `bench`, `stage_patches`, `generate_corpus`). All write tools restrict writes to caller-supplied `staging_dir` / `out_dir`. No tool calls a remote LLM. See [MCP server](#mcp-server) below.
+
+**One-shot golden flow** an agent can run end-to-end:
+
+```bash
+agent-doctor scan --path ./sessions --format markdown --out ./postmortem
+agent-doctor apply --findings ./postmortem --out ./staging --target ~/.hermes/skills --min-severity medium
+# Then summarize ./staging/sop.md, ./staging/memory.md, and ./staging/DIFF.txt
+# back to the user and ask which sections to copy into the live config.
+```
 
 ## CLI quickstart
 

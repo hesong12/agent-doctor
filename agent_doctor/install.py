@@ -89,7 +89,10 @@ _TARGET_HANDLERS: dict[str, Callable[[Path], Path]] = {
 
 
 def _sop_text(label: str, default_flag: str) -> str:
-    return f"""# Agent Doctor SOP for {label}
+    # Plain string template with __PLACEHOLDERS__ instead of f-string so the
+    # embedded JSON snippet (with its literal `{}` braces) does not need to be
+    # re-escaped.
+    template = """# Agent Doctor SOP for __LABEL__
 
 Use Agent Doctor as a local-first engineering diagnosis tool for agent session postmortems. It turns frustrating session transcripts into reviewable patch proposals for memory, identity, SOPs, tool discipline, and evals.
 
@@ -101,7 +104,7 @@ Use Agent Doctor as a local-first engineering diagnosis tool for agent session p
 
 ## Workflow
 
-1. Scan: `agent-doctor scan {default_flag} --format markdown --out ./postmortem`
+1. Scan: `agent-doctor scan __DEFAULT_FLAG__ --format markdown --out ./postmortem`
 2. Read `./postmortem/report.md` and triage findings by severity.
 3. Stage reviewable patches: `agent-doctor apply --findings ./postmortem --out ./staging --target <live-config-dir>`
 4. Review `./staging/sop.md`, `memory.md`, `identity.md`, `tool-discipline.md`, and `DIFF.txt`.
@@ -125,10 +128,29 @@ When the user wants to validate detector quality or measure improvement:
 
 `eval replay` requires `ANTHROPIC_API_KEY` and `pip install agent-doctor[llm]`. Skip gracefully without them.
 
+## MCP integration (optional)
+
+If the host runtime speaks MCP, `agent-doctor mcp serve` (requires `pip install agent-doctor[mcp]`) exposes the same surface as the CLI: `scan`, `list_findings`, `read_finding`, `bench`, `stage_patches`, `generate_corpus`. Write tools only write to caller-supplied `staging_dir` / `out_dir`; no tool calls a remote LLM.
+
+Configuration snippet:
+
+```json
+{
+  "mcpServers": {
+    "agent-doctor": {
+      "command": "agent-doctor",
+      "args": ["mcp", "serve"],
+      "env": {}
+    }
+  }
+}
+```
+
 ## What this is not
 
 Not therapy. Not HR performance management. Not surveillance analytics. It is engineering diagnosis: evidence → root cause → patch proposal → eval.
 """
+    return template.replace("__LABEL__", label).replace("__DEFAULT_FLAG__", default_flag)
 
 
 def _claude_code_skill_text() -> str:
@@ -182,6 +204,24 @@ For quality validation and closed-loop measurement:
 - `agent-doctor eval replay --transcript <jsonl> --patches ./staging --out ./replay` — closed-loop delta with patched agent (requires `ANTHROPIC_API_KEY` and `agent-doctor[llm]`).
 
 See `docs/evaluation.md` in the agent-doctor repo for the full LLM-first framework.
+
+## MCP integration (optional)
+
+If the user runs an MCP-aware host, agent-doctor ships a stdio MCP server: `agent-doctor mcp serve` (requires `pip install agent-doctor[mcp]`). It exposes `scan`, `list_findings`, `read_finding`, `bench`, `stage_patches`, and `generate_corpus`. The trust boundary matches the CLI: write tools only write under caller-supplied `staging_dir` / `out_dir`, and no tool calls a remote LLM.
+
+Configuration snippet (paste into Claude Desktop / Cursor / Cline / Continue):
+
+```json
+{
+  "mcpServers": {
+    "agent-doctor": {
+      "command": "agent-doctor",
+      "args": ["mcp", "serve"],
+      "env": {}
+    }
+  }
+}
+```
 
 ## What this is not
 
