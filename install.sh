@@ -6,6 +6,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-mcp
 #   curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-autopilot
 #   curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-all
+#   curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-all --with-autopilot
 #
 # What this does, in order:
 #   1. Detect platform; install pipx if missing (apt / brew / pip --user fallback).
@@ -60,7 +61,7 @@ while [ "$#" -gt 0 ]; do
             REF="${1:-main}"
             ;;
         -h|--help)
-            sed -n 's/^# \{0,1\}//; 2,18p' "$0" 2>/dev/null || true
+            sed -n 's/^# \{0,1\}//; 2,20p' "$0" 2>/dev/null || true
             exit 0
             ;;
         *)
