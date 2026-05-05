@@ -301,17 +301,27 @@ def _detect_trust_degradation_episodes(
     *cross-mode*: e.g. a memory miss followed two turns later by a frustration
     signal is one episode, not two unrelated findings. The two-pass aggregator
     only collapses raw matches of the same mode.
+
+    User-turn indexes are computed *per session* (not globally across the
+    whole transcript stream). Two same-session triggers must remain close in
+    same-session user-turn space; user turns from other interleaved sessions
+    must not dilate that gap. This is what keeps the window meaningful when
+    multiple sessions are scanned in a single pass.
     """
 
-    user_turn_index: dict[tuple[str, int], int] = {}
-    counter = 0
+    # Per-session user-turn counter. Keyed by (file, line) so the same anchor
+    # logic works for assistant-side matches that resolve to a nearby user
+    # turn via _nearest_user_anchor.
+    user_turn_index: dict[tuple[str, int], tuple[str, int]] = {}
+    per_session_counters: dict[str, int] = {}
     for message in ordered:
         if message.role != "user":
             continue
-        user_turn_index[(message.file, message.line)] = counter
-        counter += 1
+        counter = per_session_counters.get(message.session_id, 0)
+        user_turn_index[(message.file, message.line)] = (message.session_id, counter)
+        per_session_counters[message.session_id] = counter + 1
 
-    triggers: list[tuple[int, _RawMatch]] = []
+    triggers: list[tuple[str, int, _RawMatch]] = []
     for match in raw:
         if match.failure_mode not in TRUST_EPISODE_TRIGGER_MODES:
             continue
@@ -325,23 +335,27 @@ def _detect_trust_degradation_episodes(
             key = _nearest_user_anchor(ordered, primary)
         if key is None:
             continue
-        idx = user_turn_index.get(key)
-        if idx is None:
+        anchor = user_turn_index.get(key)
+        if anchor is None:
             continue
-        triggers.append((idx, match))
+        session_id, idx = anchor
+        triggers.append((session_id, idx, match))
 
-    triggers.sort(key=lambda item: item[0])
+    # Sort by (session, in-session index) so same-session triggers cluster
+    # contiguously regardless of how sessions are interleaved in `ordered`.
+    triggers.sort(key=lambda item: (item[0], item[1]))
 
     episodes: list[_RawMatch] = []
     seen_session_groups: set[str] = set()
-    for i, (idx, match) in enumerate(triggers):
+    for i, (session_id, idx, match) in enumerate(triggers):
         cluster: list[_RawMatch] = [match]
         cluster_indexes = [idx]
-        session_id = match.messages[0].session_id
         for j in range(i + 1, len(triggers)):
-            other_idx, other_match = triggers[j]
-            if other_match.messages[0].session_id != session_id:
-                continue
+            other_session, other_idx, other_match = triggers[j]
+            if other_session != session_id:
+                # Sorted by session first, so once the session changes we are
+                # done with this session.
+                break
             if other_idx - cluster_indexes[-1] > TRUST_EPISODE_USER_TURN_WINDOW:
                 break
             cluster.append(other_match)

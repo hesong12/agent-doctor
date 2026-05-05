@@ -254,6 +254,56 @@ def test_episode_aggregates_multiple_frustration_or_correction_messages() -> Non
     assert any("越来越笨" in quote for quote in quotes)
 
 
+def test_episode_aggregates_across_interleaved_sessions() -> None:
+    """Same-session triggers must cluster even when other sessions interleave.
+
+    Regression for Luna's review on PR #12: the episode windower used a
+    global user-turn counter, so user turns from unrelated sessions would
+    inflate the in-session gap and prevent same-session signals from
+    clustering. The fix is to count user turns per session.
+
+    Here session ``s1`` has two trust-eroding triggers separated by zero
+    same-session user turns, but separated by ``TRUST_EPISODE_USER_TURN_WINDOW
+    + 5`` user turns from session ``s2``. The episode must still be emitted
+    for ``s1`` and ``s2`` is far below the trigger threshold.
+    """
+
+    messages: list[Message] = []
+    line = 1
+
+    # First s1 trigger: a missed-core-question complaint.
+    messages.append(
+        Message("a.jsonl", line, "s1", "user", "你没回答我的问题")
+    )
+    line += 1
+
+    # Many unrelated s2 user turns interleave between the two s1 triggers.
+    # None of these are trust-eroding signals on their own.
+    for _ in range(10):
+        messages.append(
+            Message("a.jsonl", line, "s2", "user", "Please summarize the docs.")
+        )
+        line += 1
+
+    # Second s1 trigger: a Chinese trust-degradation phrase.
+    messages.append(
+        Message("a.jsonl", line, "s1", "user", "你最近怎么越来越笨了")
+    )
+
+    findings = detect_findings(messages)
+    episodes = [f for f in findings if f.failure_mode == "trust_degradation_episode"]
+
+    # Exactly one episode, on s1, with both quotes attached as evidence.
+    assert len(episodes) == 1
+    episode = episodes[0]
+    assert episode.session_id == "s1"
+    quotes = [item.quote for item in episode.evidence]
+    assert any("越来越笨" in q for q in quotes)
+    assert any("没回答我的问题" in q for q in quotes)
+    # s2 has no trust-eroding signals, so it must not produce an episode.
+    assert all(f.session_id != "s2" for f in episodes)
+
+
 def test_single_frustration_message_does_not_become_episode() -> None:
     """One signal alone is a normal frustration finding, not an episode."""
 
