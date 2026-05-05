@@ -34,14 +34,16 @@ def test_autopilot_detects_negative_feedback_and_writes_card(tmp_path: Path) -> 
 
     assert len(result.events) == 1
     event = result.events[0]
-    assert event.trigger == "user_negative_feedback"
+    assert event.trigger == "user_frustration_signal"
     assert event.severity == "high"
+    assert event.action == "intervene"
     assert event.card_path is not None
     card = Path(event.card_path)
     assert card.exists()
     assert stat.S_IMODE(card.stat().st_mode) == 0o600
     assert "Agent Doctor Autopilot" in card.read_text(encoding="utf-8")
-    assert "user_negative_feedback" in (tmp_path / "doctor" / "events.jsonl").read_text(encoding="utf-8")
+    assert "Immediate Agent Instruction" in card.read_text(encoding="utf-8")
+    assert "user_frustration_signal" in (tmp_path / "doctor" / "events.jsonl").read_text(encoding="utf-8")
 
 
 def test_autopilot_uses_state_to_suppress_repeated_events(tmp_path: Path) -> None:
@@ -170,7 +172,7 @@ def test_autopilot_cli_smoke(tmp_path: Path) -> None:
     )
     summary = json.loads(result.stdout)
 
-    assert summary["events"][0]["trigger"] == "user_negative_feedback"
+    assert summary["events"][0]["trigger"] == "user_frustration_signal"
     assert (tmp_path / "doctor" / "latest.md").exists()
 
 
@@ -198,10 +200,38 @@ def test_autopilot_writes_inbox_and_runs_notify_command(tmp_path: Path) -> None:
 
     assert len(result.events) == 1
     assert result.delivery_errors == []
-    assert notify_log.read_text(encoding="utf-8") == "user_negative_feedback"
+    assert notify_log.read_text(encoding="utf-8") == "user_frustration_signal"
     inbox_files = list((tmp_path / "inbox").glob("*.md"))
     assert len(inbox_files) == 1
     assert "Agent Doctor Advisory" in inbox_files[0].read_text(encoding="utf-8")
+    assert "Action: `intervene`" in inbox_files[0].read_text(encoding="utf-8")
+
+
+def test_autopilot_detects_real_world_profanity_as_intervention(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s5",
+                "role": "user",
+                "content": "你是傻逼吗？这个 agent 怎么每次都这样？",
+            }
+        ],
+    )
+
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+    )
+
+    assert len(result.events) == 1
+    event = result.events[0]
+    assert event.trigger == "user_frustration_signal"
+    assert event.severity == "high"
+    assert event.action == "intervene"
+    assert "profanity_or_insult" in event.summary
 
 
 def test_notify_command_reports_invalid_command() -> None:

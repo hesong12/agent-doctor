@@ -74,6 +74,22 @@ Patch targets:
 - `memory` — store a concise communication preference only after repeated evidence (overfit warning included for single occurrences).
 - `identity` — guide the agent toward direct, action-oriented updates.
 
+## user_frustration_signal
+
+Signals include direct user anger, insults/profanity, trust-break language, repeated correction language, and direct quality complaints. Examples include "what the fuck are you doing", "this is bullshit", "not useful", "cannot trust you", "废物", "垃圾", "不够聪明", and "每次都这样".
+
+This detector is implemented as a local weighted classifier, not a remote LLM:
+
+- insults/profanity and trust-break language carry high weight.
+- direct quality complaints carry high weight.
+- repeated corrections and urgency shape are weak supporting signals and do not create a scan finding by themselves.
+
+Patch targets:
+
+- `identity` — switch to a short evidence-backed recovery response.
+- `sop` — pause the normal success path, name the concrete failure, cite diagnosis evidence, and give the next corrective action.
+- `eval` — add a regression case for user-frustration recovery without defensiveness or long apology.
+
 ## Distractors that must not be flagged
 
 These are deliberate non-matches; the regression bench and unit tests include scenarios for each to ensure they stay non-matches:
@@ -85,3 +101,4 @@ These are deliberate non-matches; the regression bench and unit tests include sc
 - **Source-line references** — `cli.js:403:` does not match HTTP 403; `path/to/file.py:500:` does not match HTTP 500. Verified against real grep output.
 - **Capability offers** — "I can run … if you want", "let me know if …" are not promises and don't trip `execution_discipline`.
 - **Filler acknowledgements** — "No problem" without a preceding error context is not treated as an error acknowledgement.
+- **Urgency shape alone** — "WHAT???" does not trip `user_frustration_signal` without a stronger complaint, insult, repeated correction, or trust-break phrase.

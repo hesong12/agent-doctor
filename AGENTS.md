@@ -4,7 +4,7 @@ This file is for AI agents (Claude Code, Codex, Hermes, OpenClaw, or any code-mo
 
 ## What this project is
 
-Agent Doctor is a local-first session postmortem and improvement engine. It reads JSONL session transcripts, deterministically detects six failure modes, aggregates repeats per `(failure_mode, session_id)`, and stages reviewable patches for memory / SOP / identity / tool discipline / evals. It also exposes an MCP stdio server so other agents can call it mid-session.
+Agent Doctor is a local-first session postmortem and improvement engine. It reads JSONL session transcripts, deterministically detects seven failure modes, aggregates repeats per `(failure_mode, session_id)`, and stages reviewable patches for memory / SOP / identity / tool discipline / evals. It also exposes an MCP stdio server so other agents can call it mid-session.
 
 Core invariants — do not violate these without an explicit user request:
 
