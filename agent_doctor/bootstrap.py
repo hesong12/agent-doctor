@@ -21,7 +21,7 @@ nothing because users will conclude bootstrap is broken.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .install import install_skill
@@ -40,9 +40,20 @@ class HostInstall:
 
 
 @dataclass(frozen=True)
+class CacheInvalidation:
+    """One host-cache invalidation attempt with its outcome."""
+
+    host: str
+    target_path: Path
+    succeeded: bool
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class BootstrapResult:
     hosts: list[HostInstall]
     mcp_snippet: str
+    invalidations: list[CacheInvalidation] = field(default_factory=list)
 
     def installed(self) -> list[HostInstall]:
         return [host for host in self.hosts if host.written_path is not None]
@@ -93,6 +104,7 @@ def bootstrap(
     extra_targets: list[str] | None = None,
     dry_run: bool = False,
     force: bool = False,
+    invalidate_cache: bool = False,
 ) -> BootstrapResult:
     """Install skills into every detected host.
 
@@ -100,6 +112,8 @@ def bootstrap(
     not exist yet (creates them). ``dry_run=True`` reports what *would* be
     written without touching the filesystem. ``extra_targets`` adds explicit
     targets from the CLI alongside the auto-detected set.
+    ``invalidate_cache=True`` best-effort signals each host to rebuild its
+    skill prompt on next session — see :func:`invalidate_host_caches`.
     """
 
     detected = detect_hosts(home=home)
@@ -159,7 +173,95 @@ def bootstrap(
             )
         )
 
-    return BootstrapResult(hosts=hosts, mcp_snippet=mcp_config_snippet())
+    invalidations: list[CacheInvalidation] = []
+    if invalidate_cache and not dry_run:
+        invalidations = invalidate_host_caches(hosts, home=home or Path.home())
+
+    return BootstrapResult(
+        hosts=hosts,
+        mcp_snippet=mcp_config_snippet(),
+        invalidations=invalidations,
+    )
+
+
+def invalidate_host_caches(
+    hosts: list[HostInstall], *, home: Path | None = None
+) -> list[CacheInvalidation]:
+    """Best-effort: signal each memoryful host to rebuild its skill prompt.
+
+    Hermes pre-computes ``.skills_prompt_snapshot.json`` at startup. Removing
+    that file makes Hermes rebuild on next process start (and some live
+    Hermes builds re-watch this file and reload immediately). Claude Code
+    rescans ``~/.claude/skills/`` on each new session, so for it we just
+    ``touch`` the skills directory to bump mtime — no-op on most builds but
+    harmless. OpenClaw's reload protocol is undocumented; we skip it rather
+    than guess.
+
+    Returns one ``CacheInvalidation`` per host we attempted, with success
+    flag and a short detail string. This never raises — failures are
+    captured in the result so callers can surface them without crashing
+    the bootstrap.
+    """
+
+    home_dir = (home or Path.home()).expanduser()
+    out: list[CacheInvalidation] = []
+    installed = [host for host in hosts if host.written_path is not None]
+
+    for host in installed:
+        if host.target == "hermes":
+            snapshot = home_dir / ".hermes" / ".skills_prompt_snapshot.json"
+            try:
+                if snapshot.exists():
+                    snapshot.unlink()
+                    out.append(
+                        CacheInvalidation(
+                            host="Hermes",
+                            target_path=snapshot,
+                            succeeded=True,
+                            detail="removed cached snapshot; Hermes will rebuild on next start",
+                        )
+                    )
+                else:
+                    out.append(
+                        CacheInvalidation(
+                            host="Hermes",
+                            target_path=snapshot,
+                            succeeded=True,
+                            detail="no snapshot present; nothing to invalidate",
+                        )
+                    )
+            except OSError as exc:  # pragma: no cover — surfaces unusual permission errors
+                out.append(
+                    CacheInvalidation(
+                        host="Hermes",
+                        target_path=snapshot,
+                        succeeded=False,
+                        detail=f"could not remove snapshot: {exc}",
+                    )
+                )
+        elif host.target == "claude-code":
+            skills_dir = home_dir / ".claude" / "skills"
+            try:
+                if skills_dir.exists():
+                    skills_dir.touch(exist_ok=True)
+                    out.append(
+                        CacheInvalidation(
+                            host="Claude Code",
+                            target_path=skills_dir,
+                            succeeded=True,
+                            detail="bumped skills/ mtime; new sessions auto-rescan",
+                        )
+                    )
+            except OSError as exc:  # pragma: no cover
+                out.append(
+                    CacheInvalidation(
+                        host="Claude Code",
+                        target_path=skills_dir,
+                        succeeded=False,
+                        detail=f"could not bump mtime: {exc}",
+                    )
+                )
+    return out
 
 
 def _build_extra(extra_targets: list[str] | None, *, home: Path) -> list[HostInstall]:
@@ -262,6 +364,13 @@ def render_bootstrap_summary(result: BootstrapResult) -> str:
                 )
             else:
                 lines.append(f"  [missing]   {host.name:<14} ({host.skipped_reason})")
+
+    if result.invalidations:
+        lines.append("")
+        lines.append("Cache invalidation:")
+        for inv in result.invalidations:
+            tag = "[ok]     " if inv.succeeded else "[failed] "
+            lines.append(f"  {tag}{inv.host:<14} {inv.detail}")
 
     lines.extend(
         [

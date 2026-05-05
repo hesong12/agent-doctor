@@ -10,35 +10,34 @@ Agent Doctor is an engineering diagnosis tool. It is *not* therapy, HR performan
 
 ## Install
 
-One line, from GitHub:
+**One line.** Detects pipx vs pip, installs Agent Doctor, writes skills into every detected memoryful agent framework on the machine, and invalidates host skill caches so the new skill is live on the next session — no manual restart needed where supported.
 
 ```bash
-pip install git+https://github.com/hesong12/agent-doctor.git
-agent-doctor bootstrap
+curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh
 ```
 
-On Ubuntu 24.04+ / Debian 12+ the system Python is externally-managed (PEP 668), so pip refuses to install into it. Use [pipx](https://pipx.pypa.io/) instead — same one-liner, no virtualenv juggling:
+With extras:
 
 ```bash
-sudo apt-get install -y pipx && pipx ensurepath
-pipx install git+https://github.com/hesong12/agent-doctor.git
-agent-doctor bootstrap
-```
-
-`bootstrap` auto-detects `~/.hermes`, `~/.openclaw`, and `~/.claude/skills` and writes the right skill format into each host (Markdown SOP for Hermes / OpenClaw, `SKILL.md` with YAML frontmatter for Claude Code). It also prints the MCP configuration snippet you can paste into any MCP-aware host.
-
-Optional extras:
-
-```bash
-# Enable the MCP stdio server
-pip install "agent-doctor[mcp] @ git+https://github.com/hesong12/agent-doctor.git"
-
-# Enable LLM-backed eval (synthetic generator + closed-loop replay)
-pip install "agent-doctor[llm] @ git+https://github.com/hesong12/agent-doctor.git"
+# Include the MCP stdio server
+curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-mcp
 
 # Everything
-pip install "agent-doctor[mcp,llm] @ git+https://github.com/hesong12/agent-doctor.git"
+curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh -s -- --with-all
 ```
+
+After install, just say to your AI agent: *"review my last session"* / *"diagnose this transcript"* / *"why does the agent keep doing X"*. The host's skill router will match against the `SKILL.md` we wrote into each detected memoryful framework's skill directory and load Agent Doctor's workflow.
+
+If you'd rather not run a remote shell script, the manual two-step works equally well:
+
+```bash
+pipx install git+https://github.com/hesong12/agent-doctor.git
+agent-doctor bootstrap --invalidate-cache
+```
+
+(On Ubuntu 24.04+ / Debian 12+ install pipx first: `sudo apt-get install -y pipx && pipx ensurepath`. The `install.sh` script handles this automatically.)
+
+`bootstrap` auto-detects `~/.hermes`, `~/.openclaw`, and `~/.claude/skills` and writes a `SKILL.md` with YAML frontmatter into the right place for each host. Hermes gets `~/.hermes/skills/autonomous-ai-agents/agent-doctor/SKILL.md` (the categorized layout 124+ existing Hermes skills use); OpenClaw and Claude Code get `~/.<host>/skills/agent-doctor/SKILL.md`. It also prints the MCP configuration snippet you can paste into any MCP-aware host.
 
 For local development:
 
@@ -53,7 +52,7 @@ The package exposes the `agent-doctor` console script and can also be run with `
 
 ## For AI agents
 
-Read this section if you are an AI agent (Claude Code, Cursor, Cline, OpenClaw, Hermes, …) deciding whether to invoke Agent Doctor.
+Read this section if you are an AI agent inside a memoryful framework (Hermes, OpenClaw, Claude Code, …) deciding whether to invoke Agent Doctor.
 
 **When to invoke:**
 

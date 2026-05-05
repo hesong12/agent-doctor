@@ -12,6 +12,7 @@ import pytest
 from agent_doctor.bootstrap import (
     bootstrap,
     detect_hosts,
+    invalidate_host_caches,
     mcp_config_snippet,
     render_bootstrap_summary,
 )
@@ -107,6 +108,48 @@ def test_bootstrap_summary_mentions_mcp_snippet() -> None:
     assert "agent-doctor" in parsed["mcpServers"]
     assert parsed["mcpServers"]["agent-doctor"]["command"] == "agent-doctor"
     assert parsed["mcpServers"]["agent-doctor"]["args"] == ["mcp", "serve"]
+
+
+def test_invalidate_cache_removes_hermes_snapshot(tmp_path: Path) -> None:
+    """`bootstrap --invalidate-cache` removes Hermes's prebuilt skill prompt.
+
+    Without this, Hermes won't pick up the new SKILL.md until the next
+    process restart. With it, Hermes rebuilds on next start automatically.
+    """
+
+    hermes_root = tmp_path / ".hermes"
+    hermes_root.mkdir()
+    snapshot = hermes_root / ".skills_prompt_snapshot.json"
+    snapshot.write_text("{stale}", encoding="utf-8")
+
+    result = bootstrap(home=tmp_path, invalidate_cache=True)
+
+    assert not snapshot.exists(), "stale skills_prompt_snapshot.json should be removed"
+    hermes_invalidations = [inv for inv in result.invalidations if inv.host == "Hermes"]
+    assert hermes_invalidations and hermes_invalidations[0].succeeded
+
+
+def test_invalidate_cache_handles_missing_snapshot(tmp_path: Path) -> None:
+    """Missing snapshot is fine — we record success with a 'nothing to do' note."""
+
+    (tmp_path / ".hermes").mkdir()
+    result = bootstrap(home=tmp_path, invalidate_cache=True)
+    hermes_invalidations = [inv for inv in result.invalidations if inv.host == "Hermes"]
+    assert hermes_invalidations and hermes_invalidations[0].succeeded
+    assert "nothing to invalidate" in hermes_invalidations[0].detail
+
+
+def test_invalidate_host_caches_runs_independently(tmp_path: Path) -> None:
+    """The helper is callable on its own (used by tooling that drives bootstrap)."""
+
+    (tmp_path / ".hermes").mkdir()
+    snapshot = tmp_path / ".hermes" / ".skills_prompt_snapshot.json"
+    snapshot.write_text("{stale}", encoding="utf-8")
+
+    boot = bootstrap(home=tmp_path)
+    invalidations = invalidate_host_caches(boot.hosts, home=tmp_path)
+    assert any(inv.host == "Hermes" and inv.succeeded for inv in invalidations)
+    assert not snapshot.exists()
 
 
 def test_render_bootstrap_summary_lists_each_host(tmp_path: Path) -> None:
