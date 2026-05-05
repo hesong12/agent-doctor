@@ -144,7 +144,18 @@ def test_chinese_insult_and_trust_break_are_frustration_signal() -> None:
 
 
 def test_common_chinese_dumb_feedback_is_frustration_signal() -> None:
-    for text in ["你怎么这么笨的？", "你很笨。", "好笨。", "那么笨还继续回答？", "笨死了。"]:
+    for text in [
+        "你怎么这么笨的？",
+        "你很笨。",
+        "好笨。",
+        "那么笨还继续回答？",
+        "笨死了。",
+        "你最近怎么这么蠢了？",
+        "你很蠢。",
+        "好蠢。",
+        "真蠢。",
+        "蠢死了。",
+    ]:
         messages = [
             Message("session.jsonl", 1, "s1", "user", text),
         ]
@@ -152,7 +163,7 @@ def test_common_chinese_dumb_feedback_is_frustration_signal() -> None:
         findings = detect_findings(messages)
 
         frustration = [finding for finding in findings if finding.failure_mode == "user_frustration_signal"]
-        assert len(frustration) == 1
+        assert len(frustration) == 1, f"expected frustration for {text!r}, got {findings!r}"
         assert frustration[0].severity == "high"
 
 
@@ -184,6 +195,8 @@ def test_technical_terms_do_not_trigger_frustration_signal() -> None:
         Message("session.jsonl", 6, "s1", "user", "检查滚轮和左右滚动。"),
         Message("session.jsonl", 7, "s1", "user", "HTTP_RESPONSE_ERROR"),
         Message("session.jsonl", 8, "s1", "user", "这个库很笨重，不适合这个项目。"),
+        Message("session.jsonl", 9, "s1", "user", "市场蠢蠢欲动，等待信号。"),
+        Message("session.jsonl", 10, "s1", "user", "他蠢动了一下就停了。"),
     ]
 
     findings = detect_findings(messages)
