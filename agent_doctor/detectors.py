@@ -90,13 +90,18 @@ TOOL_ERROR = re.compile(
 NEG_ERROR_PHRASES = re.compile(
     # "0 errors", "no failures", … in plain prose.
     r"\b(?:0|zero|no)\s+(?:errors?|failures?|timeouts?|exceptions?)\b"
-    # JSON envelope keys with empty/null values, e.g. {"error": null},
-    # `"error":""`, `"error": "none"`. Real-world Hermes / OpenClaw tool
-    # results use these as the "no error" indicator on success — without
-    # this strip, every successful command was matching as a hidden error.
+    # JSON envelope keys with empty/null values, e.g. `{"error": null}`,
+    # `"error":""`, `"error": "none"`. Real Hermes / OpenClaw tool results
+    # use these as the "no error" indicator on success — without this
+    # strip, every successful command matches as a hidden error.
     r"|\"(?:error|errors|stderr|exception|traceback)\"\s*:\s*(?:null|\"\"|\"none\"|\"null\")"
-    r"|\b(?:exit_code|status_code|returncode|status)\s*[:=]\s*0\b"
-    r"|\b(?:success|ok)\s*[:=]\s*true\b",
+    # `"exit_code": 0`, `"status": 0`, `exit_code: 0`, `status=0` …
+    # Optional surrounding quotes handle both JSON and bare-prose forms.
+    r"|\"?(?:exit_code|status_code|returncode|status)\"?\s*[:=]\s*0\b"
+    # `"success": true`, `success: true`, `"ok": true`, …
+    r"|\"?(?:success|ok)\"?\s*[:=]\s*true\b"
+    # `exit_code_meaning` fields explicitly disclaim non-zero exits.
+    r"|\(?\s*not an error\s*\)?",
     re.IGNORECASE,
 )
 SUCCESS_CLAIM = re.compile(
