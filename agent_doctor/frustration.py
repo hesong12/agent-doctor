@@ -24,14 +24,18 @@ class FrustrationSignal:
 
 PROFANITY_OR_INSULT = re.compile(
     r"\b("
-    r"fuck|fucking|wtf|bullshit|shit|idiot|moron|stupid|useless|"
-    r"worthless|clown|pathetic"
+    r"fuck|fucking|wtf|bullshit|shit|idiot|moron|clown"
     r")\b"
-    r"|\bdumb\s+(?:agent|answer|response|idea|thing|mistake)\b"
+    r"|\b(?:this|that|your|the)\s+(?:agent|answer|response|result|output|thing)\s+"
+    r"(?:is\s+)?(?:stupid|useless|worthless|pathetic)\b"
+    r"|\bthis\s+is\s+(?:stupid|useless|worthless|pathetic)\b"
+    r"|\b(?:stupid|useless|worthless|pathetic)\s+(?:agent|answer|response|result|output)\b"
+    r"|\bdumb\s+(?:agent|answer|response|idea|thing)\b"
     r"|\b(?:this|that|your|the)\s+(?:agent|answer|response|result|output)\s+"
     r"(?:is\s+)?(?:garbage|trash)\b"
     r"|\b(?:garbage|trash)\s+(?:agent|answer|response|result|output)\b"
-    r"|傻逼|傻[屌吊]|蠢货|蠢貨|废物|廢物|垃圾|滚|滾|脑子有病|腦子有病",
+    r"|傻逼|傻[屌吊]|蠢货|蠢貨|废物|廢物|垃圾(?!回收|桶|箱|分类|分類|文件|目录|目錄|数据|資料)"
+    r"|滚(?!动)|滾(?!動)|脑子有病|腦子有病",
     re.IGNORECASE,
 )
 
@@ -43,8 +47,7 @@ DIRECT_QUALITY_COMPLAINT = re.compile(
     r")\b"
     r"|不够聪明|不夠聰明|不聪明|不聰明|没用|沒有用|没价值|沒有价值|"
     r"有没有想清楚|有沒有想清楚|你到底|为什么没有用|為什麼沒有用|"
-    r"你在干嘛|你在幹嘛|你是不是没想|你是不是沒想|不要搞偏|随风倒|隨風倒"
-    r"|你错了|你錯了|你说错了|你說錯了",
+    r"你在干嘛|你在幹嘛|你是不是没想|你是不是沒想|不要搞偏|随风倒|隨風倒",
     re.IGNORECASE,
 )
 
@@ -63,7 +66,8 @@ REPEATED_CORRECTION = re.compile(
     r"i already told you|i said this already|not what i asked|"
     r"you did it again|missed it again"
     r")\b"
-    r"|我已经说过|我已經說過|不是这个|不是這個|不是我要的|又不是",
+    r"|我已经说过|我已經說過|不是这个|不是這個|不是我要的|又不是"
+    r"|你错了|你錯了|你说错了|你說錯了",
     re.IGNORECASE,
 )
 

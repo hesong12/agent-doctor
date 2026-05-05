@@ -124,14 +124,14 @@ def test_chinese_insult_and_trust_break_are_frustration_signal() -> None:
     assert frustration[0].severity == "high"
 
 
-def test_simple_chinese_wrong_feedback_is_frustration_signal() -> None:
+def test_simple_chinese_wrong_feedback_is_not_intervention_by_itself() -> None:
     messages = [
         Message("session.jsonl", 1, "s1", "user", "你错了，这不是我要的答案。"),
     ]
 
     findings = detect_findings(messages)
 
-    assert any(finding.failure_mode == "user_frustration_signal" for finding in findings)
+    assert not any(finding.failure_mode == "user_frustration_signal" for finding in findings)
 
 
 def test_urgency_shape_alone_does_not_create_scan_finding() -> None:
@@ -147,7 +147,9 @@ def test_technical_terms_do_not_trigger_frustration_signal() -> None:
         Message("session.jsonl", 1, "s1", "user", "Check whether garbage collection caused the same problem."),
         Message("session.jsonl", 2, "s1", "user", "Move the file to the trash folder."),
         Message("session.jsonl", 3, "s1", "user", "The CI log says TERM=dumb."),
-        Message("session.jsonl", 4, "s1", "user", "HTTP_RESPONSE_ERROR"),
+        Message("session.jsonl", 4, "s1", "user", "Remove this useless variable and the stupid mistake in the code."),
+        Message("session.jsonl", 5, "s1", "user", "检查垃圾回收和页面滚动条。"),
+        Message("session.jsonl", 6, "s1", "user", "HTTP_RESPONSE_ERROR"),
     ]
 
     findings = detect_findings(messages)
