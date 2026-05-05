@@ -268,6 +268,7 @@ def test_autopilot_detects_chinese_dumb_feedback_variants(tmp_path: Path) -> Non
             {"session_id": "s7", "role": "user", "content": "你很笨。"},
             {"session_id": "s8", "role": "user", "content": "那么笨还继续回答？"},
             {"session_id": "s9", "role": "user", "content": "笨死了。"},
+            {"session_id": "s10", "role": "user", "content": "好笨。"},
         ],
     )
 
@@ -278,7 +279,7 @@ def test_autopilot_detects_chinese_dumb_feedback_variants(tmp_path: Path) -> Non
         cooldown_seconds=0,
     )
 
-    assert [event.session_id for event in result.events] == ["s7", "s8", "s9"]
+    assert [event.session_id for event in result.events] == ["s7", "s8", "s9", "s10"]
     assert all(event.trigger == "user_frustration_signal" for event in result.events)
     assert all(event.severity == "high" for event in result.events)
     assert all(event.action == "intervene" for event in result.events)
