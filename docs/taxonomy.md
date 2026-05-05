@@ -76,7 +76,7 @@ Patch targets:
 
 ## user_frustration_signal
 
-Signals include direct user anger, insults/profanity, trust-break language, repeated correction language, and direct quality complaints. Examples include "what the fuck are you doing", "this is bullshit", "not useful", "cannot trust you", "废物", "垃圾", "不够聪明", "你怎么这么笨的？", "好笨", and "每次都这样".
+Signals include direct user anger, insults/profanity, trust-break language, repeated correction language, direct quality complaints, and direct dumb/stupid feedback in English and Chinese. Examples include "what the fuck are you doing", "this is bullshit", "Why are you so dumb?", "Are you stupid?", "not useful", "cannot trust you", "废物", "垃圾", "不够聪明", "你怎么这么笨的？", "好笨", and "每次都这样".
 
 This detector is implemented as a local weighted classifier, not a remote LLM:
 

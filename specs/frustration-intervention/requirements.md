@@ -19,8 +19,9 @@ starts without me asking for a postmortem.
 #### Acceptance Criteria
 
 1. When a user message contains direct insults, profanity, direct dumb-feedback
-   phrases such as "你怎么这么笨的？", or common Chinese equivalents, Agent
-   Doctor shall classify it as a high-severity user frustration signal.
+   phrases such as "Why are you so dumb?", "Are you stupid?", or
+   "你怎么这么笨的？", Agent Doctor shall classify it as a high-severity
+   user frustration signal.
 2. When a user message contains direct quality complaints, repeated-correction
    language, or trust-break language, Agent Doctor shall classify it with a
    deterministic local classifier and expose the matched signal labels.

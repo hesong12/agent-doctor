@@ -13,6 +13,7 @@ Agent Doctor is CLI-first with an optional MCP stdio server in front. The trust 
 - `eval` — sub-command group: `generate`, `bench`, `replay` for the LLM-first eval framework (see `docs/evaluation.md`).
 - `autopilot` — run the platform-agnostic sidecar trigger engine. It reads host transcripts through adapters, keeps local SQLite state for de-duplication/cooldown, and writes diagnosis cards/events under `--out`.
 - `setup autopilot` — opinionated agent-managed installation: detect OpenClaw/Hermes, bootstrap skills, baseline existing transcripts, write launchd/systemd user services, and start the sidecar with safe defaults.
+- `notify openclaw-system-event` — host-native delivery adapter for OpenClaw. It reads `AGENT_DOCTOR_*` metadata from autopilot's notify hook and enqueues an `openclaw system event` for live intervention cards.
 - `bootstrap` — auto-detect `~/.hermes`, `~/.openclaw`, `~/.claude/skills` and write the unified `SKILL.md` into each host's correct skill location. `--invalidate-cache` best-effort signals each host to rebuild its skill prompt on next start (removes Hermes's `.skills_prompt_snapshot.json`, bumps Claude Code's `skills/` mtime). `--dry-run` previews; `--force` installs into hosts whose home dir doesn't exist.
 - `install-skill` — write a single skill file by hand (`--target hermes|openclaw|claude-code|generic`).
 - `doctor` — print environment, version, default paths, and privacy info.
@@ -42,9 +43,9 @@ Current triggers are intentionally deterministic and local:
 
 - `user_frustration_signal` — direct quality complaints, insults/profanity,
   repeated corrections, and trust-break language such as "not useful",
-  "no value", "not thinking", "what the fuck", "不够聪明", "废物",
-  "每次都这样", "有没有想清楚", and direct dumb-feedback phrases like
-  "你怎么这么笨的？". Technical terms such as "笨重" are guarded as
+  "no value", "not thinking", "what the fuck", "Why are you so dumb?",
+  "Are you stupid?", "不够聪明", "废物", "每次都这样", "有没有想清楚",
+  and "你怎么这么笨的？". Technical terms such as "笨重" are guarded as
   non-frustration distractors.
 - `completion_claim_without_nearby_verification` — assistant says a task is
   fixed/done/completed without nearby tool or verification evidence.
@@ -99,6 +100,24 @@ Delivery stays adapter-free and host-runtime-free:
 - delivery failures are appended to `delivery-errors.jsonl` and do not stop
   diagnosis.
 
+OpenClaw has one built-in delivery adapter:
+
+```bash
+agent-doctor notify openclaw-system-event
+```
+
+It runs as a notify command, reads the emitted card path from
+`AGENT_DOCTOR_CARD`, skips non-`intervene` events by default, and calls the
+public OpenClaw CLI:
+
+```bash
+openclaw system event --mode now --text <intervention>
+```
+
+This preserves the outside-in boundary: Agent Doctor does not edit OpenClaw
+runtime config or require hooks, but high-severity interventions are no longer
+left only in `latest.md` / inbox files.
+
 ### Agent-Managed Setup
 
 `agent_doctor.setup` is the zero-touch entry point meant for OpenClaw/Hermes (or
@@ -119,7 +138,9 @@ manually:
    Agent Doctor skill.
 3. install one launchd/systemd user service per detected platform.
 4. baseline current JSONL transcript snapshots before start.
-5. start services by default with `--changed-only` enabled.
+5. for OpenClaw, set the default notify command to
+   `agent-doctor notify openclaw-system-event`.
+6. start services by default with `--changed-only` enabled.
 
 This is deliberately a wrapper around existing public APIs (`bootstrap` and
 `service install`) rather than a runtime integration. The user-visible contract

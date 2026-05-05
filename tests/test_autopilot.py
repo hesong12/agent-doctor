@@ -260,6 +260,32 @@ def test_autopilot_detects_common_chinese_dumb_feedback(tmp_path: Path) -> None:
     assert event.action == "intervene"
 
 
+def test_autopilot_detects_common_english_dumb_feedback(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s6-english",
+                "role": "user",
+                "content": "Why are you so dumb?",
+            }
+        ],
+    )
+
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+    )
+
+    assert len(result.events) == 1
+    event = result.events[0]
+    assert event.trigger == "user_frustration_signal"
+    assert event.severity == "high"
+    assert event.action == "intervene"
+
+
 def test_autopilot_detects_chinese_dumb_feedback_variants(tmp_path: Path) -> None:
     transcript = tmp_path / "session.jsonl"
     _write_jsonl(
