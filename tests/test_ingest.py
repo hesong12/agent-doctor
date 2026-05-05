@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from agent_doctor.ingest import IngestError, collect_jsonl_paths, ingest_file, ingest_path
+from agent_doctor.ingest import (
+    IngestError,
+    MAX_CONTENT_CHARS,
+    collect_jsonl_paths,
+    ingest_file,
+    ingest_path,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -164,6 +170,50 @@ def test_ingest_compact_args_skips_noise_keys_before_truncating(tmp_path: Path) 
     )
     assert "thoughtSignature" not in messages[0].content
     assert "AAAA" not in messages[0].content
+
+
+def test_ingest_keeps_large_structured_tool_result_parseable(tmp_path: Path) -> None:
+    """Large OpenClaw tool wrappers should stay valid JSON after truncation.
+
+    The detector treats structured tool results differently from raw stderr.
+    If ingestion truncates the final JSON string into invalid JSON, the
+    detector falls back to keyword scanning and mistakes embedded prompt text
+    like "If sending fails..." for a tool failure.
+    """
+
+    sample = tmp_path / "session.jsonl"
+    embedded_prompt = (
+        "Generate a brief. If sending fails, report the exact non-secret error. "
+        "Risks / weak signals should be listed when sources are unreliable. "
+    ) * 120
+    sample.write_text(
+        json.dumps(
+            {
+                "type": "tool.result",
+                "data": {
+                    "toolCallId": "call_123",
+                    "name": "cron",
+                    "success": True,
+                    "contentItems": [
+                        {
+                            "type": "inputText",
+                            "text": json.dumps({"message": embedded_prompt}),
+                        }
+                    ],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    messages = ingest_file(sample)
+
+    assert messages[0].role == "tool"
+    assert len(messages[0].content) <= MAX_CONTENT_CHARS
+    assert "... [truncated]" in messages[0].content
+    parsed = json.loads(messages[0].content)
+    assert parsed["success"] is True
 
 
 def test_ingest_normalizes_hermes_nested_message_data_entry(tmp_path: Path) -> None:

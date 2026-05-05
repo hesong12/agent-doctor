@@ -314,6 +314,9 @@ def _first_present(container: dict[str, Any], keys: list[str]) -> Any:
 def _stringify_content(value: Any) -> str:
     text = _stringify_raw(value)
     if len(text) > MAX_CONTENT_CHARS:
+        structured = _stringify_truncated_json(text)
+        if structured is not None and len(structured) <= MAX_CONTENT_CHARS:
+            return structured
         text = text[:MAX_CONTENT_CHARS].rstrip() + "\n... [truncated]"
     return text
 
@@ -358,6 +361,61 @@ def _stringify_raw(value: Any) -> str:
         cleaned = {k: v for k, v in value.items() if k not in _NOISY_KEYS_DROPPED_FROM_JSON}
         return json.dumps(cleaned, ensure_ascii=False, sort_keys=True)
     return str(value).strip()
+
+
+def _stringify_truncated_json(text: str) -> str | None:
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "[{":
+        return None
+    try:
+        value = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+
+    for string_limit, list_limit in (
+        (1000, 20),
+        (500, 20),
+        (240, 12),
+        (120, 8),
+        (60, 5),
+    ):
+        rendered = json.dumps(
+            _truncate_json_value(
+                value,
+                string_limit=string_limit,
+                list_limit=list_limit,
+            ),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if len(rendered) <= MAX_CONTENT_CHARS:
+            return rendered
+    return None
+
+
+def _truncate_json_value(value: Any, *, string_limit: int, list_limit: int) -> Any:
+    if isinstance(value, str):
+        if len(value) <= string_limit:
+            return value
+        return value[:string_limit].rstrip() + "\n... [truncated]"
+    if isinstance(value, list):
+        items = [
+            _truncate_json_value(item, string_limit=string_limit, list_limit=list_limit)
+            for item in value[:list_limit]
+        ]
+        if len(value) > list_limit:
+            items.append({"_truncated_items": len(value) - list_limit})
+        return items
+    if isinstance(value, dict):
+        return {
+            key: _truncate_json_value(
+                item,
+                string_limit=string_limit,
+                list_limit=list_limit,
+            )
+            for key, item in value.items()
+        }
+    return value
 
 
 def _compact_args(args: Any) -> str:
