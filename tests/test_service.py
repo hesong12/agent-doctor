@@ -34,6 +34,7 @@ def test_service_install_writes_launchd_plist_without_starting(tmp_path: Path, m
     assert "--inbox-dir" in args
     assert "--changed-only" in args
     assert payload["EnvironmentVariables"]["AGENT_DOCTOR_HOST_HOME"] == str(tmp_path)
+    assert "/opt/homebrew/bin" in payload["EnvironmentVariables"]["PATH"]
     assert (tmp_path / "doctor" / "state.sqlite3").exists()
 
 

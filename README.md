@@ -246,8 +246,8 @@ agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw \
 
 - `--inbox-dir` writes a per-session advisory file that a memoryful agent can read on its next turn or heartbeat.
 - `--notify-command` runs a local command after a card is emitted. Metadata is passed through `AGENT_DOCTOR_*` environment variables such as `AGENT_DOCTOR_CARD`, `AGENT_DOCTOR_TRIGGER`, `AGENT_DOCTOR_ACTION`, `AGENT_DOCTOR_SEVERITY`, and `AGENT_DOCTOR_SESSION_ID`.
-- Delivery failures are recorded in `delivery-errors.jsonl`; diagnosis itself still succeeds.
-- `agent-doctor notify openclaw-system-event` is the built-in OpenClaw delivery adapter. It reads the same `AGENT_DOCTOR_*` environment, skips non-`intervene` events by default, and enqueues a local OpenClaw system event without changing OpenClaw configuration.
+- Delivery failures are recorded in `delivery-errors.jsonl`; diagnosis itself still succeeds, but failed interventions are not marked handled in SQLite, so the next watch pass can retry instead of hiding the recovery moment behind cooldown.
+- `agent-doctor notify openclaw-system-event` is the built-in OpenClaw delivery adapter. It reads the same `AGENT_DOCTOR_*` environment, skips non-`intervene` events by default, resolves OpenClaw from host command paths such as `/opt/homebrew/bin` under launchd/systemd, and enqueues a local OpenClaw system event without changing OpenClaw configuration.
 
 Install as a background user service:
 
@@ -262,7 +262,9 @@ Service installation baselines existing transcript files before starting by
 default and starts the service with changed-file scanning enabled, so a fresh
 sidecar does not flood the inbox with historical findings. Pass
 `--no-baseline-existing` when you intentionally want the service to scan old
-sessions as soon as it starts.
+sessions as soon as it starts. Generated launchd/systemd services also include
+a host command PATH (`/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`)
+so notify adapters do not depend on an interactive shell profile.
 
 The installer also supports this as an opt-in:
 

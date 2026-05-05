@@ -14,6 +14,8 @@ from .autopilot import Platform, baseline_autopilot_state
 from .ingest import host_home
 from .schema import Severity
 
+HOST_BIN_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
 
 @dataclass(frozen=True)
 class ServiceResult:
@@ -167,6 +169,7 @@ def _write_launchd_plist(path: Path, command: list[str]) -> None:
         "StandardErrorPath": str(service_home() / ".agent-doctor" / "logs" / f"{label}.err.log"),
         "EnvironmentVariables": {
             "AGENT_DOCTOR_HOST_HOME": str(service_home()),
+            "PATH": HOST_BIN_PATH,
         },
     }
     Path(payload["StandardOutPath"]).parent.mkdir(parents=True, exist_ok=True)
@@ -185,6 +188,7 @@ def _write_systemd_unit(path: Path, command: list[str]) -> None:
             "[Service]",
             "Type=simple",
             f"Environment=AGENT_DOCTOR_HOST_HOME={service_home()}",
+            f"Environment=PATH={HOST_BIN_PATH}",
             f"ExecStart={_systemd_exec(command)}",
             "Restart=always",
             "RestartSec=5",

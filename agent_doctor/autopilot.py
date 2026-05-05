@@ -144,12 +144,15 @@ def run_autopilot_once(
                 append_event(out_dir / "events.jsonl", event)
                 if inbox_dir is not None:
                     write_inbox_advisory(inbox_dir, event)
+                delivered = True
                 if notify_command:
                     error = run_notify_command(notify_command, event)
                     if error:
+                        delivered = False
                         delivery_errors.append(error)
                         append_delivery_error(out_dir / "delivery-errors.jsonl", event, error)
-                state.record(event)
+                if delivered:
+                    state.record(event)
                 emitted.append(event)
             else:
                 suppressed += 1
@@ -378,9 +381,27 @@ def run_notify_command(command: str, event: AutopilotEvent) -> str | None:
         }
     )
     try:
-        subprocess.run(args, check=True, text=True, capture_output=True, timeout=15, env=env)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return str(exc)
+        completed = subprocess.run(
+            args,
+            check=False,  # we want to inspect the result, not raise
+            text=True,
+            capture_output=True,
+            timeout=15,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return f"timeout after {exc.timeout}s: {' '.join(args)}"
+    except OSError as exc:
+        return f"could not start notify command {args!r}: {exc}"
+    if completed.returncode != 0:
+        stderr_tail = completed.stderr.strip() if completed.stderr else ""
+        stdout_tail = completed.stdout.strip() if completed.stdout else ""
+        parts = [f"rc={completed.returncode}"]
+        if stderr_tail:
+            parts.append(f"stderr={stderr_tail!r}")
+        if stdout_tail:
+            parts.append(f"stdout={stdout_tail!r}")
+        return " ".join(parts)
     return None
 
 

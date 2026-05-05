@@ -207,6 +207,120 @@ def test_autopilot_writes_inbox_and_runs_notify_command(tmp_path: Path) -> None:
     assert "Action: `intervene`" in inbox_files[0].read_text(encoding="utf-8")
 
 
+def test_autopilot_retries_intervention_after_delivery_failure(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    state = tmp_path / "doctor" / "state.sqlite3"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s-delivery",
+                "role": "user",
+                "content": "你搞这些垃圾有什么用？治标不治本",
+            }
+        ],
+    )
+
+    first = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        state_path=state,
+        notify_command=f"{sys.executable} -c \"import sys; sys.exit(7)\"",
+    )
+    second = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        state_path=state,
+        notify_command=f"{sys.executable} -c \"import sys; sys.exit(7)\"",
+    )
+
+    assert len(first.events) == 1
+    assert len(second.events) == 1
+    assert first.delivery_errors
+    assert second.delivery_errors
+    assert "rc=7" in first.delivery_errors[0]
+
+
+def test_run_notify_command_captures_subprocess_stderr(tmp_path: Path) -> None:
+    """Failed notify subprocess: stderr is captured in the error string.
+
+    Today the error string is just CalledProcessError's str(), which is
+    'Command ... returned non-zero exit status N.' That hides why the
+    subprocess actually failed. After this fix the error string includes
+    rc + stderr + stdout so delivery-errors.jsonl is debuggable.
+    """
+    transcript = tmp_path / "session.jsonl"
+    state = tmp_path / "doctor" / "state.sqlite3"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s-stderr",
+                "role": "user",
+                "content": "你怎么这么笨，又搞错了",
+            }
+        ],
+    )
+
+    notify = (
+        f"{sys.executable} -c "
+        "\"import sys; sys.stderr.write('boom: openclaw not found\\n'); "
+        "sys.stdout.write('partial stdout\\n'); sys.exit(1)\""
+    )
+
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        state_path=state,
+        notify_command=notify,
+    )
+
+    assert len(result.events) == 1
+    assert result.delivery_errors, "delivery should have failed"
+    err = result.delivery_errors[0]
+    assert "rc=1" in err
+    assert "boom: openclaw not found" in err
+    assert "partial stdout" in err
+
+
+def test_autopilot_records_successful_delivery_for_cooldown(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    state = tmp_path / "doctor" / "state.sqlite3"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s-delivered",
+                "role": "user",
+                "content": "This has no value. You are not thinking.",
+            }
+        ],
+    )
+
+    first = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        state_path=state,
+        notify_command=f"{sys.executable} -c \"pass\"",
+    )
+    second = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        state_path=state,
+        notify_command=f"{sys.executable} -c \"pass\"",
+    )
+
+    assert len(first.events) == 1
+    assert first.delivery_errors == []
+    assert second.events == []
+    assert second.suppressed == 1
+
+
 def test_autopilot_detects_real_world_profanity_as_intervention(tmp_path: Path) -> None:
     transcript = tmp_path / "session.jsonl"
     _write_jsonl(

@@ -97,8 +97,9 @@ Delivery stays adapter-free and host-runtime-free:
 - `--inbox-dir` writes per-session advisory Markdown files.
 - `--notify-command` invokes a local command with `AGENT_DOCTOR_*` environment
   variables pointing at the event/card.
-- delivery failures are appended to `delivery-errors.jsonl` and do not stop
-  diagnosis.
+- delivery failures are appended to `delivery-errors.jsonl`, but failed
+  interventions are not recorded as handled in SQLite. The next watch pass can
+  retry them instead of losing the recovery moment behind cooldown state.
 
 OpenClaw has one built-in delivery adapter:
 
@@ -107,8 +108,9 @@ agent-doctor notify openclaw-system-event
 ```
 
 It runs as a notify command, reads the emitted card path from
-`AGENT_DOCTOR_CARD`, skips non-`intervene` events by default, and calls the
-public OpenClaw CLI:
+`AGENT_DOCTOR_CARD`, skips non-`intervene` events by default, resolves OpenClaw
+from host command locations such as `/opt/homebrew/bin` even under launchd's
+minimal PATH, and calls the public OpenClaw CLI:
 
 ```bash
 openclaw system event --mode now --text <intervention>
