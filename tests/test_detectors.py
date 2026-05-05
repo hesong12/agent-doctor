@@ -125,15 +125,16 @@ def test_chinese_insult_and_trust_break_are_frustration_signal() -> None:
 
 
 def test_common_chinese_dumb_feedback_is_frustration_signal() -> None:
-    messages = [
-        Message("session.jsonl", 1, "s1", "user", "你怎么这么笨的？"),
-    ]
+    for text in ["你怎么这么笨的？", "你很笨。", "那么笨还继续回答？", "笨死了。"]:
+        messages = [
+            Message("session.jsonl", 1, "s1", "user", text),
+        ]
 
-    findings = detect_findings(messages)
+        findings = detect_findings(messages)
 
-    frustration = [finding for finding in findings if finding.failure_mode == "user_frustration_signal"]
-    assert len(frustration) == 1
-    assert frustration[0].severity == "high"
+        frustration = [finding for finding in findings if finding.failure_mode == "user_frustration_signal"]
+        assert len(frustration) == 1
+        assert frustration[0].severity == "high"
 
 
 def test_simple_chinese_wrong_feedback_is_not_intervention_by_itself() -> None:

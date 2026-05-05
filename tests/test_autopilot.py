@@ -260,6 +260,30 @@ def test_autopilot_detects_common_chinese_dumb_feedback(tmp_path: Path) -> None:
     assert event.action == "intervene"
 
 
+def test_autopilot_detects_chinese_dumb_feedback_variants(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {"session_id": "s7", "role": "user", "content": "你很笨。"},
+            {"session_id": "s8", "role": "user", "content": "那么笨还继续回答？"},
+            {"session_id": "s9", "role": "user", "content": "笨死了。"},
+        ],
+    )
+
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        cooldown_seconds=0,
+    )
+
+    assert [event.session_id for event in result.events] == ["s7", "s8", "s9"]
+    assert all(event.trigger == "user_frustration_signal" for event in result.events)
+    assert all(event.severity == "high" for event in result.events)
+    assert all(event.action == "intervene" for event in result.events)
+
+
 def test_notify_command_reports_invalid_command() -> None:
     error = run_notify_command('"unterminated', event=run_autopilot_once)  # type: ignore[arg-type]
 
