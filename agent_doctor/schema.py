@@ -46,6 +46,7 @@ class Finding:
     eval_case: dict[str, str]
     confidence: float
     session_id: str = ""
+    count: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -57,6 +58,7 @@ class Finding:
 class ScanResult:
     messages: list[Message] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
+    parse_errors: int = 0
 
     @property
     def session_count(self) -> int:

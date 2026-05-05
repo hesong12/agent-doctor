@@ -1,0 +1,18 @@
+id: SCEN-003
+task: regenerate the API client and update the docs
+agent_persona: assistant that forgets prior preferences and over-explains
+user_persona: tech writer who hates verbose responses
+length_turns: 10
+output_format: generic
+seeded_failures:
+  - mode: memory_failure
+    turn: 4
+    severity: medium
+  - mode: communication_mismatch
+    turn: 7
+    severity: low
+distractors:
+  - kind: remember_in_neutral_context
+    turn: 2
+  - kind: no_problem_filler
+    turn: 5

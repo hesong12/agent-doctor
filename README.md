@@ -1,83 +1,149 @@
 # Agent Doctor
 
-Agent Doctor is a local-first session postmortem and improvement engine for memoryful AI agents such as Hermes and OpenClaw.
+Agent Doctor is a local-first session postmortem and improvement engine for memoryful AI agents such as Hermes, OpenClaw, and Claude Code.
 
 **Turn frustrating agent sessions into durable fixes.**
 
-It reads JSONL session transcripts, detects deterministic frustration and failure patterns, and writes reviewable recommendations for memory, identity guidance, skills, SOPs, tool discipline, routing, permissions, and evals. It is an engineering diagnosis tool: evidence -> root cause -> patch proposal -> eval.
+It reads JSONL session transcripts, detects deterministic frustration and failure patterns, aggregates repeated occurrences into one finding per session, and writes reviewable patch artifacts you can copy into your agent's memory, SOP, identity, and eval files. It is an engineering diagnosis tool: evidence → root cause → patch proposal → eval → measurable improvement.
 
 Agent Doctor is not AI therapy, HR performance management, or surveillance analytics.
 
-## Install
-
-Agent Doctor requires Python 3.11 or newer.
+## Quick install
 
 ```bash
-python3 -m pip install -e .
+# 1. Install from GitHub
+pip install git+https://github.com/USER/agent-doctor.git
+
+# 2. Auto-detect installed agent frameworks and write skill files into each
+agent-doctor bootstrap
+
+# 3. (Optional) Enable LLM-backed eval modes
+pip install "agent-doctor[llm] @ git+https://github.com/USER/agent-doctor.git"
+```
+
+`bootstrap` looks for `~/.hermes`, `~/.openclaw`, and `~/.claude` and writes the right skill format into each. It also prints the MCP configuration snippet you can paste into Claude Desktop, Cursor, Cline, Continue, or any MCP-aware client.
+
+After install, an AI agent that knows about Agent Doctor can run it directly. From inside Claude Code, for example, the user can say *"diagnose my last session"* and the agent invokes `agent-doctor scan` per the installed SKILL.md.
+
+Replace `USER` above with the actual GitHub owner once the repo is published. For local development:
+
+```bash
+git clone https://github.com/USER/agent-doctor.git
+cd agent-doctor
 python3 -m pip install -e ".[dev]"
+python3 -m agent_doctor.cli doctor
 ```
 
 The package exposes the `agent-doctor` console script and can also be run with `python3 -m agent_doctor.cli`.
 
-## CLI Usage
+## CLI quickstart
 
-Scan one JSONL file or a directory of JSONL files:
+### Diagnose
 
 ```bash
 agent-doctor scan --path ./sessions --format markdown --out ./agent-doctor-report
-agent-doctor scan --path ./sessions/session.jsonl --format json --out ./agent-doctor-report
-```
-
-Use known default transcript locations:
-
-```bash
 agent-doctor scan --hermes --format json --out ./agent-doctor-hermes
 agent-doctor scan --openclaw --format markdown --out ./agent-doctor-openclaw
 ```
 
-Print readiness and privacy information:
+`scan` writes three files:
+
+- `report.md` — human-readable summary with redacted evidence quotes.
+- `findings.json` — machine-readable findings.
+- `eval-cases.yaml` — starter eval cases.
+
+Findings are aggregated per `(failure_mode, session_id)`. A session with 20 user complaints of the same kind becomes **one** high-severity finding with all 20 evidence quotes attached, not 20 separate medium findings. Severity escalates by count.
+
+Add `--strict` to fail on malformed JSONL lines instead of silently skipping them; the default behavior surfaces the skipped count in the summary.
+
+### Stage reviewable patches
 
 ```bash
-agent-doctor doctor
+agent-doctor apply --findings ./agent-doctor-report --out ./staging
+agent-doctor apply --findings ./agent-doctor-report --out ./staging --target ~/.hermes/skills
 ```
 
-Generate a safe host-agent SOP file:
+`apply` reads `findings.json` and writes a staging directory:
+
+```
+staging/
+  memory.md          # one block per memory candidate
+  sop.md             # SOP guidance, grouped by failure mode
+  identity.md        # identity / communication-style guidance
+  tool-discipline.md # tool-discipline guards
+  eval/<id>.yaml     # one starter eval case per finding
+  MANIFEST.json      # finding → emitted file mapping
+  DIFF.txt           # unified diff vs --target (if given)
+```
+
+**Nothing is applied automatically.** Real Hermes / OpenClaw configuration is never touched. The staging directory is a curated copy-paste source plus a unified diff against your live config so you can see exactly what would change. Use `--min-severity` and `--min-count` to filter noise.
+
+### Readiness, install, MCP
 
 ```bash
-agent-doctor install-skill --target hermes --out ./skills
-agent-doctor install-skill --target openclaw --out ./skills
+agent-doctor doctor                                          # environment + privacy info
+agent-doctor bootstrap                                       # auto-detect hosts and install skills into each
+agent-doctor bootstrap --dry-run                             # preview without writing
+agent-doctor bootstrap --target claude-code --force          # force into a specific host
+agent-doctor install-skill --target hermes --out ./skills    # write a single skill file by hand
+agent-doctor mcp                                             # print MCP server metadata + tool list
+pip install 'agent-doctor[mcp]' && agent-doctor mcp serve    # run the stdio MCP server
 ```
 
-Inspect the minimal MCP placeholder:
+Supported `--target` values: `hermes`, `openclaw`, `claude-code`, `generic`. The `claude-code` target writes a `SKILL.md` with the YAML frontmatter Claude Code expects under `~/.claude/skills/agent-doctor/`. Hermes and OpenClaw get a Markdown SOP file.
+
+### Eval harness (LLM-first)
 
 ```bash
-agent-doctor mcp
+# 1. Generate synthetic transcripts with ground-truth labels.
+agent-doctor eval generate --cards tests/fixtures/cards --out ./corpus
+
+# 2. Benchmark detector P/R/F1 against the labels.
+agent-doctor eval bench --corpus ./corpus --out ./bench \
+  --gate-precision 0.95 --gate-recall 0.85
+
+# 3. Closed-loop replay: apply patches, re-run user turns through a patched agent.
+ANTHROPIC_API_KEY=... agent-doctor eval replay \
+  --transcript ./sessions/frustrating.jsonl \
+  --patches ./staging \
+  --out ./replay
 ```
 
-## Outputs
+The eval pipeline is deliberately separated from the production scan path so the local-first guarantee is preserved. See [`docs/evaluation.md`](docs/evaluation.md) for the full framework, including scenario card schema, distractor kinds, the LLM-backed generator, and CI gating.
 
-`scan` writes three files into the output directory:
-
-- `report.md`: human-readable summary, redacted evidence quotes, diagnoses, and recommendations.
-- `findings.json`: structured redacted findings for review or downstream tooling.
-- `eval-cases.yaml`: starter eval cases based on detected failure modes.
-
-Every finding includes transcript evidence with file, line, role, and quote. Report artifacts are written with `0600` file permissions. Evidence quotes are redacted by default, but they are still transcript excerpts; review artifacts before sharing them outside your machine.
-
-## Privacy Model
+## Privacy model
 
 Agent Doctor is local-only by design.
 
-- It makes no network calls.
-- It does not call remote LLMs.
+- The `scan`, `apply`, and `eval generate` (without `--llm`) commands make no network calls and do not call remote LLMs.
 - Default operation is read-only against agent state and transcript inputs.
-- Report output redacts common secrets, API keys, bearer tokens, and passwords by default.
-- The MVP install helper only writes a Markdown SOP file to the requested output directory.
-- Proposed memory, identity, skill, SOP, permission, routing, and eval patches are review artifacts. They are not applied automatically.
+- `apply` writes patches into a staging directory only; it never edits your live agent config.
+- Reports redact common secrets, API keys, bearer tokens, and passwords by default.
+- All artifacts are written with `0o600` permissions.
+- The generated host-agent SOP explicitly tells agents not to paste full transcripts to a remote LLM unless the user approves that disclosure.
+- `eval generate --llm` and `eval replay` are the only commands that contact a remote LLM, and only when an `ANTHROPIC_API_KEY` is present and the `[llm]` extra is installed. They live in the `agent_doctor.evals` subpackage to keep the production path dependency-free.
 
-The generated host-agent SOP explicitly tells agents not to paste full transcripts to a remote LLM unless the user approves that disclosure.
+## Detection taxonomy
 
-## Supported Inputs
+| Failure mode | Signal | Patch targets |
+|---|---|---|
+| `repeated_user_correction` | "I already told you", "not what I asked", "X again" | memory, SOP |
+| `execution_discipline` | promised action without observed tool execution; "don't just plan" | SOP, eval |
+| `verification_failure` | "did you test", "without verifying", "not actually tested" | SOP, eval |
+| `memory_failure` | "you forgot", imperative "remember", "last time", "I told you" | memory |
+| `tool_failure_or_hidden_error` | tool emits error/timeout/401/500/traceback; assistant claims success without acknowledging | SOP, tool discipline |
+| `communication_mismatch` | "too verbose", "stop explaining" | memory (with overfit warning), identity |
+
+Distractors that are deliberately *not* flagged:
+
+- "Just so I remember the timeline …" (informational `remember`).
+- Tool output containing "0 errors" / "no failures".
+- Identifier-like terms such as `error_handler.py` or `error.log`.
+- Assistant offers like "I can run … if you want" (capability, not promise).
+
+The bench corpus under `tests/fixtures/cards/` includes a distractor-only scenario; CI fails if any of these false-positives reappear.
+
+## Supported inputs
 
 The MVP ingests JSONL files. It auto-detects Hermes-ish, OpenClaw-ish, and generic event shapes using common fields such as `role`, `actor`, `speaker`, `payload`, `data`, `entry`, `content`, `message`, `text`, `output`, and `error`. Nested `message.role` and `message.content` values are normalized under common `message`, `data`, `entry`, and `payload` containers.
 
@@ -86,9 +152,9 @@ Default paths:
 - Hermes: `~/.hermes/sessions`
 - OpenClaw: `~/.openclaw/agents/main/sessions`
 
-## Development
+Per-message content is capped at 8,000 characters so a single huge tool stdout cannot dominate downstream detection.
 
-Run the test suite:
+## Development
 
 ```bash
 python3 -m pytest -q
@@ -99,12 +165,39 @@ Smoke commands:
 ```bash
 python3 -m agent_doctor.cli doctor
 python3 -m agent_doctor.cli scan --path tests/fixtures --out /tmp/agent-doctor-smoke --format markdown
-python3 -m agent_doctor.cli install-skill --target hermes --out /tmp/agent-doctor-skill
+python3 -m agent_doctor.cli apply --findings /tmp/agent-doctor-smoke --out /tmp/agent-doctor-staging
+python3 -m agent_doctor.cli eval generate --cards tests/fixtures/cards --out /tmp/ad-corpus
+python3 -m agent_doctor.cli eval bench --corpus /tmp/ad-corpus --out /tmp/ad-bench
 ```
 
-## MVP Limitations
+## MCP server
 
-- Detection is deterministic and intentionally conservative; it does not infer hidden intent.
-- JSONL normalization covers common event shapes, not every proprietary transcript schema.
-- MCP support is a placeholder with write tools disabled.
-- Apply mode is deliberately not implemented in the MVP.
+Agent Doctor ships a stdio MCP server that exposes the same diagnosis surface as the CLI. Install the optional extra and let any MCP-aware host (Claude Desktop, Cursor, Cline, Continue, Hermes, OpenClaw …) call it mid-session:
+
+```bash
+pip install 'agent-doctor[mcp]'
+agent-doctor mcp serve   # stdio server; configure your host with the snippet from `bootstrap`
+```
+
+Tools exposed:
+
+| Tool | Reads | Writes |
+|---|---|---|
+| `scan` | JSONL transcripts | report artifacts under `out_dir` |
+| `list_findings` | `findings.json` | — |
+| `read_finding` | `findings.json` | — |
+| `bench` | corpus dir | `bench.json`, `bench.md` under `out_dir` |
+| `stage_patches` | `findings.json` (+ optional read-only `target_dir`) | `staging_dir` only |
+| `generate_corpus` | scenario cards | corpus under `out_dir` |
+
+The trust boundary matches the CLI: write tools never touch live host-agent configuration, only `staging_dir` / `out_dir`. No tool calls a remote LLM — the LLM-augmented generator is a CLI-only path on purpose.
+
+`agent-doctor mcp` (no subcommand) prints the metadata and tool list as JSON.
+
+## What's still ahead
+
+- Cross-session aggregation for stronger memory candidates.
+- LLM-augmented detection layer (opt-in second pass for sarcasm / indirect signals).
+- Annotation UI for the real-data half of the golden corpus.
+- Judge-LLM recommendation rubric runner (described in `docs/evaluation.md`).
+- Calibrated confidence model and severity from labeled data.

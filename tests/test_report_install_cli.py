@@ -59,8 +59,8 @@ def test_install_skill_writes_safe_text(tmp_path: Path) -> None:
 
     assert "agent-doctor scan --hermes" in text
     assert "local-only" in text
-    assert "dry-run by default" in text
-    assert "Ask before applying patches" in text
+    assert "dry-run" in text
+    assert "Ask the user before copying patches" in text
     assert "Never paste full transcripts to a remote LLM" in text
 
 
