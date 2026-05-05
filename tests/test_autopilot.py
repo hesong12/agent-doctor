@@ -234,6 +234,32 @@ def test_autopilot_detects_real_world_profanity_as_intervention(tmp_path: Path) 
     assert "profanity_or_insult" in event.summary
 
 
+def test_autopilot_detects_common_chinese_dumb_feedback(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s6",
+                "role": "user",
+                "content": "你怎么这么笨的？",
+            }
+        ],
+    )
+
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+    )
+
+    assert len(result.events) == 1
+    event = result.events[0]
+    assert event.trigger == "user_frustration_signal"
+    assert event.severity == "high"
+    assert event.action == "intervene"
+
+
 def test_notify_command_reports_invalid_command() -> None:
     error = run_notify_command('"unterminated', event=run_autopilot_once)  # type: ignore[arg-type]
 
