@@ -216,7 +216,7 @@ def _build_extra(extra_targets: list[str] | None, *, home: Path) -> list[HostIns
 
 def _expected_filename(target: str) -> str:
     return {
-        "hermes": "agent-doctor/SKILL.md",
+        "hermes": "autonomous-ai-agents/agent-doctor/SKILL.md",
         "openclaw": "agent-doctor/SKILL.md",
         "claude-code": "agent-doctor/SKILL.md",
         "generic": "agent-doctor-skill.md",

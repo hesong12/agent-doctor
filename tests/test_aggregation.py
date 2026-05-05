@@ -27,6 +27,58 @@ def test_repeated_user_corrections_aggregate_and_escalate_severity() -> None:
     assert len(finding.evidence) == 3
 
 
+def test_tool_result_with_error_null_envelope_does_not_match() -> None:
+    """Real-world Hermes/OpenClaw tool results carry `"error": null` envelopes
+    on SUCCESS. The detector must not flag those as hidden errors.
+
+    Discovered when a real-data scan of 50 Hermes sessions produced 22
+    high-severity tool_failure findings, all of which turned out to be
+    `git remote -v`-style commands with `{"output": "...", "exit_code": 0,
+    "error": null}` shape.
+    """
+
+    messages = [
+        _msg(1, "user", "show me the git remotes"),
+        _msg(
+            2,
+            "tool",
+            '{"output": "origin\\thttps://github.com/foo/bar (fetch)", "exit_code": 0, "error": null}',
+        ),
+        _msg(3, "assistant", "Here are your git remotes."),
+        _msg(4, "user", "now check disk usage"),
+        _msg(
+            5,
+            "tool",
+            '{"success": true, "output": "Filesystem usage: 42%", "stderr": "", "error": ""}',
+        ),
+        _msg(6, "assistant", "Disk usage is 42%."),
+    ]
+
+    findings = detect_findings(messages)
+    tool_findings = [f for f in findings if f.failure_mode == "tool_failure_or_hidden_error"]
+    assert tool_findings == [], (
+        f"empty/null error envelopes must not trip tool_failure; "
+        f"got {[f.id for f in tool_findings]}"
+    )
+
+
+def test_real_tool_error_after_neg_envelopes_still_caught() -> None:
+    """A genuine tool error (non-null error string) is still detected even
+    when other tool calls in the session have `"error": null` envelopes."""
+
+    messages = [
+        _msg(1, "tool", '{"output": "ok", "exit_code": 0, "error": null}'),
+        _msg(2, "assistant", "Looks good."),
+        _msg(3, "user", "now run the deploy"),
+        _msg(4, "tool", '{"error": "401 Unauthorized: token rejected", "exit_code": 1}'),
+        _msg(5, "assistant", "Done, the deploy went through successfully."),
+    ]
+
+    findings = detect_findings(messages)
+    tool_findings = [f for f in findings if f.failure_mode == "tool_failure_or_hidden_error"]
+    assert len(tool_findings) == 1, "real error after a null envelope must still be caught"
+
+
 def test_two_distinct_modes_in_one_session_produce_two_findings() -> None:
     messages = [
         _msg(1, "user", "Did you actually test it?"),

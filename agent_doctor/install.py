@@ -55,7 +55,15 @@ def install_skill(target: str, out_dir: Path) -> Path:
 
 
 def _install_hermes(out_dir: Path) -> Path:
-    return _write_skill_dir(out_dir, _skill_text("agent-doctor scan --hermes"))
+    # Hermes user skills live under category subdirectories — verified
+    # against /home/hermes/.hermes/skills/ on a real install (124 of 126
+    # skills are at <category>/<name>/SKILL.md). agent-doctor sits next to
+    # peer "autonomous-ai-agents" skills like hermes-agent, codex,
+    # claude-code, and openclaw-cross-agent-dispatch.
+    return _write_skill_dir(
+        out_dir / "autonomous-ai-agents",
+        _skill_text("agent-doctor scan --hermes"),
+    )
 
 
 def _install_openclaw(out_dir: Path) -> Path:
