@@ -8,16 +8,26 @@ Agent Doctor is CLI-first with an optional MCP stdio server in front. The trust 
 
 `agent_doctor.cli` provides the public commands:
 
-- `scan` — ingest JSONL transcripts, detect findings, write reports.
+- `scan` — ingest JSONL transcripts, detect findings, write reports. On first use (no SKILL.md installed in any detected host), prints a one-line hint to stderr suggesting `agent-doctor bootstrap --invalidate-cache`.
 - `apply` — read `findings.json`, stage reviewable patches into a directory plus a unified diff against an optional `--target`. Live config is never modified.
 - `eval` — sub-command group: `generate`, `bench`, `replay` for the LLM-first eval framework (see `docs/evaluation.md`).
-- `bootstrap` — auto-detect `~/.hermes`, `~/.openclaw`, `~/.claude/skills` and write the right skill format into each host. Prints the MCP config snippet.
-- `install-skill` — write a single skill / SOP file by hand (`--target hermes|openclaw|claude-code|generic`).
+- `bootstrap` — auto-detect `~/.hermes`, `~/.openclaw`, `~/.claude/skills` and write the unified `SKILL.md` into each host's correct skill location. `--invalidate-cache` best-effort signals each host to rebuild its skill prompt on next start (removes Hermes's `.skills_prompt_snapshot.json`, bumps Claude Code's `skills/` mtime). `--dry-run` previews; `--force` installs into hosts whose home dir doesn't exist.
+- `install-skill` — write a single skill file by hand (`--target hermes|openclaw|claude-code|generic`).
 - `doctor` — print environment, version, default paths, and privacy info.
 - `mcp` — print MCP server metadata + tool list as JSON.
 - `mcp serve` — run the stdio MCP server (requires the `[mcp]` extra).
 
 The console script is `agent-doctor`; the same commands run via `python3 -m agent_doctor.cli`.
+
+### One-line installer
+
+`install.sh` (top-level) is the canonical user-facing install path:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hesong12/agent-doctor/main/install.sh | sh
+```
+
+It detects pipx vs `apt-get` vs `brew` vs `pip --user --break-system-packages`, installs pipx first if missing (one visible sudo prompt where required), runs `pipx install` from the GitHub repo (idempotent — `--force` on re-run), optionally injects extras (`--with-mcp` / `--with-llm` / `--with-all`), then runs `agent-doctor bootstrap --invalidate-cache` automatically. Set `AGENT_DOCTOR_REPO` / `AGENT_DOCTOR_REF` env vars to point at a fork or branch; pass `--skip-bootstrap` to land just the package.
 
 ### Ingestion
 
@@ -29,7 +39,13 @@ The ingestion layer is the resilience boundary: malformed lines are skipped by d
 
 `agent_doctor.detectors` runs deterministic regex / structural rules against normalized messages and emits raw matches. A second aggregation pass groups raw matches by `(failure_mode, session_id)`: a session with N user complaints of the same kind becomes **one** finding with N evidence quotes attached and severity escalated by count (`>=3 → high`, `2 → bump tier`).
 
-The detectors do not call an LLM and do not modify agent state. False-positive guards live alongside each pattern: `0 errors` / `no failures` strip before tool-error matching; "remember" is matched only in imperative position so informational uses ("Just so I remember the timeline…") do not trip memory_failure; identifier-like trailing chars (`error_handler.py`, `error.log`) are excluded.
+The detectors do not call an LLM and do not modify agent state. False-positive guards live alongside each pattern, all driven by real-world data:
+
+- **Negative phrases.** `0 errors` / `no failures` / `zero exceptions` stripped from tool stdout before matching.
+- **JSON success envelopes.** `"error": null`, `"error": ""`, `"stderr": ""`, `"exit_code": 0`, `"status": 0`, `"success": true`, `"ok": true` (both quoted-JSON and bare-prose forms) and the literal `(not an error)` suffix get stripped — real Hermes / OpenClaw tool results carry these on success and would otherwise cause every successful command to flag as a hidden error.
+- **Identifier-like trailing chars.** `error_handler.py`, `error.log`, `error_count` excluded from the bare `error` token via `(?![._-]\w)` lookahead.
+- **Imperative-position `remember`.** Informational uses like "Just so I remember the timeline …" don't trip `memory_failure`; the regex requires sentence-initial position or a directed pronoun (`you (must|should|need to)?remember`).
+- **Source-line references.** `cli.js:403:` does not match as HTTP 403 — the digit must not be surrounded by colons or other digits.
 
 ### Recommendations
 
@@ -72,18 +88,26 @@ staging/
 
 ### Install and Bootstrap
 
-`agent_doctor.install` writes a per-host SOP / skill file. Targets:
+`agent_doctor.install` writes a unified `SKILL.md` (YAML frontmatter + body) into the correct per-host location:
 
-- `hermes` → `agent-doctor-hermes-sop.md` (Markdown).
-- `openclaw` → `agent-doctor-openclaw-sop.md` (Markdown).
-- `claude-code` → `agent-doctor/SKILL.md` with YAML frontmatter (Claude Code skill format).
-- `generic` → `agent-doctor-skill.md`.
+- `hermes` → `<skills>/autonomous-ai-agents/agent-doctor/SKILL.md` (Hermes's user-skill convention is depth-2 categorized; verified against 124+ existing skills on a real install).
+- `openclaw` → `<skills>/agent-doctor/SKILL.md`.
+- `claude-code` → `<skills>/agent-doctor/SKILL.md`.
+- `generic` → `<out>/agent-doctor-skill.md` (flat file, no frontmatter — for hosts whose loader doesn't parse YAML).
 
-`agent_doctor.bootstrap` is the one-shot installer: it detects which hosts are present on the system and calls `install_skill` for each, plus prints the MCP config snippet for paste-into-host configuration. `--dry-run` previews; `--force` installs into hosts whose home directory does not exist yet.
+The skill body has the same workflow regardless of host. The only host-specific bit is the suggested scan command in step 1 (`scan --hermes` / `scan --openclaw` / `scan --path <transcript-or-dir>`).
+
+`agent_doctor.bootstrap` is the one-shot installer: it detects which hosts are present and calls `install_skill` for each, prints the MCP config snippet, and (with `--invalidate-cache`) signals each host to rebuild its skill prompt:
+
+- **Hermes**: removes `~/.hermes/.skills_prompt_snapshot.json`. The cached prompt is rebuilt on next start; some live builds re-watch this file and reload immediately.
+- **Claude Code**: bumps `~/.claude/skills/` mtime. New sessions auto-rescan.
+- **OpenClaw**: skipped — reload protocol is undocumented; we no-op rather than guess and corrupt state.
+
+`--dry-run` previews without writing; `--force` installs into hosts whose home directory doesn't exist yet.
 
 ### MCP Server
 
-`agent_doctor.mcp` exposes the same surface as the CLI through the Model Context Protocol so any MCP-aware host (Claude Desktop, Cursor, Cline, Continue, Hermes, OpenClaw …) can call agent-doctor mid-session.
+`agent_doctor.mcp` exposes the same surface as the CLI through the Model Context Protocol so any memoryful agent framework with MCP tool support (Hermes, OpenClaw, Claude Code, …) can call agent-doctor mid-session. Chat clients without their own memory / identity surface are out of scope — there's nothing for `stage_patches` to write into.
 
 Tools:
 

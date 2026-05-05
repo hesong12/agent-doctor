@@ -1,23 +1,26 @@
-"""Generate safe Agent Doctor skill / SOP files for host agents.
+"""Generate Agent Doctor skill files for memoryful agent frameworks.
 
-Each host agent ecosystem has its own conventions for where skills live and
-what file format they expect. This module owns the per-target text and
-defaults so the rest of the codebase can treat installation as a single
-function call.
+All three memoryful frameworks we target use the same per-skill directory
+convention: ``<host-skills-dir>/agent-doctor/SKILL.md`` with YAML
+frontmatter (``name:``, ``description:`` with explicit triggers). Hermes is
+the one exception — its user skills are *categorized* at depth 2, so
+agent-doctor lands under the ``autonomous-ai-agents`` category alongside
+peer skills like ``hermes-agent``, ``codex``, ``claude-code``, and
+``openclaw-cross-agent-dispatch``.
 
 Currently supported targets:
 
-- ``hermes``      — writes ``agent-doctor-hermes-sop.md`` (Markdown SOP).
-- ``openclaw``    — writes ``agent-doctor-openclaw-sop.md`` (Markdown SOP).
-- ``claude-code`` — writes ``agent-doctor/SKILL.md`` with Claude Code YAML
-                    frontmatter, suitable for ``~/.claude/skills/``.
-- ``generic``     — writes ``agent-doctor-skill.md`` for any framework that
-                    just needs a Markdown skill file.
+- ``hermes``      — writes ``<skills>/autonomous-ai-agents/agent-doctor/SKILL.md``.
+- ``openclaw``    — writes ``<skills>/agent-doctor/SKILL.md``.
+- ``claude-code`` — writes ``<skills>/agent-doctor/SKILL.md``.
+- ``generic``     — writes a flat ``<out>/agent-doctor-skill.md`` (no
+                    frontmatter) for hosts whose loader doesn't parse YAML.
 
 The bootstrap module (``agent_doctor.bootstrap``) detects which of these
-hosts are present on the system and calls ``install_skill`` for each — that's
-the entry point a user gets when they say "install agent-doctor". This module
-stays declarative so adding a new host is one entry in ``_TARGET_HANDLERS``.
+hosts are present on the system and calls ``install_skill`` for each — that
+plus optional ``--invalidate-cache`` is the entry point a user gets when
+they say "install agent-doctor". This module stays declarative so adding a
+new host is one entry in ``_TARGET_HANDLERS``.
 """
 
 from __future__ import annotations

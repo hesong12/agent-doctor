@@ -1,6 +1,6 @@
 # AGENTS.md — Notes for AI agents working on this repo
 
-This file is for AI agents (Claude Code, Cursor, Cline, OpenClaw, Hermes, etc.) that have been asked to read, modify, test, or extend Agent Doctor itself. If you are an agent that wants to *use* Agent Doctor as a tool, read [`README.md`](README.md) and the `SKILL.md` written by `agent-doctor bootstrap` instead.
+This file is for AI agents (Claude Code, Codex, Hermes, OpenClaw, or any code-modifying agent) that have been asked to read, modify, test, or extend Agent Doctor itself. If you are an agent inside a memoryful framework that wants to *use* Agent Doctor as a tool, read [`README.md`](README.md) and the `SKILL.md` that `agent-doctor bootstrap` writes into your host instead.
 
 ## What this project is
 
@@ -17,16 +17,18 @@ Core invariants — do not violate these without an explicit user request:
 ## Layout
 
 ```
+install.sh           # one-line installer (curl … | sh) for end users
+LICENSE              # MIT
 agent_doctor/
   __init__.py        # version
   schema.py          # frozen dataclasses (Message, Evidence, Finding, ScanResult)
-  ingest.py          # JSONL → Message[]
+  ingest.py          # JSONL → Message[] (handles typed-part content arrays)
   detectors.py       # Message[] → raw matches → aggregated Findings
   recommend.py       # Finding → patch proposals + eval cases
   report.py          # write report.md / findings.json / eval-cases.yaml
   apply.py           # findings.json → staging dir + DIFF.txt
-  install.py         # skill / SOP file templates per host
-  bootstrap.py       # auto-detect ~/.hermes, ~/.openclaw, ~/.claude/skills
+  install.py         # unified SKILL.md template (YAML frontmatter + body)
+  bootstrap.py       # auto-detect hosts + invalidate caches
   mcp.py             # MCP stdio server + pure-Python tool handlers
   redaction.py       # secret redaction patterns
   cli.py             # argparse subcommands; thin wrappers around modules
@@ -66,11 +68,12 @@ python3 -m agent_doctor.cli eval bench --corpus /tmp/corpus --out /tmp/bench
 
 ## Common review failures
 
-- Adding `print` statements to non-CLI modules. Library code is silent; CLI handlers in `cli.py` may print.
-- Catching `Exception` and swallowing it. Use specific exceptions; let unexpected errors propagate so they are visible.
+- Adding `print` statements to non-CLI modules. Library code is silent; CLI handlers in `cli.py` may print, and `_print_first_run_hint_if_needed` writes to stderr only.
+- Catching `Exception` and swallowing it. Use specific exceptions; let unexpected errors propagate so they are visible. The one exception is `_print_first_run_hint_if_needed`, which must never crash the CLI.
 - Importing optional extras (`anthropic`, `mcp`) at module top level. Always lazy-import inside the function that needs them.
 - Mutating dataclass fields. Build a new instance.
-- Writing to a path that is not under the caller-supplied output directory.
+- Writing to a path that is not under the caller-supplied output directory. Bootstrap is the only writer outside that contract — it writes inside known per-host skill directories. Cache invalidation only deletes / touches files we ourselves placed semantics on (`.skills_prompt_snapshot.json`, `.claude/skills/` mtime).
+- Hard-coding host-runtime restart instructions. We can't restart Hermes/OpenClaw/Claude Code from a CLI tool — `bootstrap --invalidate-cache` does the best-effort cache poke, the user provides the restart if their host doesn't auto-reload.
 
 ## Out of scope for now
 
