@@ -314,7 +314,13 @@ def _detect_trust_degradation_episodes(
     # turn via _nearest_user_anchor.
     user_turn_index: dict[tuple[str, int], tuple[str, int]] = {}
     per_session_counters: dict[str, int] = {}
-    for message in ordered:
+    # Position of each message in ``ordered`` so the anchor search can use
+    # index distance (which is monotonic in transcript order) instead of
+    # ``abs(line - line)`` (which fails on multi-file or non-monotonic line
+    # numbers).
+    message_position: dict[tuple[str, int], int] = {}
+    for position, message in enumerate(ordered):
+        message_position[(message.file, message.line)] = position
         if message.role != "user":
             continue
         counter = per_session_counters.get(message.session_id, 0)
@@ -330,9 +336,9 @@ def _detect_trust_degradation_episodes(
         # matches like execution_discipline anchor on the next/prior user
         # turn so the windowing logic still works.
         if primary.role == "user":
-            key = (primary.file, primary.line)
+            key: tuple[str, int] | None = (primary.file, primary.line)
         else:
-            key = _nearest_user_anchor(ordered, primary)
+            key = _nearest_user_anchor(ordered, primary, message_position)
         if key is None:
             continue
         anchor = user_turn_index.get(key)
@@ -389,19 +395,52 @@ def _detect_trust_degradation_episodes(
 
 
 def _nearest_user_anchor(
-    ordered: list[Message], message: Message
+    ordered: list[Message],
+    message: Message,
+    message_position: dict[tuple[str, int], int],
 ) -> tuple[str, int] | None:
-    """Return the nearest user message in the same session, preferring later."""
+    """Return the (file, line) of the nearest same-session user message.
 
-    same_session = [
-        candidate
-        for candidate in ordered
-        if candidate.role == "user" and candidate.session_id == message.session_id
-    ]
-    if not same_session:
+    Distance is measured by position in ``ordered`` (transcript order), not by
+    ``abs(line - line)``. Line numbers are per-file and may be non-monotonic
+    in time when log files are concatenated or ingested out of order; pinning
+    distance to transcript-order index avoids picking the wrong anchor in
+    multi-file sessions or non-monotonic streams.
+
+    Walks outward from the message's transcript position so the first
+    same-session user message found is necessarily the nearest in transcript
+    order.
+    """
+
+    pivot = message_position.get((message.file, message.line))
+    if pivot is None:
         return None
-    nearest = min(same_session, key=lambda candidate: abs(candidate.line - message.line))
-    return (nearest.file, nearest.line)
+    n = len(ordered)
+    distance = 1
+    while True:
+        left = pivot - distance
+        right = pivot + distance
+        if left < 0 and right >= n:
+            return None
+        # At each distance, prefer the prior turn first — the trust-eroding
+        # signal is typically a reaction to what came before it, so anchoring
+        # on the most recent prior same-session user turn matches reviewer
+        # intuition. Falls through to the later turn at the same distance.
+        if left >= 0:
+            candidate = ordered[left]
+            if (
+                candidate.role == "user"
+                and candidate.session_id == message.session_id
+            ):
+                return (candidate.file, candidate.line)
+        if right < n:
+            candidate = ordered[right]
+            if (
+                candidate.role == "user"
+                and candidate.session_id == message.session_id
+            ):
+                return (candidate.file, candidate.line)
+        distance += 1
 
 
 def _collect_raw_matches(ordered: list[Message]) -> list[_RawMatch]:

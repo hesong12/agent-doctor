@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agent_doctor.detectors import detect_findings
+from agent_doctor.detectors import _nearest_user_anchor, detect_findings
 from agent_doctor.ingest import ingest_path
 from agent_doctor.schema import Message
 
@@ -371,6 +371,105 @@ def test_missed_core_question_detected() -> None:
     findings = detect_findings(messages)
     modes = {f.failure_mode for f in findings}
     assert "missed_core_question" in modes
+
+
+def test_nearest_user_anchor_uses_transcript_index_not_line_distance() -> None:
+    """Anchor selection uses transcript-order index distance, not abs(line).
+
+    abs(line) is unreliable for non-monotonic line numbers: a freshly-recent
+    user turn at a lower line number than an older user turn would win on
+    line distance even though it sits later in transcript order. Index
+    distance is monotonic in transcript order, so the prior turn the
+    assistant was actually responding to wins.
+    """
+
+    ordered = [
+        Message("a.jsonl", 5, "s1", "user", "EARLY (low line, but transcript-prior)"),
+        Message("a.jsonl", 1001, "s1", "assistant", "PIVOT (assistant turn)"),
+        Message("a.jsonl", 1000, "s1", "user", "RECENT (high line, transcript-after)"),
+    ]
+    position = {(m.file, m.line): i for i, m in enumerate(ordered)}
+
+    anchor = _nearest_user_anchor(ordered, ordered[1], position)
+    # abs(line) from line 1001 would pick (a.jsonl, 1000) because 1 < 996.
+    # Index distance with prefer-prior picks the transcript-prior anchor.
+    assert anchor == ("a.jsonl", 5)
+
+
+def test_nearest_user_anchor_handles_multiple_files() -> None:
+    """When a session spans multiple files, line numbers are per-file and
+    cross-file abs(line) distance is meaningless. Index distance still
+    selects the transcript-nearest same-session user turn.
+    """
+
+    ordered = [
+        Message("file_a.jsonl", 50, "s1", "user", "PRIOR (different file)"),
+        Message("file_b.jsonl", 1, "s1", "assistant", "PIVOT (next file)"),
+        Message("file_b.jsonl", 2, "s1", "user", "NEXT (same file)"),
+    ]
+    position = {(m.file, m.line): i for i, m in enumerate(ordered)}
+
+    anchor = _nearest_user_anchor(ordered, ordered[1], position)
+    # Both PRIOR and NEXT are 1 transcript step away. Prefer-prior policy
+    # selects PRIOR — what the assistant was responding to.
+    assert anchor == ("file_a.jsonl", 50)
+
+
+def test_nearest_user_anchor_skips_other_sessions() -> None:
+    ordered = [
+        Message("a.jsonl", 1, "s2", "user", "OTHER SESSION (closer in line)"),
+        Message("a.jsonl", 2, "s1", "user", "S1 USER (further in line)"),
+        Message("a.jsonl", 3, "s1", "assistant", "PIVOT"),
+    ]
+    position = {(m.file, m.line): i for i, m in enumerate(ordered)}
+
+    anchor = _nearest_user_anchor(ordered, ordered[2], position)
+    # Walks past s2 entirely and lands on the s1 user at line 2.
+    assert anchor == ("a.jsonl", 2)
+
+
+def test_episode_clusters_assistant_anchored_match_with_non_monotonic_lines() -> None:
+    """Episode aggregation across multi-file or non-monotonic transcripts.
+
+    Builds a session split across two files where the second file restarts
+    line numbering at 1, then mixes in an over_process_response (assistant-
+    side, anchored via _nearest_user_anchor) and a user trust-degradation
+    phrase. With abs(line) anchoring, the episode could mis-cluster; with
+    index distance it still surfaces.
+    """
+
+    long_narration = " ".join(
+        [
+            "Let me start by reading the file.",
+            "First, I will check the imports.",
+            "Then I will look at the function.",
+            "Next, I'll trace the data flow.",
+            "After that, I'll plan the change.",
+            "Finally, I'm going to implement it carefully and double check everything.",
+        ]
+        * 3
+    )
+    messages = [
+        # File 1: an opening user turn with a high line number.
+        Message("part1.jsonl", 1500, "s1", "user", "Please refactor the helpers."),
+        # File 2 starts at line 1 (a real, common pattern when sessions span
+        # rotated log files). The assistant emits a long over-process narration
+        # — assistant-side trigger.
+        Message("part2.jsonl", 1, "s1", "assistant", long_narration),
+        # Then the user follows up with a trust-degradation phrase. abs(line)
+        # would treat line 2 as much closer to line 1 than line 1500, but
+        # both candidate user turns sit 1 step away in transcript order.
+        Message("part2.jsonl", 2, "s1", "user", "你最近怎么越来越笨了"),
+    ]
+
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "over_process_response" in modes
+    assert "user_frustration_signal" in modes
+    # Episode must form across the file boundary.
+    episodes = [f for f in findings if f.failure_mode == "trust_degradation_episode"]
+    assert len(episodes) == 1
+    assert episodes[0].session_id == "s1"
 
 
 def test_over_process_response_detected_in_long_assistant_message() -> None:
