@@ -57,8 +57,12 @@ def test_install_skill_writes_safe_text(tmp_path: Path) -> None:
     path = install_skill("hermes", tmp_path)
     text = path.read_text(encoding="utf-8")
 
+    assert path.name == "SKILL.md", "memoryful targets must use the <skill>/SKILL.md convention"
+    assert path.parent.name == "agent-doctor"
+    assert text.startswith("---\n"), "SKILL.md must begin with YAML frontmatter"
+    assert "name: agent-doctor" in text
     assert "agent-doctor scan --hermes" in text
-    assert "local-only" in text
+    assert "local-only" in text.casefold()
     assert "dry-run" in text
     assert "Ask the user before copying patches" in text
     assert "Never paste full transcripts to a remote LLM" in text
@@ -121,5 +125,5 @@ def test_cli_install_skill_smoke(tmp_path: Path) -> None:
         capture_output=True,
     )
 
-    assert "agent-doctor-openclaw-sop.md" in result.stdout
-    assert (tmp_path / "agent-doctor-openclaw-sop.md").exists()
+    assert "agent-doctor/SKILL.md" in result.stdout
+    assert (tmp_path / "agent-doctor" / "SKILL.md").exists()

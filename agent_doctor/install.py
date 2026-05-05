@@ -55,28 +55,39 @@ def install_skill(target: str, out_dir: Path) -> Path:
 
 
 def _install_hermes(out_dir: Path) -> Path:
-    path = out_dir / "agent-doctor-hermes-sop.md"
-    path.write_text(_sop_text("Hermes", "--hermes"), encoding="utf-8")
-    return path
+    return _write_skill_dir(out_dir, _skill_text("agent-doctor scan --hermes"))
 
 
 def _install_openclaw(out_dir: Path) -> Path:
-    path = out_dir / "agent-doctor-openclaw-sop.md"
-    path.write_text(_sop_text("OpenClaw", "--openclaw"), encoding="utf-8")
-    return path
-
-
-def _install_generic(out_dir: Path) -> Path:
-    path = out_dir / "agent-doctor-skill.md"
-    path.write_text(_sop_text("your agent", "--path <transcripts>"), encoding="utf-8")
-    return path
+    return _write_skill_dir(out_dir, _skill_text("agent-doctor scan --openclaw"))
 
 
 def _install_claude_code(out_dir: Path) -> Path:
+    return _write_skill_dir(out_dir, _skill_text("agent-doctor scan --path <transcript-or-dir>"))
+
+
+def _install_generic(out_dir: Path) -> Path:
+    # Generic targets don't follow a known directory convention, so we drop a
+    # flat Markdown file. The text is identical to the unified skill body
+    # without YAML frontmatter (since unknown hosts may not parse it).
+    path = out_dir / "agent-doctor-skill.md"
+    path.write_text(_skill_text("agent-doctor scan --path <transcripts>"), encoding="utf-8")
+    return path
+
+
+def _write_skill_dir(out_dir: Path, content: str) -> Path:
+    """Write the unified SKILL.md into ``<out_dir>/agent-doctor/SKILL.md``.
+
+    This convention is what every memoryful framework we've examined uses
+    (Claude Code, OpenClaw extensions): a per-skill directory containing a
+    ``SKILL.md`` with YAML frontmatter. Putting all hosts on the same shape
+    means agents discover us the same way regardless of host runtime.
+    """
+
     skill_dir = out_dir / "agent-doctor"
     skill_dir.mkdir(parents=True, exist_ok=True)
     path = skill_dir / "SKILL.md"
-    path.write_text(_claude_code_skill_text(), encoding="utf-8")
+    path.write_text(content, encoding="utf-8")
     return path
 
 
@@ -88,11 +99,26 @@ _TARGET_HANDLERS: dict[str, Callable[[Path], Path]] = {
 }
 
 
-def _sop_text(label: str, default_flag: str) -> str:
-    # Plain string template with __PLACEHOLDERS__ instead of f-string so the
-    # embedded JSON snippet (with its literal `{}` braces) does not need to be
-    # re-escaped.
-    template = """# Agent Doctor SOP for __LABEL__
+def _skill_text(default_scan_command: str) -> str:
+    """Return the unified SKILL.md text with YAML frontmatter.
+
+    All memoryful agent frameworks we target use the same `<skill>/SKILL.md`
+    convention with frontmatter — Claude Code, OpenClaw extensions, and
+    similar. The only host-specific bit is the scan command we suggest in
+    the workflow (so an agent on Hermes sees `--hermes`, on OpenClaw sees
+    `--openclaw`, etc.).
+
+    `__SCAN_COMMAND__` is the only placeholder; the embedded JSON config
+    snippet contains literal `{}` braces, so we use a plain template +
+    string replace instead of an f-string.
+    """
+
+    template = """---
+name: agent-doctor
+description: Local-first session postmortem and improvement engine for memoryful AI agent frameworks. Use when the user wants to diagnose a frustrating session, find patterns of failure (verbose output, hidden tool errors, repeated corrections, memory gaps, missing verification), or turn session complaints into reviewable patches for memory / SOP / identity / tool-discipline files. Triggers: "review my session", "diagnose this transcript", "what went wrong in my last session", "why does the agent keep doing X", "generate a postmortem", "this session was frustrating", "audit recent sessions", "find patterns in my agent's failures".
+---
+
+# Agent Doctor
 
 Use Agent Doctor as a local-first engineering diagnosis tool for agent session postmortems. It turns frustrating session transcripts into reviewable patch proposals for memory, identity, SOPs, tool discipline, and evals.
 
@@ -102,21 +128,33 @@ Use Agent Doctor as a local-first engineering diagnosis tool for agent session p
 - A pattern of failure is suspected across recent sessions.
 - Reviewing a transcript before changing memory, SOP, or identity.
 
+## Detection taxonomy (what this skill catches)
+
+Agent Doctor detects six failure modes deterministically from transcript signals:
+
+- `repeated_user_correction` — "I already told you", "not what I asked", "X again".
+- `execution_discipline` — promised action without observed tool execution; "don't just plan".
+- `verification_failure` — "did you test", "without verifying", "not actually tested".
+- `memory_failure` — "you forgot", imperative "remember", "last time", "I told you".
+- `tool_failure_or_hidden_error` — tool emits error / timeout / 401 / 500 / traceback, assistant claims success.
+- `communication_mismatch` — "too verbose", "stop explaining".
+
 ## Workflow
 
-1. Scan: `agent-doctor scan __DEFAULT_FLAG__ --format markdown --out ./postmortem`
-2. Read `./postmortem/report.md` and triage findings by severity.
-3. Stage reviewable patches: `agent-doctor apply --findings ./postmortem --out ./staging --target <live-config-dir>`
-4. Review `./staging/sop.md`, `memory.md`, `identity.md`, `tool-discipline.md`, and `DIFF.txt`.
+1. Scan: `__SCAN_COMMAND__ --format markdown --out ./postmortem`
+2. Read `./postmortem/report.md` and triage findings by severity. Findings are aggregated per `(failure_mode, session_id)` with severity escalating by count.
+3. Stage reviewable patches: `agent-doctor apply --findings ./postmortem --out ./staging --target <live-config-dir>`. Use `--min-severity medium` to filter low-severity noise.
+4. Review `./staging/sop.md`, `memory.md`, `identity.md`, `tool-discipline.md`, and `DIFF.txt` against the live config.
 5. Manually copy approved sections into the live config. Do not auto-apply.
 
 ## Operating rules
 
-- Run Agent Doctor local-only. The `scan` and `apply` commands make no network calls.
+- Local-only by default. The `scan` and `apply` commands make no network calls and never modify live host-agent configuration.
 - Treat all output as dry-run. Review proposed patches before adopting them.
 - Ask the user before copying patches into memory, identity, skills, SOPs, permissions, routing, or evals.
 - Never paste full transcripts to a remote LLM unless the user explicitly approves that disclosure.
 - Prefer evidence quotes and line spans over broad claims about the user or agent.
+- All artifacts are written `0600` and pre-redacted for common secrets, API keys, bearer tokens, and JWTs.
 
 ## Eval (optional)
 
@@ -150,80 +188,4 @@ Configuration snippet:
 
 Not therapy. Not HR performance management. Not surveillance analytics. It is engineering diagnosis: evidence → root cause → patch proposal → eval.
 """
-    return template.replace("__LABEL__", label).replace("__DEFAULT_FLAG__", default_flag)
-
-
-def _claude_code_skill_text() -> str:
-    return """---
-name: agent-doctor
-description: Local-first session postmortem and improvement engine for memoryful AI agents. Use when the user wants to diagnose frustrating agent sessions, find patterns of failure (verbose output, hidden tool errors, repeated corrections, memory gaps, missing verification), or turn session complaints into reviewable patches for memory/SOP/identity. Triggers: "review my session", "why does the agent keep doing X", "generate a postmortem", "diagnose this transcript", "what went wrong in this session".
----
-
-# Agent Doctor
-
-Run Agent Doctor as a local-first engineering diagnosis tool for agent session postmortems. It reads JSONL session transcripts, detects deterministic failure patterns, aggregates repeated occurrences, and produces reviewable patches.
-
-## When to use
-
-- The user reports a frustrating session and wants to know what went wrong.
-- A pattern of failure is suspected across recent sessions of any memoryful agent (Hermes, OpenClaw, Claude Code, etc.).
-- Reviewing a transcript before changing memory, SOP, identity, or skill files.
-
-## Detection taxonomy
-
-Agent Doctor detects six failure modes deterministically from transcript signals:
-
-- `repeated_user_correction` — "I already told you", "not what I asked", "X again".
-- `execution_discipline` — promised action without observed tool execution; "don't just plan".
-- `verification_failure` — "did you test", "without verifying", "not actually tested".
-- `memory_failure` — "you forgot", imperative "remember", "last time", "I told you".
-- `tool_failure_or_hidden_error` — tool emits error/timeout/401/500/traceback, assistant claims success.
-- `communication_mismatch` — "too verbose", "stop explaining".
-
-## Workflow
-
-1. Scan: `agent-doctor scan --path <transcript-or-dir> --format markdown --out ./postmortem`
-2. Read `./postmortem/report.md`. Findings are aggregated per `(failure_mode, session_id)` with severity escalating by count.
-3. Stage reviewable patches: `agent-doctor apply --findings ./postmortem --out ./staging --target <live-config-dir>`. Use `--min-severity medium` to filter low-severity noise.
-4. Review `./staging/sop.md`, `memory.md`, `identity.md`, `tool-discipline.md`, and the unified `DIFF.txt` against the live config.
-5. Manually apply approved sections. Do not auto-apply.
-
-## Operating rules
-
-- Local-only by default. Scan and apply make no network calls.
-- All artifacts written `0600` and pre-redacted for common secrets, API keys, bearer tokens, JWTs.
-- Never paste full transcripts to a remote LLM unless the user explicitly approves.
-- Prefer evidence quotes and line spans over broad claims about the user or the agent.
-
-## Eval harness (optional)
-
-For quality validation and closed-loop measurement:
-
-- `agent-doctor eval generate --cards <cards-dir> --out ./corpus` — synthetic transcripts with ground-truth labels.
-- `agent-doctor eval bench --corpus ./corpus --out ./bench --gate-precision 0.95 --gate-recall 0.85` — detector P/R/F1, exits non-zero on regression.
-- `agent-doctor eval replay --transcript <jsonl> --patches ./staging --out ./replay` — closed-loop delta with patched agent (requires `ANTHROPIC_API_KEY` and `agent-doctor[llm]`).
-
-See `docs/evaluation.md` in the agent-doctor repo for the full LLM-first framework.
-
-## MCP integration (optional)
-
-If the user runs an MCP-aware host, agent-doctor ships a stdio MCP server: `agent-doctor mcp serve` (requires `pip install agent-doctor[mcp]`). It exposes `scan`, `list_findings`, `read_finding`, `bench`, `stage_patches`, and `generate_corpus`. The trust boundary matches the CLI: write tools only write under caller-supplied `staging_dir` / `out_dir`, and no tool calls a remote LLM.
-
-Configuration snippet (paste into any memoryful MCP-aware agent framework that supports stdio MCP servers):
-
-```json
-{
-  "mcpServers": {
-    "agent-doctor": {
-      "command": "agent-doctor",
-      "args": ["mcp", "serve"],
-      "env": {}
-    }
-  }
-}
-```
-
-## What this is not
-
-Not therapy. Not HR performance management. Not surveillance analytics. It is engineering diagnosis: evidence → root cause → patch proposal → eval.
-"""
+    return template.replace("__SCAN_COMMAND__", default_scan_command)
