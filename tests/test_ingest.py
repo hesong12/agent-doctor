@@ -27,6 +27,42 @@ def test_ingest_normalizes_openclaw_payload_messages() -> None:
     assert messages[1].content == "Command failed with 500 timeout"
 
 
+def test_ingest_handles_stub_tool_result_without_recursion(tmp_path: Path) -> None:
+    """A `{"type": "tool_result"}` with no inner content fields must not recurse forever.
+
+    Regression test for a code-review finding: the typed-part unwrapper used
+    to fall back to ``inner = value.get(...) or value`` and re-call
+    ``_stringify_raw`` with the same dict, which would have stack-overflowed
+    on real malformed input.
+    """
+
+    sample = tmp_path / "session.jsonl"
+    sample.write_text(
+        json.dumps(
+            {
+                "type": "message",
+                "message": {
+                    "role": "tool",
+                    "content": [{"type": "tool_result"}],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    messages = ingest_file(sample)
+
+    # The important assertion is just that we got here at all — without the
+    # fix, this call would have hit Python's recursion limit before
+    # returning. The exact rendered content of a stub tool_result with no
+    # salvageable inner text is unimportant; we just need it to be non-None
+    # and finite.
+    assert len(messages) <= 1
+    if messages:
+        assert messages[0].role == "tool"
+
+
 def test_ingest_unwraps_openclaw_typed_content_parts(tmp_path: Path) -> None:
     """OpenClaw `content: [typed parts]` arrays unwrap to readable text.
 
@@ -83,6 +119,51 @@ def test_ingest_unwraps_openclaw_typed_content_parts(tmp_path: Path) -> None:
     assert "QQQQQQQQ" not in messages[1].content, (
         "thoughtSignature noise must be stripped from the rendered content"
     )
+
+
+def test_ingest_compact_args_skips_noise_keys_before_truncating(tmp_path: Path) -> None:
+    """tool_use args with noise keys at the front still surface real args.
+
+    Regression test: previously _compact_args sliced the first 6 dict items
+    *then* filtered noise, so an args dict whose first six keys were all
+    noise would render as empty even when the real signal was at index 7+.
+    """
+
+    sample = tmp_path / "session.jsonl"
+    sample.write_text(
+        json.dumps(
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "exec",
+                            "input": {
+                                "thoughtSignature": "AAAA" * 200,
+                                "signature": "BBBB" * 200,
+                                "logprobs": "CCCC" * 200,
+                                "raw": "DDDD" * 200,
+                                "command": "pytest -q",
+                                "workdir": "/tmp",
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    messages = ingest_file(sample)
+
+    assert "command=pytest -q" in messages[0].content, (
+        "real args (command, workdir) must survive when noise keys appear first"
+    )
+    assert "thoughtSignature" not in messages[0].content
+    assert "AAAA" not in messages[0].content
 
 
 def test_ingest_normalizes_hermes_nested_message_data_entry(tmp_path: Path) -> None:

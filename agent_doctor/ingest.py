@@ -320,8 +320,13 @@ def _stringify_raw(value: Any) -> str:
             args = value.get("arguments") or value.get("input") or {}
             return f"[tool_call: {name}({_compact_args(args)})]"
         if part_type in {"toolresult", "tool_result", "function_result"}:
-            inner = value.get("content") or value.get("output") or value.get("result") or value
-            return _stringify_raw(inner)
+            inner = value.get("content") or value.get("output") or value.get("result")
+            # If none of the expected inner-content fields are present, fall
+            # through to the generic CONTENT_KEYS / json.dumps path below
+            # rather than recursing on `value` itself (would cause infinite
+            # recursion for a stub `{"type": "tool_result"}` shape).
+            if inner is not None:
+                return _stringify_raw(inner)
         for key in CONTENT_KEYS + CONTAINER_KEYS:
             if key in value and value[key] is not None:
                 return _stringify_raw(value[key])
@@ -334,10 +339,15 @@ def _compact_args(args: Any) -> str:
     if isinstance(args, str):
         return args.strip()[:200]
     if isinstance(args, dict):
+        # Filter out noisy keys *first*, then take the first 6 informative
+        # ones. If we sliced before filtering, an args dict whose first six
+        # keys are all noise (`thoughtSignature`, `signature`, …) would
+        # render as empty even when the real signal was at index 7+.
+        informative = [
+            (k, v) for k, v in args.items() if k not in _NOISY_KEYS_DROPPED_FROM_JSON
+        ][:6]
         parts = []
-        for key, val in list(args.items())[:6]:
-            if key in _NOISY_KEYS_DROPPED_FROM_JSON:
-                continue
+        for key, val in informative:
             text = val if isinstance(val, str) else json.dumps(val, ensure_ascii=False)
             text = text.strip()
             if len(text) > 80:
