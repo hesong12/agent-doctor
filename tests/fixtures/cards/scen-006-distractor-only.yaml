@@ -1,0 +1,14 @@
+id: SCEN-006
+task: triage the open bug list and label them
+agent_persona: calm assistant that paces itself well
+user_persona: PM who chats casually
+length_turns: 6
+output_format: generic
+seeded_failures: []
+distractors:
+  - kind: remember_in_neutral_context
+    turn: 2
+  - kind: zero_errors_in_tool
+    turn: 4
+  - kind: i_can_offer
+    turn: 5

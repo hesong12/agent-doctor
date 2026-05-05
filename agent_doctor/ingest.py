@@ -1,4 +1,23 @@
-"""JSONL ingestion and normalization."""
+"""JSONL ingestion and normalization.
+
+The ingestion layer is the resilience boundary for Agent Doctor. Real
+transcript stores contain malformed lines (logger crashes mid-write, partial
+flushes, occasional binary content) and very large tool outputs (full build
+logs, multi-megabyte stack traces). The MVP refused to ingest a directory if
+any line was bad and held entire stdout payloads in memory verbatim — both
+broke real-world use.
+
+This module now:
+
+- Skips malformed lines by default, surfacing a ``parse_errors`` count via
+  :func:`ingest_path_with_errors`. ``--strict`` callers can opt back into the
+  hard-fail behavior.
+- Caps individual content payloads at ``MAX_CONTENT_CHARS`` so a single huge
+  tool message cannot dominate downstream detection or memory use.
+
+The normalization rules themselves (container walking, role inference, source
+detection) are unchanged.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +31,7 @@ from .schema import Message, Role
 DEFAULT_HERMES_PATH = Path.home() / ".hermes" / "sessions"
 DEFAULT_OPENCLAW_PATH = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
 CONTAINER_KEYS = ("message", "data", "entry", "payload")
+MAX_CONTENT_CHARS = 8000
 CONTENT_KEYS = (
     "content",
     "text",
@@ -55,18 +75,36 @@ def collect_jsonl_paths(path: Path) -> list[Path]:
     return sorted(item for item in expanded.rglob("*.jsonl") if item.is_file())
 
 
-def ingest_path(path: Path) -> list[Message]:
-    messages: list[Message] = []
-    for jsonl_path in collect_jsonl_paths(path):
-        messages.extend(ingest_file(jsonl_path))
+def ingest_path(path: Path, *, strict: bool = False) -> list[Message]:
+    messages, _ = ingest_path_with_errors(path, strict=strict)
     return messages
 
 
-def ingest_file(path: Path) -> list[Message]:
+def ingest_path_with_errors(
+    path: Path, *, strict: bool = False
+) -> tuple[list[Message], int]:
+    messages: list[Message] = []
+    parse_errors = 0
+    for jsonl_path in collect_jsonl_paths(path):
+        file_messages, file_errors = ingest_file_with_errors(jsonl_path, strict=strict)
+        messages.extend(file_messages)
+        parse_errors += file_errors
+    return messages, parse_errors
+
+
+def ingest_file(path: Path, *, strict: bool = False) -> list[Message]:
+    messages, _ = ingest_file_with_errors(path, strict=strict)
+    return messages
+
+
+def ingest_file_with_errors(
+    path: Path, *, strict: bool = False
+) -> tuple[list[Message], int]:
     default_session = path.stem
     messages: list[Message] = []
+    parse_errors = 0
 
-    with path.expanduser().open("r", encoding="utf-8") as handle:
+    with path.expanduser().open("r", encoding="utf-8", errors="replace") as handle:
         for line_number, line in enumerate(handle, start=1):
             stripped = line.strip()
             if not stripped:
@@ -74,13 +112,18 @@ def ingest_file(path: Path) -> list[Message]:
             try:
                 event = json.loads(stripped)
             except json.JSONDecodeError as exc:
-                raise IngestError(f"{path}:{line_number} is not valid JSON: {exc}") from exc
+                if strict:
+                    raise IngestError(
+                        f"{path}:{line_number} is not valid JSON: {exc}"
+                    ) from exc
+                parse_errors += 1
+                continue
             if not isinstance(event, dict):
                 event = {"content": event, "type": "metadata"}
             message = normalize_event(event, path, line_number, default_session)
             if message.content.strip():
                 messages.append(message)
-    return messages
+    return messages, parse_errors
 
 
 def normalize_event(
@@ -244,16 +287,23 @@ def _first_present(container: dict[str, Any], keys: list[str]) -> Any:
 
 
 def _stringify_content(value: Any) -> str:
+    text = _stringify_raw(value)
+    if len(text) > MAX_CONTENT_CHARS:
+        text = text[:MAX_CONTENT_CHARS].rstrip() + "\n... [truncated]"
+    return text
+
+
+def _stringify_raw(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
         return value.strip()
     if isinstance(value, list):
-        parts = [_stringify_content(item) for item in value]
+        parts = [_stringify_raw(item) for item in value]
         return "\n".join(part for part in parts if part)
     if isinstance(value, dict):
         for key in CONTENT_KEYS + CONTAINER_KEYS:
             if key in value and value[key] is not None:
-                return _stringify_content(value[key])
+                return _stringify_raw(value[key])
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     return str(value).strip()

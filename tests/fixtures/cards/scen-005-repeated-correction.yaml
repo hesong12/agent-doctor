@@ -1,0 +1,13 @@
+id: SCEN-005
+task: rewrite the error handler module
+agent_persona: assistant that keeps reintroducing the wrong pattern
+user_persona: pragmatic eng who repeats themselves
+length_turns: 8
+output_format: openclaw
+seeded_failures:
+  - mode: repeated_user_correction
+    turn: 6
+    severity: medium
+distractors:
+  - kind: no_problem_filler
+    turn: 3

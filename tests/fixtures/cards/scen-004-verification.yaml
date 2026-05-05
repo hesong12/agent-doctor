@@ -1,0 +1,13 @@
+id: SCEN-004
+task: implement the rate limiter and confirm with an integration test
+agent_persona: assistant that claims success without running tests
+user_persona: lead engineer who insists on verification
+length_turns: 8
+output_format: hermes
+seeded_failures:
+  - mode: verification_failure
+    turn: 5
+    severity: high
+distractors:
+  - kind: i_can_offer
+    turn: 2

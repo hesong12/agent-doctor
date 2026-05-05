@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-doctor"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first session postmortem and improvement engine for memoryful AI agents."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,7 +16,9 @@ keywords = ["agents", "postmortem", "cli", "local-first", "evals"]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+llm = ["anthropic>=0.34"]
+mcp = ["mcp>=1.0"]
 
 [project.scripts]
 agent-doctor = "agent_doctor.cli:main"

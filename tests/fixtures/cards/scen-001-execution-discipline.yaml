@@ -1,0 +1,13 @@
+id: SCEN-001
+task: fix the broken auth middleware and add a regression test
+agent_persona: memoryful coding agent, prone to over-narration
+user_persona: senior eng, terse, hates planning-without-action
+length_turns: 8
+output_format: hermes
+seeded_failures:
+  - mode: execution_discipline
+    turn: 3
+    severity: medium
+distractors:
+  - kind: i_can_offer
+    turn: 5
