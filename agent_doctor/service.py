@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .autopilot import Platform
+from .autopilot import Platform, baseline_autopilot_state
 from .ingest import host_home
 from .schema import Severity
 
@@ -38,6 +38,7 @@ def install_sidecar_service(
     inbox_dir: Path | None = None,
     name: str | None = None,
     start: bool = False,
+    baseline_existing: bool = True,
 ) -> ServiceResult:
     command = _autopilot_command(
         platform=platform,
@@ -48,6 +49,7 @@ def install_sidecar_service(
         min_severity=min_severity,
         notify_command=notify_command,
         inbox_dir=inbox_dir,
+        changed_only=baseline_existing,
     )
     service_file = expected_service_path(platform=platform, name=name)
     service_kind = _service_kind()
@@ -62,9 +64,19 @@ def install_sidecar_service(
 
     start_commands: list[list[str]] = []
     started = False
+    if baseline_existing:
+        try:
+            baseline_autopilot_state(
+                platform=platform,
+                path=transcript_path,
+                out_dir=out_dir,
+            )
+        except Exception as exc:
+            warnings.append(f"could not baseline existing transcripts: {exc}")
     if start:
-        start_commands, warnings = _start_service(service_file, service_kind)
-        started = not warnings
+        start_commands, start_warnings = _start_service(service_file, service_kind)
+        warnings.extend(start_warnings)
+        started = not start_warnings
     return ServiceResult(
         platform=platform,
         service_kind=service_kind,
@@ -114,6 +126,7 @@ def _autopilot_command(
     min_severity: Severity,
     notify_command: str | None,
     inbox_dir: Path | None,
+    changed_only: bool,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -138,6 +151,8 @@ def _autopilot_command(
         command.extend(["--notify-command", notify_command])
     if inbox_dir is not None:
         command.extend(["--inbox-dir", str(inbox_dir.expanduser())])
+    if changed_only:
+        command.append("--changed-only")
     return command
 
 

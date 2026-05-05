@@ -181,6 +181,27 @@ def run_autopilot_once(
     )
 
 
+def baseline_autopilot_state(
+    *,
+    platform: Platform,
+    out_dir: Path,
+    path: Path | None = None,
+    state_path: Path | None = None,
+) -> int:
+    """Record current JSONL snapshots without emitting historical events."""
+
+    input_path = path or default_transcript_path(platform)
+    out_dir = out_dir.expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    paths = collect_jsonl_paths(input_path)
+    state = AutopilotState(state_path or out_dir / "state.sqlite3")
+    try:
+        state.record_file_snapshots(paths)
+    finally:
+        state.close()
+    return len(paths)
+
+
 def _ingest_paths(paths: list[Path]) -> tuple[list[Message], int]:
     messages: list[Message] = []
     parse_errors = 0

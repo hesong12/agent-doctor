@@ -175,6 +175,11 @@ Current automatic triggers:
 - assistant completion claims without nearby verification evidence.
 - hidden or unacknowledged tool failures surfaced by the deterministic detectors.
 
+Watch mode automatically runs a full first pass, then switches to changed-file
+scanning using JSONL path, `mtime`, and size state in SQLite. To skip unchanged
+files on the first pass as well (for example, for one-shot batch jobs or daemon
+restarts), pass `--changed-only`.
+
 Artifacts:
 
 ```
@@ -207,6 +212,12 @@ Install as a background user service:
 agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw \
   --inbox-dir ~/.agent-doctor/inbox/openclaw --start
 ```
+
+Service installation baselines existing transcript files before starting by
+default and starts the service with changed-file scanning enabled, so a fresh
+sidecar does not flood the inbox with historical findings. Pass
+`--no-baseline-existing` when you intentionally want the service to scan old
+sessions as soon as it starts.
 
 The installer also supports this as an opt-in:
 
