@@ -79,3 +79,15 @@ class TestHermesAdapterContract(AdapterContractTest):
         instance = HermesAdapter.detect()
         assert instance is not None
         return instance
+
+
+def test_hermes_install_skill_writes_to_skill_dir(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setattr("agent_doctor.adapters.hermes.HERMES_HOME", home)
+
+    written = HermesAdapter().install_skill("# hermes skill")
+
+    assert written == home / "skills" / "autonomous-ai-agents" / "agent-doctor" / "SKILL.md"
+    assert written.exists()
+    assert written.read_text(encoding="utf-8") == "# hermes skill"

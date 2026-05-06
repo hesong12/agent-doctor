@@ -176,3 +176,12 @@ class HostAdapter(Protocol):
     def session_metadata(self, jsonl_path: Path) -> SessionMetadata:
         """Parse a session's JSONL header to resolve channel + recipient + language."""
         ...
+
+    def install_skill(self, content: str, *, dry_run: bool = False) -> Path:
+        """Write the SKILL.md content into the host's skill directory.
+
+        Returns the absolute path written. dry_run=True returns the path
+        that would be written without actually writing. Adapters that
+        don't have a skill_dir capability raise NotImplementedError.
+        """
+        ...

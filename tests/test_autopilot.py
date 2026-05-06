@@ -429,3 +429,68 @@ def test_notify_command_reports_invalid_command() -> None:
     error = run_notify_command('"unterminated', event=run_autopilot_once)  # type: ignore[arg-type]
 
     assert error and "invalid notify command" in error
+
+
+def test_dispatch_event_routes_through_adapter_inbox(tmp_path: Path, monkeypatch) -> None:
+    """dispatch_event uses adapter.send_message; for GenericAdapter that
+    means the inbox file gets written."""
+    from agent_doctor.adapters import GenericAdapter
+    from agent_doctor.autopilot import AutopilotEvent, dispatch_event
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    event = AutopilotEvent(
+        id="e1",
+        platform="generic",
+        action="intervene",
+        trigger="user_frustration_signal",
+        severity="high",
+        session_id="s1",
+        message_file="/tmp/s1.jsonl",
+        message_line=1,
+        summary="user frustration",
+        evidence="some evidence",
+        finding_ids=[],
+    )
+
+    err = dispatch_event(event, GenericAdapter())
+
+    assert err is None
+    expected_inbox = tmp_path / ".agent-doctor" / "generic" / "inbox" / "s1.md"
+    assert expected_inbox.exists()
+    text = expected_inbox.read_text(encoding="utf-8")
+    assert "🩺 Agent Doctor — user_frustration_signal" in text
+    assert "user frustration" in text
+
+
+def test_dispatch_event_returns_error_string_on_adapter_failure(tmp_path: Path) -> None:
+    """When the adapter raises, dispatch_event captures and returns the error."""
+    from agent_doctor.adapters import HostCapabilities
+    from agent_doctor.autopilot import AutopilotEvent, dispatch_event
+
+    class FailingAdapter:
+        def capabilities(self):
+            return HostCapabilities(host_name="failing", detected_at=tmp_path)
+
+        def send_message(self, target, body, kind):
+            raise RuntimeError("boom")
+
+    event = AutopilotEvent(
+        id="e2",
+        platform="generic",
+        action="intervene",
+        trigger="user_frustration_signal",
+        severity="high",
+        session_id="s2",
+        message_file="/tmp/s2.jsonl",
+        message_line=1,
+        summary="x",
+        evidence="y",
+        finding_ids=[],
+    )
+
+    err = dispatch_event(event, FailingAdapter())
+
+    assert err is not None
+    assert "adapter_error" in err
+    assert "boom" in err

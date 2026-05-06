@@ -124,5 +124,25 @@ def test_host_adapter_is_runtime_checkable() -> None:
         def infer_text(self, prompt, *, model=None): return ""
         def infer_embedding(self, text, *, model=None): return []
         def session_metadata(self, jsonl_path): return SessionMetadata(session_id="", language="en", channel="generic", recipient="local")
+        def install_skill(self, content: str, *, dry_run: bool = False) -> Path: return Path("/tmp/SKILL.md")
+
+    assert isinstance(_Stub(), HostAdapter)
+
+
+def test_host_adapter_protocol_includes_install_skill(tmp_path: Path) -> None:
+    """install_skill should be part of the protocol so install.py can iterate adapters."""
+    class _Stub:
+        @classmethod
+        def detect(cls): return None
+        def capabilities(self): return HostCapabilities(host_name="stub", detected_at=Path("/"))
+        def send_message(self, target, body, kind): return ""
+        def edit_message(self, target, message_id, body): pass
+        def add_reaction(self, target, message_id, emoji): pass
+        def list_reactions(self, target, message_id): return []
+        def inject_system_event(self, text, *, mode="now"): pass
+        def infer_text(self, prompt, *, model=None): return ""
+        def infer_embedding(self, text, *, model=None): return []
+        def session_metadata(self, jsonl_path): return SessionMetadata(session_id="", language="en", channel="generic", recipient="local")
+        def install_skill(self, content: str, *, dry_run: bool = False) -> Path: return Path("/tmp/SKILL.md")
 
     assert isinstance(_Stub(), HostAdapter)

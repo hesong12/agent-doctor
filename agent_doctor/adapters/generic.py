@@ -99,6 +99,17 @@ class GenericAdapter:
             "GenericAdapter has can_infer_embedding=False; use a host-specific adapter."
         )
 
+    def install_skill(self, content: str, *, dry_run: bool = False) -> Path:
+        # Generic doesn't have a host-managed skill directory; write to a flat
+        # SOP file under the user's agent-doctor output for reference.
+        out_path = Path("~/.agent-doctor/skills/agent-doctor-skill.md").expanduser()
+        if dry_run:
+            return out_path
+        out_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        out_path.write_text(content, encoding="utf-8")
+        out_path.chmod(0o600)
+        return out_path
+
     def session_metadata(self, jsonl_path: Path) -> SessionMetadata:
         """Best-effort metadata: session_id from first JSONL line or filename;
         language detected from the dominant CJK/Latin character class in

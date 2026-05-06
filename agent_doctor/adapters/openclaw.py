@@ -285,6 +285,17 @@ class OpenClawAdapter:
         except (json.JSONDecodeError, TypeError, ValueError):
             return []
 
+    def install_skill(self, content: str, *, dry_run: bool = False) -> Path:
+        skill_dir = self.capabilities().skill_dir
+        assert skill_dir is not None, "OpenClaw declares skill_dir; missing capability is a bug"
+        skill_path = skill_dir / "SKILL.md"
+        if dry_run:
+            return skill_path
+        skill_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        skill_path.write_text(content, encoding="utf-8")
+        skill_path.chmod(0o600)
+        return skill_path
+
     def session_metadata(self, jsonl_path: Path) -> SessionMetadata:
         """Parse OpenClaw session JSONL: trace files contain sessionKey
         like 'agent:main:tui-XXXX'; sessions/<id>.jsonl uses traceId.

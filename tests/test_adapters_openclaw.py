@@ -362,6 +362,33 @@ class TestOpenClawAdapterContract(AdapterContractTest):
 # --- integration (skip when binary missing) ----------------------------------
 
 
+def test_openclaw_install_skill_writes_to_skill_dir(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "openclaw-home"
+    home.mkdir()
+    monkeypatch.setattr("agent_doctor.adapters.openclaw.OPENCLAW_HOME", home)
+    monkeypatch.setattr("agent_doctor.adapters.openclaw._resolve_openclaw_or_none", lambda: None)
+
+    written = OpenClawAdapter().install_skill("# test skill", dry_run=False)
+
+    assert written == home / "skills" / "agent-doctor" / "SKILL.md"
+    assert written.exists()
+    assert written.read_text(encoding="utf-8") == "# test skill"
+    import stat
+    assert stat.S_IMODE(written.stat().st_mode) == 0o600
+
+
+def test_openclaw_install_skill_dry_run_does_not_write(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "openclaw-home"
+    home.mkdir()
+    monkeypatch.setattr("agent_doctor.adapters.openclaw.OPENCLAW_HOME", home)
+    monkeypatch.setattr("agent_doctor.adapters.openclaw._resolve_openclaw_or_none", lambda: None)
+
+    intended = OpenClawAdapter().install_skill("# unused", dry_run=True)
+
+    assert intended == home / "skills" / "agent-doctor" / "SKILL.md"
+    assert not intended.exists()
+
+
 @pytest.mark.skipif(not shutil.which("openclaw"), reason="openclaw not on PATH")
 def test_real_openclaw_infer_text_smoke() -> None:
     """If the real CLI is present, do one tiny inference to prove the wiring.

@@ -75,3 +75,14 @@ class HermesAdapter:
 
     def session_metadata(self, jsonl_path: Path) -> SessionMetadata:
         return GenericAdapter().session_metadata(jsonl_path)
+
+    def install_skill(self, content: str, *, dry_run: bool = False) -> Path:
+        skill_dir = self.capabilities().skill_dir
+        assert skill_dir is not None, "Hermes declares skill_dir; missing capability is a bug"
+        skill_path = skill_dir / "SKILL.md"
+        if dry_run:
+            return skill_path
+        skill_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        skill_path.write_text(content, encoding="utf-8")
+        skill_path.chmod(0o600)
+        return skill_path

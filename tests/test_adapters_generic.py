@@ -99,3 +99,14 @@ from agent_doctor.adapters.testing import AdapterContractTest
 
 class TestGenericAdapterContract(AdapterContractTest):
     ADAPTER = GenericAdapter
+
+
+def test_generic_install_skill_writes_under_agent_doctor(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    written = GenericAdapter().install_skill("# generic skill")
+
+    expected = tmp_path / ".agent-doctor" / "skills" / "agent-doctor-skill.md"
+    assert written == expected
+    assert written.exists()
+    assert written.read_text(encoding="utf-8") == "# generic skill"

@@ -405,6 +405,54 @@ def run_notify_command(command: str, event: AutopilotEvent) -> str | None:
     return None
 
 
+def dispatch_event(
+    event: AutopilotEvent,
+    adapter,  # HostAdapter; not type-hinted to avoid circular import
+    *,
+    target_resolver=None,
+) -> str | None:
+    """Adapter-driven event delivery. Parallel to run_notify_command.
+
+    Phase 1 introduces this so Phase 3 has a foundation; the existing
+    --notify-command path remains for backward compatibility.
+
+    Returns None on success, an error string on failure.
+    """
+    from .adapters import MessageBody, MessageKind, Target  # late import to avoid circular
+
+    caps = adapter.capabilities()
+    kind = MessageKind.intervene  # phase 1: only intervene events
+
+    if target_resolver is not None:
+        target = target_resolver(event)
+    else:
+        # Default: inbox fallback under the agent-doctor output for this host
+        inbox_path = (
+            Path("~/.agent-doctor").expanduser()
+            / caps.host_name
+            / "inbox"
+            / f"{event.session_id}.md"
+        )
+        target = Target(
+            host=caps.host_name,
+            channel="inbox",
+            recipient="",
+            inbox_path=inbox_path,
+        )
+
+    summary = event.summary or (event.evidence[:400] if event.evidence else "")
+    body = MessageBody(
+        header=f"🩺 Agent Doctor — {event.trigger}",
+        body=summary if summary else "(no summary)",
+        footer=f"Card: {event.card_path or 'n/a'}",
+    )
+    try:
+        adapter.send_message(target, body, kind)
+    except (NotImplementedError, RuntimeError) as exc:
+        return f"adapter_error: {exc}"
+    return None
+
+
 def append_delivery_error(path: Path, event: AutopilotEvent, error: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload = {
