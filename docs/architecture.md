@@ -59,9 +59,8 @@ a shared Pet status under `~/.agent-doctor/pet`. That is the always-display
 contract: the pet is the default user-facing surface, while sidecars remain
 headless sensors. The display reads a packaged transparent PNG doctor sprite
 when available, falls back to code-drawn shapes, applies local state-specific
-effects, opens a click dialog for status/actions, and exposes a right-click menu
-for diagnose, stage repair, mute, card open, and quit. Healthy idle status is
-passive and carries no setup/start action; host service setup belongs to
+effects, and opens one click panel for status and actions. Healthy idle status
+is passive and carries no setup/start action; host service setup belongs to
 `setup autopilot`, not to the Pet window itself. Transcript-backed
 OpenClaw/Hermes incidents can be routed back through a local Pet action; manual
 incidents stay copy-only because there is no session path to target.

@@ -161,8 +161,7 @@ Desktop display:
 The desktop pet renders a packaged chibi doctor sprite when available and
 animates locally by state: idle breathing, watching scan, concerned diagnostic
 pulse, and intervening alert. In autopilot setup it is the default user-facing
-entry point: click it for the status/action dialog, right-click it to diagnose,
-mute, open the card, stage a repair, or quit. For transcript-backed
+entry point: click it for the single status/action panel. For transcript-backed
 OpenClaw/Hermes incidents, the dialog can send the generated recovery suggestion
 back through the local host adapter; manual incidents remain copy-only.
 

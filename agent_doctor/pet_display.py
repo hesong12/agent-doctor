@@ -555,9 +555,6 @@ def display_pet(
         if not interaction["moved"]:
             interaction["bubble"] = not interaction["bubble"]
 
-    def quit_pet() -> None:
-        root.destroy()
-
     def open_status_card(snapshot: DisplaySnapshot) -> None:
         if not snapshot.card_path:
             return
@@ -716,26 +713,9 @@ def display_pet(
                 command=lambda item=action: perform_dialog_action(item, snapshot, popup),
             ).pack(side=side, padx=padx)
 
-    menu = tk.Menu(root, tearoff=0)
-    menu.add_command(
-        label="Diagnose current session",
-        command=lambda: open_status_dialog(active_snapshot()),
-    )
-    menu.add_command(
-        label="Dismiss current event",
-        command=lambda: dismiss_snapshot(active_snapshot()),
-    )
-    menu.add_separator()
-    menu.add_command(label="Quit Doctor Pet", command=quit_pet)
-
-    def show_menu(event: Any) -> None:
-        menu.tk_popup(event.x_root, event.y_root)
-
     canvas.bind("<ButtonPress-1>", start_drag)
     canvas.bind("<B1-Motion>", move_drag)
     canvas.bind("<ButtonRelease-1>", finish_click)
-    canvas.bind("<Button-2>", show_menu)
-    canvas.bind("<Button-3>", show_menu)
 
     status_cache: dict[str, Any] = {
         "read_at": 0.0,
@@ -1219,42 +1199,6 @@ class PetView: NSView {
         needsDisplay = true
     }
 
-    override func rightMouseDown(with event: NSEvent) {
-        let menu = NSMenu()
-        func item(_ title: String, _ action: Selector, _ key: String = "") -> NSMenuItem {
-            let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: key)
-            menuItem.target = self
-            return menuItem
-        }
-        menu.addItem(item("Diagnose Current Session", #selector(showStatusDialog(_:))))
-        let actions = displayActions()
-        if actions.contains("send_recovery") {
-            menu.addItem(item("Send Suggestion to Agent", #selector(sendRecoveryToAgent(_:))))
-        }
-        if actions.contains("stage_fix") {
-            menu.addItem(item("Stage Repair", #selector(runRepair(_:))))
-        }
-        if actions.contains("open_card") {
-            menu.addItem(item("Open Status Card", #selector(openStatusCard(_:))))
-        }
-        menu.addItem(item("Dismiss Current Event", #selector(muteForNow(_:))))
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(item("Quit Doctor Pet", #selector(quitPet(_:)), "q"))
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
-    }
-
-    @objc func showBubble(_ sender: Any?) {
-        bubbleOpen = true
-        needsDisplay = true
-    }
-
-    @objc func showStatusDialog(_ sender: Any?) {
-        observeCurrentEvent()
-        bubbleOpen = !bubbleOpen
-        noticeText = ""
-        needsDisplay = true
-    }
-
     @objc func muteForNow(_ sender: Any?) {
         bubbleOpen = false
         dismissedEventId = currentEventKey()
@@ -1270,14 +1214,6 @@ class PetView: NSView {
             bubbleOpen = true
             noticeText = "No status card is available for this state."
             needsDisplay = true
-        }
-    }
-
-    @objc func runRepair(_ sender: Any?) {
-        if displayActions().contains("stage_fix") {
-            runOptionCommand("stage_fix")
-        } else {
-            showStatusDialog(sender)
         }
     }
 
@@ -1694,10 +1630,6 @@ class PetView: NSView {
         )
         window.setFrame(next, display: true)
         self.frame = NSRect(x: 0, y: 0, width: width, height: height)
-    }
-
-    @objc func quitPet(_ sender: Any?) {
-        NSApplication.shared.terminate(nil)
     }
 
     func r(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> NSRect {

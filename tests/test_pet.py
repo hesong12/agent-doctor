@@ -390,7 +390,7 @@ def test_pet_action_send_recovery_writes_hermes_inbox(
     assert "Agent Doctor recovery suggestion" in inbox.read_text(encoding="utf-8")
 
 
-def test_appkit_display_source_has_context_menu_quit() -> None:
+def test_appkit_display_source_uses_single_click_panel() -> None:
     source = pet_display._appkit_source()
 
     assert "compactWindowWidth: CGFloat = 260" in source
@@ -400,13 +400,6 @@ def test_appkit_display_source_has_context_menu_quit() -> None:
     assert "drawPanel" in source
     assert "drawActionButton" in source
     assert "performButton" in source
-    assert "rightMouseDown" in source
-    assert "NSMenu" in source
-    assert "Quit Doctor Pet" in source
-    assert "Stage Repair" in source
-    assert "runRepair" in source
-    assert "terminate(nil)" in source
-    assert "showStatusDialog" in source
     assert "displayActions" in source
     assert "dismissedEventId" in source
     assert "isRunnableCommand" in source
@@ -422,6 +415,14 @@ def test_appkit_display_source_has_context_menu_quit() -> None:
     assert "Hide Alert" in source
     assert "Intervention needed" in source
     assert "runningActionId" in source
+    assert "rightMouseDown" not in source
+    assert "NSMenu" not in source
+    assert "Dismiss Current Event" not in source
+    assert "Diagnose Current Session" not in source
+    assert "Quit Doctor Pet" not in source
+    assert "terminate(nil)" not in source
+    assert "runRepair" not in source
+    assert "showStatusDialog" not in source
     assert "Start Monitoring" not in source
     assert "Starting live monitoring" not in source
     assert "setup\", \"autopilot" not in source
