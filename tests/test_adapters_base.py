@@ -47,12 +47,21 @@ def test_message_body_must_have_header_and_body() -> None:
     assert body.footer is None
 
 
+def test_message_body_rejects_empty_header_or_body() -> None:
+    with pytest.raises(ValueError):
+        MessageBody(header="", body="anything")
+    with pytest.raises(ValueError):
+        MessageBody(header="anything", body="")
+
+
 def test_message_body_render_returns_full_text() -> None:
-    body = MessageBody(
-        header="🩺 H", body="B", footer="F",
-    )
-    rendered = body.render()
-    assert "H" in rendered and "B" in rendered and "F" in rendered
+    body = MessageBody(header="H", body="B", footer="F")
+    assert body.render() == "H\n\nB\n\nF"
+
+
+def test_message_body_render_without_footer() -> None:
+    body = MessageBody(header="H", body="B")
+    assert body.render() == "H\n\nB"
 
 
 def test_reaction_dataclass() -> None:
@@ -63,6 +72,22 @@ def test_reaction_dataclass() -> None:
 def test_session_metadata_defaults() -> None:
     meta = SessionMetadata(session_id="s", language="zh", channel="telegram", recipient="@me")
     assert meta.language == "zh"
+
+
+def test_host_capabilities_coerces_iterables_to_tuple() -> None:
+    """Adapter authors who pass list-shaped values for available_models /
+    available_channels should not break the frozen-dataclass invariants
+    expected downstream (e.g., `caps.available_models + ("foo",)`)."""
+    caps = HostCapabilities(
+        host_name="x",
+        detected_at=Path("/"),
+        available_models=["a", "b"],  # type: ignore[arg-type]
+        available_channels=["telegram"],  # type: ignore[arg-type]
+    )
+    assert isinstance(caps.available_models, tuple)
+    assert isinstance(caps.available_channels, tuple)
+    assert caps.available_models == ("a", "b")
+    assert caps.available_channels == ("telegram",)
 
 
 def test_host_capabilities_defaults_are_conservative() -> None:

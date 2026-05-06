@@ -5,6 +5,7 @@ support sending into chat channels, reactions, system events, or
 inference. Capabilities reflect this honestly so downstream code
 branches correctly.
 """
+import stat
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,7 @@ def test_generic_send_message_writes_inbox_file(tmp_path: Path) -> None:
     assert "🩺" in text
     assert "user is angry" in text
     assert message_id  # opaque but non-empty
+    assert stat.S_IMODE(inbox.stat().st_mode) == 0o600
 
 
 def test_generic_send_message_without_inbox_path_raises() -> None:

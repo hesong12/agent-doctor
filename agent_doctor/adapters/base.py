@@ -55,6 +55,14 @@ class MessageBody:
     body: str
     footer: str | None = None
 
+    def __post_init__(self) -> None:
+        # A buggy speaker should not be able to write blank intervention
+        # messages to a user's inbox. Validate at construction time.
+        if not self.header:
+            raise ValueError("MessageBody.header must be non-empty")
+        if not self.body:
+            raise ValueError("MessageBody.body must be non-empty")
+
     def render(self) -> str:
         parts = [self.header, "", self.body]
         if self.footer:
@@ -107,6 +115,16 @@ class HostCapabilities:
     memory_writable: Path | None = None
     identity_writable: Path | None = None
     sop_writable: Path | None = None
+
+    def __post_init__(self) -> None:
+        # Coerce list/iterable inputs to tuple so frozen-dataclass invariants
+        # hold for adapter authors who pass list-shaped values. Without this,
+        # downstream code like `caps.available_models + ("foo",)` would
+        # TypeError at the call site instead of failing loud at construction.
+        if not isinstance(self.available_models, tuple):
+            object.__setattr__(self, "available_models", tuple(self.available_models))
+        if not isinstance(self.available_channels, tuple):
+            object.__setattr__(self, "available_channels", tuple(self.available_channels))
 
 
 @runtime_checkable

@@ -33,14 +33,14 @@ from .base import (
 class AdapterContractTest:
     """Subclass and set ADAPTER to validate an adapter against the contract."""
 
-    ADAPTER: ClassVar[type]  # must be set by subclass
+    ADAPTER: ClassVar[type[HostAdapter]]  # must be set by subclass
 
     @pytest.fixture()
     def adapter(self) -> HostAdapter:
-        instance = self.ADAPTER.detect()  # type: ignore[attr-defined]
+        instance = self.ADAPTER.detect()
         if instance is None:
             pytest.skip(f"{self.ADAPTER.__name__}.detect() returned None on this machine.")
-        return instance  # type: ignore[return-value]
+        return instance
 
     def test_adapter_is_host_adapter(self, adapter: HostAdapter) -> None:
         assert isinstance(adapter, HostAdapter)
@@ -61,6 +61,10 @@ class AdapterContractTest:
             "can_infer_embedding",
         ):
             assert isinstance(getattr(caps, flag_name), bool)
+        # Tuples not lists — frozen-dataclass invariants downstream
+        # (e.g., `caps.available_models + ("foo",)`) require this.
+        assert isinstance(caps.available_models, tuple)
+        assert isinstance(caps.available_channels, tuple)
 
     def test_send_message_respects_capability(self, adapter: HostAdapter, tmp_path: Path) -> None:
         caps = adapter.capabilities()
