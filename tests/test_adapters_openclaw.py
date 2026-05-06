@@ -86,6 +86,32 @@ def test_capabilities_degrade_when_binary_missing(tmp_path: Path, monkeypatch) -
     assert caps.can_infer_text is False
 
 
+def test_capabilities_caches_channel_discovery(monkeypatch, tmp_path: Path) -> None:
+    """capabilities() called twice should only call _discover_channels once."""
+    home = tmp_path / "openclaw-home"
+    home.mkdir()
+    monkeypatch.setattr("agent_doctor.adapters.openclaw.OPENCLAW_HOME", home)
+    fake_bin = tmp_path / "openclaw"
+    fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake_bin.chmod(0o755)
+    monkeypatch.setattr("agent_doctor.adapters.openclaw._resolve_openclaw_or_none", lambda: str(fake_bin))
+
+    call_count = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        call_count["n"] += 1
+        return _completed(stdout='{"channels": [{"channel": "telegram"}]}')
+
+    monkeypatch.setattr("agent_doctor.adapters.openclaw.subprocess.run", fake_run)
+
+    adapter = OpenClawAdapter()
+    adapter.capabilities()
+    adapter.capabilities()
+    adapter.capabilities()
+
+    assert call_count["n"] == 1, f"_discover_channels should be called once, was {call_count['n']}"
+
+
 # --- send_message ------------------------------------------------------------
 
 
@@ -213,6 +239,104 @@ def test_infer_text_with_default_model_omits_model_flag(monkeypatch) -> None:
     assert "--model" not in captured["cmd"]
 
 
+# --- non-zero rc / stderr branches ------------------------------------------
+# Lock in the structured-error contract: every method that shells out to
+# openclaw must raise RuntimeError with rc + stderr in the message when the
+# subprocess fails. (add_reaction / list_reactions are intentionally
+# best-effort and tested separately under "silent failure logging".)
+
+
+def test_send_message_raises_on_nonzero_rc(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent_doctor.adapters.openclaw.subprocess.run",
+        lambda cmd, **kw: _completed(rc=1, stderr="boom"),
+    )
+    monkeypatch.setattr("agent_doctor.adapters.openclaw._resolve_openclaw_or_none", lambda: "/fake/openclaw")
+
+    target = Target(host="openclaw", channel="telegram", recipient="@me")
+    body = MessageBody(header="🩺 H", body="B")
+    with pytest.raises(RuntimeError, match=r"rc=1.*'boom'"):
+        OpenClawAdapter().send_message(target, body, MessageKind.intervene)
+
+
+def test_edit_message_raises_on_nonzero_rc(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent_doctor.adapters.openclaw.subprocess.run",
+        lambda cmd, **kw: _completed(rc=1, stderr="boom"),
+    )
+    monkeypatch.setattr("agent_doctor.adapters.openclaw._resolve_openclaw_or_none", lambda: "/fake/openclaw")
+
+    target = Target(host="openclaw", channel="telegram", recipient="@me")
+    body = MessageBody(header="🩺 H", body="B")
+    with pytest.raises(RuntimeError, match=r"rc=1.*'boom'"):
+        OpenClawAdapter().edit_message(target, "msg-1", body)
+
+
+def test_inject_system_event_raises_on_nonzero_rc(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent_doctor.adapters.openclaw.subprocess.run",
+        lambda cmd, **kw: _completed(rc=2, stderr="bad"),
+    )
+    monkeypatch.setattr("agent_doctor.adapters.openclaw._resolve_openclaw_or_none", lambda: "/fake/openclaw")
+
+    with pytest.raises(RuntimeError, match=r"rc=2.*'bad'"):
+        OpenClawAdapter().inject_system_event("hi")
+
+
+def test_infer_text_raises_on_nonzero_rc(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent_doctor.adapters.openclaw.subprocess.run",
+        lambda cmd, **kw: _completed(rc=1, stderr="api error"),
+    )
+    monkeypatch.setattr("agent_doctor.adapters.openclaw._resolve_openclaw_or_none", lambda: "/fake/openclaw")
+
+    with pytest.raises(RuntimeError, match=r"rc=1.*'api error'"):
+        OpenClawAdapter().infer_text("hi")
+
+
+def test_infer_embedding_raises_on_nonzero_rc(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent_doctor.adapters.openclaw.subprocess.run",
+        lambda cmd, **kw: _completed(rc=1, stderr="no model"),
+    )
+    monkeypatch.setattr("agent_doctor.adapters.openclaw._resolve_openclaw_or_none", lambda: "/fake/openclaw")
+
+    with pytest.raises(RuntimeError, match=r"rc=1.*'no model'"):
+        OpenClawAdapter().infer_embedding("hi")
+
+
+# --- session_metadata: TUI detection ---------------------------------------
+
+
+def test_session_metadata_recognizes_tui_session_key(tmp_path: Path) -> None:
+    """sessionKey 'agent:main:tui-XXXX' should be classified as channel='tui'."""
+    jsonl = tmp_path / "session.jsonl"
+    jsonl.write_text("", encoding="utf-8")
+    trajectory = tmp_path / "session.trajectory.jsonl"
+    trajectory.write_text(
+        json.dumps({"sessionKey": "agent:main:tui-abc123", "sessionId": "sess-1"}) + "\n",
+        encoding="utf-8",
+    )
+
+    meta = OpenClawAdapter().session_metadata(jsonl)
+    assert meta.channel == "tui"
+
+
+def test_session_metadata_does_not_match_intuit_substring(tmp_path: Path) -> None:
+    """A hypothetical 'intuit-bot' channel must NOT be misread as TUI just
+    because 'tui' appears as a substring of 'intuit'."""
+    jsonl = tmp_path / "session.jsonl"
+    jsonl.write_text("", encoding="utf-8")
+    trajectory = tmp_path / "session.trajectory.jsonl"
+    trajectory.write_text(
+        json.dumps({"sessionKey": "agent:main:intuit-bot-channel", "sessionId": "sess-2"}) + "\n",
+        encoding="utf-8",
+    )
+
+    meta = OpenClawAdapter().session_metadata(jsonl)
+    assert meta.channel == "channel"
+
+
 # --- contract conformance ---------------------------------------------------
 
 
@@ -244,13 +368,27 @@ def test_real_openclaw_infer_text_smoke() -> None:
 
     If the host's openclaw provider is misconfigured (no API key, missing
     model, etc.), skip rather than fail — the failure is a host-config
-    issue, not a wiring bug. Reaching the CLI proves the wiring.
+    issue, not a wiring bug. Reaching the CLI proves the wiring. Only
+    skip on a known set of host-config error patterns; let real wiring
+    bugs surface as failures.
     """
     adapter = OpenClawAdapter()
     if not adapter.capabilities().can_infer_text:
         pytest.skip("OpenClaw capabilities don't include text inference here")
+
+    HOST_CONFIG_HINTS = (
+        "no api key",
+        "model not found",
+        "not configured",
+        "unauthorized",
+        "no text output returned",
+        "model is not available",
+    )
     try:
         out = adapter.infer_text("Reply with the single word: ok")
     except RuntimeError as exc:
-        pytest.skip(f"OpenClaw inference unavailable on this host: {exc}")
+        msg = str(exc).lower()
+        if any(needle in msg for needle in HOST_CONFIG_HINTS):
+            pytest.skip(f"OpenClaw inference unavailable on this host: {exc}")
+        raise  # real wiring bug
     assert "ok" in out.lower() or "OK" in out

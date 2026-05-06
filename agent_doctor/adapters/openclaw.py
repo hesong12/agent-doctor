@@ -17,6 +17,7 @@ gracefully (typically falling through to GenericAdapter inbox).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -35,6 +36,8 @@ from .base import (
     Target,
 )
 from .generic import GenericAdapter
+
+_log = logging.getLogger(__name__)
 
 OPENCLAW_HOME = Path("~/.openclaw").expanduser()
 
@@ -70,6 +73,9 @@ def _run_openclaw(
 class OpenClawAdapter:
     """HostAdapter for OpenClaw."""
 
+    def __init__(self) -> None:
+        self._channels_cache: tuple[str, ...] | None = None
+
     @classmethod
     def detect(cls) -> "OpenClawAdapter | None":
         if not OPENCLAW_HOME.exists():
@@ -91,12 +97,21 @@ class OpenClawAdapter:
             can_infer_embedding=has_binary,
             default_inference_model=None,  # use host's configured default
             available_models=(),  # populated lazily on first list_models() call
-            available_channels=self._discover_channels() if has_binary else (),
+            available_channels=self._channels() if has_binary else (),
             skill_dir=OPENCLAW_HOME / "skills" / "agent-doctor",
             memory_writable=OPENCLAW_HOME / "memory" / "MEMORY.md",
             identity_writable=OPENCLAW_HOME / "identity" / "identity.md",
             sop_writable=None,  # SOP lives inside skills/agent-doctor/SKILL.md, edited there
         )
+
+    def _channels(self) -> tuple[str, ...]:
+        """Cached wrapper around `_discover_channels()`. capabilities() is
+        called by the autopilot watch loop and contract tests; without
+        caching, each call shells out to `openclaw channels list --json`
+        with up to a 10s timeout."""
+        if self._channels_cache is None:
+            self._channels_cache = self._discover_channels()
+        return self._channels_cache
 
     def send_message(self, target: Target, body: MessageBody, kind: MessageKind) -> str:
         # TUI sessions and inbox-only targets have no real channel surface;
@@ -157,10 +172,17 @@ class OpenClawAdapter:
             "--emoji", emoji,
         ]
         try:
-            _run_openclaw(args)  # best effort; callers don't need to wait on rc
-        except RuntimeError:
-            # Binary missing or transient failure: reactions are best-effort.
-            pass
+            result = _run_openclaw(args)  # best effort; callers don't need to wait on rc
+            if result.returncode != 0:
+                _log.debug(
+                    "openclaw message react rc=%s stderr=%r",
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+        except RuntimeError as exc:
+            # Binary missing or transient failure: reactions are best-effort,
+            # but log at DEBUG so opt-in operator debugging works.
+            _log.debug("openclaw message react failed: %s", exc)
 
     def list_reactions(self, target: Target, message_id: str) -> list[Reaction]:
         args = [
@@ -172,14 +194,21 @@ class OpenClawAdapter:
         ]
         try:
             result = _run_openclaw(args)
-        except RuntimeError:
+        except RuntimeError as exc:
             # Binary missing — contract requires returning a list (possibly empty).
+            _log.debug("openclaw message reactions failed: %s", exc)
             return []
         if result.returncode != 0:
+            _log.debug(
+                "openclaw message reactions rc=%s stderr=%r",
+                result.returncode,
+                result.stderr.strip(),
+            )
             return []
         try:
             payload = json.loads(result.stdout or "{}")
         except json.JSONDecodeError:
+            _log.debug("openclaw message reactions returned invalid JSON")
             return []
         out: list[Reaction] = []
         for item in payload.get("reactions", []):
@@ -273,7 +302,11 @@ class OpenClawAdapter:
                             continue
                         session_key = obj.get("sessionKey", "")
                         if session_key:
-                            channel = "tui" if "tui" in session_key else "channel"
+                            channel = (
+                                "tui"
+                                if (":tui-" in session_key or session_key.endswith(":tui"))
+                                else "channel"
+                            )
                             return SessionMetadata(
                                 session_id=str(obj.get("sessionId") or jsonl_path.stem),
                                 language=GenericAdapter._detect_language(line),
