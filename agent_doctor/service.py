@@ -100,7 +100,7 @@ def install_desktop_pet_service(
     name: str = "pet",
     start: bool = False,
 ) -> ServiceResult:
-    """Install the desktop Doctor Pet as the default user-facing service."""
+    """Install the desktop Agent Doctor as the default user-facing service."""
 
     from .pet_display import default_status_file
 
@@ -118,7 +118,7 @@ def install_desktop_pet_service(
         _write_systemd_unit(
             service_file,
             command,
-            description="Agent Doctor desktop pet",
+            description="Agent Doctor desktop app",
             restart=False,
         )
     else:

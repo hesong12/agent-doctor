@@ -7,7 +7,7 @@ detects (or for generic JSONL inputs from other frameworks).
 
 All capability flags are False. Only `send_message` works, and only
 when `Target.inbox_path` is set — it writes the message to that
-path. It does not emit OS-native notifications; Doctor Pet is the
+path. It does not emit OS-native notifications; Agent Doctor is the
 default user-facing surface.
 
 ## When to use

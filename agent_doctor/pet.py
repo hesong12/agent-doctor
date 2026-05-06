@@ -1,4 +1,4 @@
-"""Doctor Pet state model for in-session Agent Doctor interventions.
+"""Desktop Agent Doctor state model for in-session interventions.
 
 The pet is a product surface, not a detector. It turns existing deterministic
 findings and autopilot events into a compact status object that a CLI, MCP
@@ -205,14 +205,14 @@ def build_pet_status(
         )
 
     return PetStatus(
-        name="Agent Doctor Pet",
+        name="Agent Doctor",
         persona="doctor",
         state="idle",
         action="silent",
         severity="low",
         session_id=_latest_session_id(ordered),
         headline="No active quality incident detected.",
-        message="Doctor Pet is healthy and watching supported local sessions.",
+        message="Agent Doctor is healthy and watching supported local sessions.",
         evidence=(),
         options=_idle_options(),
         messages=len(ordered),
@@ -225,7 +225,7 @@ def build_pet_status(
         emotion_message="",
         diagnosis="No active incident was detected in the current session window.",
         recommendation=(
-            "Keep working normally. Doctor Pet will wake automatically if it sees "
+            "Keep working normally. Agent Doctor will wake automatically if it sees "
             "user frustration or a quality incident."
         ),
         recovery_prompt="",
@@ -234,7 +234,7 @@ def build_pet_status(
 
 def render_pet_markdown(status: PetStatus) -> str:
     lines = [
-        "# Agent Doctor Pet",
+        "# Agent Doctor",
         "",
         f"- State: `{status.state}`",
         f"- Action: `{status.action}`",
@@ -282,14 +282,14 @@ def write_pet_artifacts(out_dir: Path, status: PetStatus) -> dict[str, Path]:
 
 def _idle_status(*, platform: Platform = "generic", parse_errors: int = 0) -> PetStatus:
     return PetStatus(
-        name="Agent Doctor Pet",
+        name="Agent Doctor",
         persona="doctor",
         state="idle",
         action="silent",
         severity="low",
         session_id="",
-        headline="Doctor Pet is healthy.",
-        message="Doctor Pet is waiting for OpenClaw or Hermes session activity.",
+        headline="Agent Doctor is healthy.",
+        message="Agent Doctor is waiting for OpenClaw or Hermes session activity.",
         evidence=(),
         options=_idle_options(),
         messages=0,
@@ -302,7 +302,7 @@ def _idle_status(*, platform: Platform = "generic", parse_errors: int = 0) -> Pe
         diagnosis="No active incident is visible.",
         recommendation=(
             "No action is needed here. If monitoring is not installed, run setup from the CLI "
-            "rather than from inside the Pet window."
+            "rather than from inside the desktop window."
         ),
     )
 
@@ -336,7 +336,7 @@ def _status_from_event(
         recommendation=recommendation,
     )
     return PetStatus(
-        name="Agent Doctor Pet",
+        name="Agent Doctor",
         persona="doctor",
         state=state,
         action=event.action,
@@ -380,7 +380,7 @@ def _status_from_finding(
         for item in finding.evidence[:3]
     )
     return PetStatus(
-        name="Agent Doctor Pet",
+        name="Agent Doctor",
         persona="doctor",
         state=state,
         action="notify",
@@ -388,7 +388,7 @@ def _status_from_finding(
         session_id=finding.session_id,
         headline=f"{finding.title} detected.",
         message=(
-            "The doctor found a durable quality pattern. Review the evidence, then stage "
+            "Agent Doctor found a durable quality pattern. Review the evidence, then stage "
             "patches if this should change future agent behavior."
         ),
         evidence=evidence,
@@ -434,8 +434,8 @@ def _select_finding(findings: list[Finding]) -> Finding | None:
 
 def _event_headline(event: AutopilotEvent) -> str:
     if event.action == "intervene":
-        return "Doctor is intervening in a live quality incident."
-    return "Doctor noticed a quality risk."
+        return "Agent Doctor is intervening in a live quality incident."
+    return "Agent Doctor noticed a quality risk."
 
 
 def _event_message(event: AutopilotEvent) -> str:

@@ -169,7 +169,7 @@ def tool_bench(arguments: dict[str, Any]) -> str:
 
 
 def tool_doctor_pet_status(arguments: dict[str, Any]) -> str:
-    """Return the Doctor Pet state for a transcript, host, or current message."""
+    """Return the Agent Doctor state for a transcript, host, or current message."""
 
     status, error = _pet_status_from_arguments(arguments)
     if error:
@@ -187,7 +187,7 @@ def tool_doctor_pet_status(arguments: dict[str, Any]) -> str:
 
 
 def tool_doctor_pet_intervene(arguments: dict[str, Any]) -> str:
-    """Return a concise Doctor Pet recovery prompt and actions."""
+    """Return a concise Agent Doctor recovery prompt and actions."""
 
     status, error = _pet_status_from_arguments(arguments)
     if error:
@@ -350,7 +350,7 @@ TOOL_DEFINITIONS: list[ToolDefinition] = [
     ToolDefinition(
         name="doctor_pet_status",
         description=(
-            "Return the local Doctor Pet state for a JSONL transcript, host default path, "
+            "Return the local Agent Doctor state for a JSONL transcript, host default path, "
             "or current user message. No network calls. Optional `out_dir` writes "
             "pet-status.json and pet-card.md under that directory only."
         ),
@@ -376,7 +376,7 @@ TOOL_DEFINITIONS: list[ToolDefinition] = [
     ToolDefinition(
         name="doctor_pet_intervene",
         description=(
-            "Active-summon the Doctor Pet and return an intervention prompt plus "
+            "Active-summon Agent Doctor and return an intervention prompt plus "
             "2-3 action options. Local-only; optional writes are limited to `out_dir`."
         ),
         input_schema={

@@ -73,7 +73,7 @@ def test_setup_autopilot_dry_run_writes_nothing(tmp_path: Path, monkeypatch) -> 
 
     assert "[dry-run] openclaw" in text
     assert "would install service" in text
-    assert "pet      would install desktop Doctor Pet service" in text
+    assert "pet      would install desktop Agent Doctor service" in text
     assert not (tmp_path / "Library" / "LaunchAgents").exists()
 
 

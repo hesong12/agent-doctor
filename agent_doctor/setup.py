@@ -197,7 +197,7 @@ def render_autopilot_setup_result(result: AutopilotSetupResult) -> str:
         else:
             lines.append(f"  [skipped] {target.platform:<8} {target.skipped_reason}")
     if result.dry_run and result.desktop_pet:
-        lines.append("  [dry-run] pet      would install desktop Doctor Pet service")
+        lines.append("  [dry-run] pet      would install desktop Agent Doctor service")
     elif result.pet_service is not None:
         started = "started" if result.pet_service.started else "written"
         lines.append(f"  [{started}] pet      {result.pet_service.service_file}")

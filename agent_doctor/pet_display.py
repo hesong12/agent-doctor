@@ -1,9 +1,9 @@
-"""Desktop display for Doctor Pet.
+"""Desktop display for Agent Doctor.
 
 This module is intentionally optional UI glue. It lazy-imports ``tkinter`` so
 the scan/apply/autopilot production path remains dependency-free and headless
 safe. The display reads ``pet-status.json`` and renders a small always-on-top
-doctor pet window that refreshes as autopilot updates the file.
+Agent Doctor window that refreshes as autopilot updates the file.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ def read_status_payload(status_file: Path) -> dict[str, Any]:
             "state": "idle",
             "action": "silent",
             "severity": "low",
-            "headline": "Doctor Pet is waiting for Agent Doctor status.",
+            "headline": "Agent Doctor is waiting for status.",
             "message": f"Status file not found yet: {path}",
             "session_id": "",
         }
@@ -104,7 +104,7 @@ def read_status_payload(status_file: Path) -> dict[str, Any]:
             "state": "concerned",
             "action": "notify",
             "severity": "medium",
-            "headline": "Doctor Pet could not read its status file.",
+            "headline": "Agent Doctor could not read its status file.",
             "message": str(exc),
             "session_id": "",
         }
@@ -113,7 +113,7 @@ def read_status_payload(status_file: Path) -> dict[str, Any]:
             "state": "concerned",
             "action": "notify",
             "severity": "medium",
-            "headline": "Doctor Pet status file has the wrong shape.",
+            "headline": "Agent Doctor status file has the wrong shape.",
             "message": "Expected a JSON object.",
             "session_id": "",
         }
@@ -145,7 +145,7 @@ def snapshot_from_payload(payload: dict[str, Any]) -> DisplaySnapshot:
         state=state,
         action=action,
         severity=severity,
-        headline=str(payload.get("headline") or "Doctor Pet is idle."),
+        headline=str(payload.get("headline") or "Agent Doctor is idle."),
         message=str(payload.get("message") or ""),
         emotion_message=str(payload.get("emotion_message") or ""),
         diagnosis=str(payload.get("diagnosis") or ""),
@@ -250,7 +250,7 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
             seen.add("send_recovery")
         actions.append(DisplayAction(id="copy_recovery_prompt", label="Copy recovery prompt"))
         seen.add("copy_recovery_prompt")
-    actions.append(DisplayAction(id="diagnose_current", label="Diagnose now"))
+    actions.append(DisplayAction(id="diagnose_current", label="Check session"))
     seen.add("diagnose_current")
     for option in snapshot.options:
         if option.id == "start_autopilot":
@@ -261,7 +261,7 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
         seen.add(option.id)
     close_label = "Hide alert" if snapshot.state in ("concerned", "intervening") else "Close"
     actions.append(DisplayAction(id="dismiss_for_now", label=close_label))
-    actions.append(DisplayAction(id="quit_pet", label="Quit Pet"))
+    actions.append(DisplayAction(id="quit_pet", label="Quit"))
     if snapshot.card_path:
         actions.append(DisplayAction(id="open_card", label="Open status card"))
     return tuple(actions)
@@ -334,7 +334,7 @@ def _expectation_text(snapshot: DisplaySnapshot) -> str:
 def _user_action_text(snapshot: DisplaySnapshot) -> str:
     if snapshot.state in ("concerned", "intervening"):
         quiet = (
-            f"If you do nothing, the Pet will quiet this alert after "
+            f"If you do nothing, Agent Doctor will quiet this alert after "
             f"{snapshot.expires_after_seconds} seconds and keep watching."
         )
         if _can_send_recovery(snapshot):
@@ -354,7 +354,7 @@ def _user_action_text(snapshot: DisplaySnapshot) -> str:
     if snapshot.card_path:
         return "Open the status card for details, or hide this alert after you have seen it."
     return (
-        "No extra input is needed in this popup. Use the issue and evidence above to correct "
+        "No extra input is needed in this panel. Use the issue and evidence above to correct "
         "the active agent response, then hide this alert."
     )
 
@@ -362,6 +362,8 @@ def _user_action_text(snapshot: DisplaySnapshot) -> str:
 def _recovery_prompt(snapshot: DisplaySnapshot) -> str:
     if snapshot.recovery_prompt:
         return snapshot.recovery_prompt
+    if snapshot.state not in ("concerned", "intervening"):
+        return ""
     return "\n".join(
         [
             "Agent Doctor detected a live quality issue.",
@@ -446,10 +448,10 @@ def _visible_snapshot(
         action="silent",
         severity="low",
         phase="healthy",
-        headline="Doctor Pet is watching.",
+        headline="Agent Doctor is watching.",
         message="The previous alert quieted after inactivity.",
         emotion_message="",
-        diagnosis="No active visible incident. Doctor Pet will wake again when it sees a new frustration signal.",
+        diagnosis="No active visible incident. Agent Doctor will wake again when it sees a new frustration signal.",
         recommendation="Keep working normally.",
         recovery_prompt="",
         fill="#e7f0ff",
@@ -484,7 +486,7 @@ def display_pet(
     poll_seconds: float = 1.0,
     topmost: bool = True,
 ) -> None:
-    """Open an always-on-top Doctor Pet window and refresh from status JSON."""
+    """Open an always-on-top Agent Doctor window and refresh from status JSON."""
 
     try:
         import tkinter as tk
@@ -499,7 +501,7 @@ def display_pet(
             )
             return
         raise RuntimeError(
-            "Doctor Pet desktop display requires tkinter, or Swift/AppKit on macOS. "
+            "Agent Doctor desktop display requires tkinter, or Swift/AppKit on macOS. "
             "Use `agent-doctor pet --out <dir>` to render files without a desktop window."
         ) from exc
 
@@ -508,7 +510,7 @@ def display_pet(
     poll_interval = max(0.2, poll_seconds)
 
     root = tk.Tk()
-    root.title("Agent Doctor Pet")
+    root.title("Agent Doctor")
     root.geometry(f"{_WINDOW_WIDTH}x{_WINDOW_HEIGHT}+120+120")
     root.resizable(False, False)
     root.overrideredirect(True)
@@ -602,7 +604,7 @@ def display_pet(
                 popup.destroy()
             show_message("Suggestion sent", detail or "The active agent received the recovery suggestion.")
             return
-        show_message("Suggestion not sent", detail or "Doctor Pet could not route this incident.")
+        show_message("Suggestion not sent", detail or "Agent Doctor could not route this incident.")
 
     def diagnose_current_session() -> None:
         command = [
@@ -620,9 +622,9 @@ def display_pet(
         status_cache["read_at"] = time.monotonic()
         interaction["bubble"] = True
         if result.returncode == 0:
-            show_message("Diagnosis refreshed", detail or "Doctor Pet refreshed the current session diagnosis.")
+            show_message("Session checked", detail or "Agent Doctor checked the current session.")
             return
-        show_message("Diagnosis failed", detail or "Doctor Pet could not diagnose the current session.")
+        show_message("Session check failed", detail or "Agent Doctor could not check the current session.")
 
     def run_command_action(action: DisplayAction) -> None:
         if action.command:
@@ -668,7 +670,7 @@ def display_pet(
 
         popup = tk.Toplevel(root)
         dialog["window"] = popup
-        popup.title("Agent Doctor Pet")
+        popup.title("Agent Doctor")
         popup.resizable(False, False)
         if topmost:
             popup.attributes("-topmost", True)
@@ -1021,7 +1023,7 @@ def _display_pet_appkit(
     ]
     completed = subprocess.run(command, check=False)
     if completed.returncode != 0:
-        raise RuntimeError(f"Swift/AppKit Doctor Pet exited with rc={completed.returncode}")
+        raise RuntimeError(f"Swift/AppKit Agent Doctor exited with rc={completed.returncode}")
 
 
 def _appkit_source() -> str:
@@ -1057,11 +1059,11 @@ func loadStatus() -> [String: String] {
             "severity": "low",
             "platform": "generic",
             "phase": "healthy",
-            "headline": "Doctor Pet is waiting for status.",
+            "headline": "Agent Doctor is waiting for status.",
             "message": "Status file not found yet.",
             "emotion_message": "",
             "diagnosis": "No active incident was detected.",
-            "recommendation": "Keep Doctor Pet running while the session continues.",
+            "recommendation": "Keep Agent Doctor running while the session continues.",
             "recovery_prompt": "",
             "expires_after_seconds": "120",
             "session_id": "",
@@ -1082,11 +1084,11 @@ func loadStatus() -> [String: String] {
             "severity": "medium",
             "platform": "generic",
             "phase": "diagnosing",
-            "headline": "Doctor Pet could not parse status.",
+            "headline": "Agent Doctor could not parse status.",
             "message": "Expected a JSON object.",
             "emotion_message": "",
             "diagnosis": "The status file could not be parsed.",
-            "recommendation": "Check the Pet status writer and keep monitoring.",
+            "recommendation": "Check the Agent Doctor status writer and keep monitoring.",
             "recovery_prompt": "",
             "expires_after_seconds": "120",
             "session_id": "",
@@ -1107,7 +1109,7 @@ func loadStatus() -> [String: String] {
         "severity": stringValue(dict, "severity", "low"),
         "platform": stringValue(dict, "platform", "generic"),
         "phase": stringValue(dict, "phase", "healthy"),
-        "headline": stringValue(dict, "headline", "Doctor Pet is idle."),
+        "headline": stringValue(dict, "headline", "Agent Doctor is idle."),
         "message": stringValue(dict, "message", ""),
         "emotion_message": stringValue(dict, "emotion_message", ""),
         "diagnosis": stringValue(dict, "diagnosis", ""),
@@ -1193,6 +1195,8 @@ class PetView: NSView {
     var lastStatusReload = Date(timeIntervalSince1970: 0)
     var buttonFrames: [(String, NSRect)] = []
     var noticeText = ""
+    var checkResultText = ""
+    var checkResultUntil = Date(timeIntervalSince1970: 0)
     var runningActionId = ""
     var activeProcesses: [Process] = []
     let petImage: NSImage? = assetPath.isEmpty ? nil : NSImage(contentsOfFile: assetPath)
@@ -1361,7 +1365,7 @@ class PetView: NSView {
             noticeText = detail.isEmpty ? "Suggestion sent to the active agent." : detail
         } else {
             bubbleOpen = true
-            noticeText = detail.isEmpty ? "Doctor Pet could not route this incident." : detail
+            noticeText = detail.isEmpty ? "Agent Doctor could not route this incident." : detail
         }
         needsDisplay = true
     }
@@ -1400,6 +1404,13 @@ class PetView: NSView {
                 }
                 self.runningActionId = ""
                 let detail = self.actionDetail(text)
+                if actionId == "diagnose_current" {
+                    let resultText = completed.terminationStatus == 0
+                        ? (detail.isEmpty ? self.actionFinishedText(actionId) : detail)
+                        : (detail.isEmpty ? self.actionFailedText(actionId, text) : detail)
+                    self.checkResultText = resultText
+                    self.checkResultUntil = Date().addingTimeInterval(12)
+                }
                 if completed.terminationStatus == 0 {
                     self.status = loadStatus()
                     self.noticeText = detail.isEmpty ? self.actionFinishedText(actionId) : detail
@@ -1539,7 +1550,7 @@ class PetView: NSView {
             return "Send Suggestion"
         }
         if actionId == "diagnose_current" {
-            return "Diagnose Now"
+            return "Check Session"
         }
         if actionId == "copy_recovery_prompt" {
             return "Copy Prompt"
@@ -1552,7 +1563,7 @@ class PetView: NSView {
             return state == "concerned" || state == "intervening" ? "Hide Alert" : "Close"
         }
         if actionId == "quit_pet" {
-            return "Quit Pet"
+            return "Quit"
         }
         return optionValue(actionId, "label", "Run Action")
     }
@@ -1585,7 +1596,40 @@ class PetView: NSView {
         if trigger == "tool_failure_or_hidden_error" {
             return "Tool Failure Needs Acknowledgement"
         }
-        return status["headline"] ?? "Agent Doctor Pet"
+        return status["headline"] ?? "Agent Doctor"
+    }
+
+    func checkResultActive() -> Bool {
+        return !checkResultText.isEmpty && Date() <= checkResultUntil
+    }
+
+    func panelTitle(_ state: String) -> String {
+        if state == "idle" && checkResultActive() {
+            return "Current Session Checked"
+        }
+        return issueTitle()
+    }
+
+    func panelDiagnosisText(_ state: String) -> String {
+        let diagnosis = status["diagnosis"] ?? ""
+        if state == "idle" && checkResultActive() {
+            if status["headline"] == "Current session checked." && !diagnosis.isEmpty {
+                return diagnosis
+            }
+            return checkResultText
+        }
+        return diagnosis.isEmpty ? (status["message"] ?? "") : diagnosis
+    }
+
+    func panelNextStepText(_ state: String) -> String {
+        if state == "idle" && checkResultActive() {
+            let recommendation = status["recommendation"] ?? ""
+            if !recommendation.isEmpty {
+                return recommendation
+            }
+            return "Keep working normally. Agent Doctor is still watching supported OpenClaw/Hermes sessions."
+        }
+        return expectationText()
     }
 
     func evidenceText() -> String {
@@ -1626,7 +1670,7 @@ class PetView: NSView {
     func userActionText() -> String {
         let state = status["state"] ?? "idle"
         if state == "concerned" || state == "intervening" {
-            let quiet = "If you do nothing, the Pet will quiet this alert after \(status["expires_after_seconds"] ?? "120") seconds and keep watching."
+            let quiet = "If you do nothing, Agent Doctor will quiet this alert after \(status["expires_after_seconds"] ?? "120") seconds and keep watching."
             if canSendRecovery() {
                 return "Send the suggestion to the active agent, copy the prompt manually, or hide this alert to ignore this incident for now. \(quiet)"
             }
@@ -1634,13 +1678,13 @@ class PetView: NSView {
         }
         for actionId in displayActions() {
             if actionId == "diagnose_current" {
-                return "Click Diagnose Now to refresh the current OpenClaw/Hermes session diagnosis, or Quit Pet to stop the desktop pet."
+                return "Click Check Session to refresh the current OpenClaw/Hermes session diagnosis, or Quit to stop Agent Doctor."
             }
         }
         if !(status["card_path"] ?? "").isEmpty {
             return "Open the status card for details, or hide this alert after you have seen it."
         }
-        return "No extra input is needed in this popup. Use the issue and evidence above to correct the active agent response, then hide this alert."
+        return "No extra input is needed in this panel. Use the issue and evidence above to correct the active agent response, then hide this alert."
     }
 
     func detailText(_ state: String, _ action: String) -> String {
@@ -1952,9 +1996,9 @@ class PetView: NSView {
         if state != "idle" {
             roundRect(36, titleY - 2, 126, 24, 12, accent.withAlphaComponent(0.10), accent, 1)
             text(stateLabel(state, status["action"] ?? "silent"), 48, titleY + 4, 102, 13, 9.5, accent, true, .left)
-            text(short(issueTitle(), 74), 36, 262, 288, 38, 13.5, color("#111827"), true, .left)
+            text(short(panelTitle(state), 74), 36, 262, 288, 38, 13.5, color("#111827"), true, .left)
         } else {
-            text(short(issueTitle(), 82), 36, 230, 288, 36, 13.5, color("#111827"), true, .left)
+            text(short(panelTitle(state), 82), 36, 230, 288, 36, 13.5, color("#111827"), true, .left)
         }
 
         var y: CGFloat = state == "idle" ? 278 : 310
@@ -1963,8 +2007,7 @@ class PetView: NSView {
             text(short(emotion, 118), 36, y, 288, 34, 11, accent, true, .left)
             y += 42
         }
-        let diagnosis = status["diagnosis"] ?? ""
-        let diagnosisText = diagnosis.isEmpty ? (status["message"] ?? "") : diagnosis
+        let diagnosisText = panelDiagnosisText(state)
         text("Diagnosis", 36, y, 288, 14, 10, color("#111827"), true, .left)
         text(short(diagnosisText, state == "idle" ? 150 : 126), 36, y + 18, 288, 42, 10.5, color("#374151"), false, .left)
         y += 68
@@ -1974,7 +2017,7 @@ class PetView: NSView {
             y += 62
         }
         text("Next step", 36, y, 288, 14, 10, color("#111827"), true, .left)
-        text(short(expectationText(), 132), 36, y + 18, 288, 42, 10.5, color("#374151"), false, .left)
+        text(short(panelNextStepText(state), 132), 36, y + 18, 288, 42, 10.5, color("#374151"), false, .left)
 
         if !noticeText.isEmpty {
             roundRect(34, 408, 292, 38, 12, accent.withAlphaComponent(0.10), accent.withAlphaComponent(0.28), 1)
@@ -2042,7 +2085,7 @@ let window = NSWindow(
     backing: .buffered,
     defer: false
 )
-window.title = "Agent Doctor Pet"
+window.title = "Agent Doctor"
 window.isReleasedWhenClosed = false
 window.isOpaque = false
 window.backgroundColor = .clear

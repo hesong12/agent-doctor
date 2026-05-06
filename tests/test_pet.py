@@ -21,6 +21,7 @@ from agent_doctor.pet_display import (
     _visible_snapshot,
     pet_asset_path,
     read_status_payload,
+    snapshot_to_dict,
     snapshot_from_payload,
 )
 from agent_doctor.pet_actions import (
@@ -57,7 +58,7 @@ def test_pet_manual_frustration_summon_intervenes() -> None:
     ]
 
     text = render_pet_markdown(status)
-    assert "Agent Doctor Pet" in text
+    assert "Agent Doctor" in text
     assert "Pause and diagnose" in text
 
 
@@ -239,7 +240,7 @@ def test_pet_display_suppresses_legacy_idle_start_monitoring_action() -> None:
             "state": "idle",
             "action": "silent",
             "severity": "low",
-            "headline": "Doctor Pet is healthy.",
+            "headline": "Agent Doctor is healthy.",
             "message": "Watching supported local sessions.",
             "options": [
                 {
@@ -265,7 +266,7 @@ def test_pet_display_hides_open_card_when_card_path_is_absent() -> None:
             "state": "intervening",
             "action": "intervene",
             "severity": "high",
-            "headline": "Doctor is intervening.",
+            "headline": "Agent Doctor is intervening.",
             "message": "Pause and diagnose.",
             "session_id": "s-card",
             "card_path": "",
@@ -282,7 +283,7 @@ def test_pet_display_shows_runnable_stage_repair_action() -> None:
             "state": "intervening",
             "action": "intervene",
             "severity": "high",
-            "headline": "Doctor is intervening.",
+            "headline": "Agent Doctor is intervening.",
             "message": "Pause and diagnose.",
             "session_id": "s-repair",
             "card_path": "/tmp/agent-doctor-card.md",
@@ -338,7 +339,7 @@ def test_pet_display_auto_recovers_alert_after_inactivity() -> None:
             "action": "intervene",
             "severity": "high",
             "phase": "advice_ready",
-            "headline": "Doctor is intervening.",
+            "headline": "Agent Doctor is intervening.",
             "message": "Pause and diagnose.",
             "session_id": "s-expire",
             "latest_event_id": "event-expire",
@@ -438,6 +439,9 @@ def test_pet_action_diagnose_current_uses_latest_openclaw_session(
     assert result.delivered
     assert payload["session_id"] == "new"
     assert payload["state"] == "idle"
+    assert payload["headline"] == "Current session checked."
+    assert "No active" in payload["diagnosis"]
+    assert snapshot_to_dict(snapshot_from_payload(payload))["recovery_prompt"] == ""
 
 
 def test_pet_action_send_recovery_writes_hermes_inbox(
@@ -493,8 +497,9 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "Suggested next step" in source
     assert "Copy Prompt" in source
     assert "Send Suggestion" in source
-    assert "Diagnose Now" in source
-    assert "Quit Pet" in source
+    assert "Check Session" in source
+    assert "Current Session Checked" in source
+    assert "Quit" in source
     assert "sendRecoveryToAgent" in source
     assert "diagnoseCurrentSession" in source
     assert "pythonExecutable" in source
@@ -510,7 +515,8 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "NSMenu" not in source
     assert "Dismiss Current Event" not in source
     assert "Diagnose Current Session" not in source
-    assert "Quit Doctor Pet" not in source
+    assert ("Diagnose " + "Now") not in source
+    assert ("Quit " + "Pet") not in source
     assert "runRepair" not in source
     assert "showStatusDialog" not in source
     assert "Start Monitoring" not in source
@@ -527,7 +533,7 @@ def test_pet_panel_keeps_diagnose_and_quit_in_single_click_actions() -> None:
             "action": "silent",
             "severity": "low",
             "platform": "openclaw",
-            "headline": "Doctor Pet is healthy.",
+            "headline": "Agent Doctor is healthy.",
             "message": "No active incident.",
         }
     )

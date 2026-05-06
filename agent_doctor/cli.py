@@ -102,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     pet = subparsers.add_parser(
         "pet",
-        help="Show the local Doctor Pet state for a transcript or current user message.",
+        help="Show the local Agent Doctor state for a transcript or current user message.",
     )
     pet.add_argument("--path", type=Path, help="JSONL file or directory containing JSONL files.")
     pet.add_argument("--message", help="Current user message to diagnose without reading a transcript.")
@@ -120,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
     pet.add_argument(
         "--display",
         action="store_true",
-        help="Open an always-on-top desktop Doctor Pet window after writing status.",
+        help="Open an always-on-top desktop Agent Doctor window after writing status.",
     )
     pet.add_argument(
         "--strict",
@@ -131,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     pet_display = subparsers.add_parser(
         "pet-display",
-        help="Open the always-on-top Doctor Pet desktop window from pet-status.json.",
+        help="Open the always-on-top Agent Doctor desktop window from pet-status.json.",
     )
     pet_display.add_argument(
         "--status-file",
@@ -149,12 +149,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     pet_action = subparsers.add_parser(
         "pet-action",
-        help="Run a local backend action requested by the Doctor Pet frontend.",
+        help="Run a local backend action requested by the Agent Doctor frontend.",
     )
     pet_action_subs = pet_action.add_subparsers(dest="pet_action", required=True)
     send_recovery = pet_action_subs.add_parser(
         "send-recovery",
-        help="Send the current Pet recovery suggestion back through the host adapter.",
+        help="Send the current Agent Doctor recovery suggestion back through the host adapter.",
     )
     send_recovery.add_argument(
         "--status-file",
@@ -165,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     send_recovery.set_defaults(func=_cmd_pet_action_send_recovery)
     diagnose_current = pet_action_subs.add_parser(
         "diagnose-current",
-        help="Diagnose the current OpenClaw/Hermes transcript and refresh Pet status.",
+        help="Check the current OpenClaw/Hermes transcript and refresh Agent Doctor status.",
     )
     diagnose_current.add_argument(
         "--status-file",
@@ -231,12 +231,12 @@ def build_parser() -> argparse.ArgumentParser:
     autopilot.add_argument(
         "--pet-out",
         type=Path,
-        help="Optional shared Doctor Pet status directory. Defaults to the autopilot output directory.",
+        help="Optional shared Agent Doctor status directory. Defaults to the autopilot output directory.",
     )
     autopilot.add_argument(
         "--dispatch-adapter",
         action="store_true",
-        help="Legacy: also deliver events through host adapters. Default interaction is Doctor Pet only.",
+        help="Legacy: also deliver events through host adapters. Default interaction is Agent Doctor only.",
     )
     autopilot.add_argument(
         "--changed-only",
@@ -275,12 +275,12 @@ def build_parser() -> argparse.ArgumentParser:
     setup_autopilot.add_argument("--min-severity", choices=["low", "medium", "high"], default="high")
     setup_autopilot.add_argument(
         "--notify-command",
-        help="Legacy explicit hook. By default setup uses Doctor Pet only and does not send system notifications.",
+        help="Legacy explicit hook. By default setup uses Agent Doctor only and does not send system notifications.",
     )
     setup_autopilot.add_argument(
         "--no-desktop-pet",
         action="store_true",
-        help="Do not install/start the desktop Doctor Pet service.",
+        help="Do not install/start the desktop Agent Doctor service.",
     )
     setup_autopilot.add_argument(
         "--no-start",

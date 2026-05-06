@@ -126,7 +126,7 @@ def _skill_text(default_scan_command: str) -> str:
 
     template = """---
 name: agent-doctor
-description: Local-first session postmortem and improvement engine for memoryful AI agent frameworks. Use when the user wants to diagnose a frustrating session, summon Doctor Pet for an active frustration moment, find patterns of failure (verbose output, hidden tool errors, repeated corrections, memory gaps, missing verification), or turn session complaints into reviewable patches for memory / SOP / identity / tool-discipline files. Triggers: "review my session", "diagnose this transcript", "what went wrong in my last session", "why does the agent keep doing X", "generate a postmortem", "this session was frustrating", "audit recent sessions", "find patterns in my agent's failures", "help right now", "you keep doing this".
+description: Local-first session postmortem and improvement engine for memoryful AI agent frameworks. Use when the user wants to diagnose a frustrating session, summon Agent Doctor for an active frustration moment, find patterns of failure (verbose output, hidden tool errors, repeated corrections, memory gaps, missing verification), or turn session complaints into reviewable patches for memory / SOP / identity / tool-discipline files. Triggers: "review my session", "diagnose this transcript", "what went wrong in my last session", "why does the agent keep doing X", "generate a postmortem", "this session was frustrating", "audit recent sessions", "find patterns in my agent's failures", "help right now", "you keep doing this".
 ---
 
 # Agent Doctor
@@ -140,9 +140,9 @@ Use Agent Doctor as a local-first engineering diagnosis tool for agent session p
 - A pattern of failure is suspected across recent sessions.
 - Reviewing a transcript before changing memory, SOP, or identity.
 
-## Doctor Pet
+## Agent Doctor Desktop
 
-Doctor Pet is Agent Doctor's small doctor-shaped intervention surface. It is
+Agent Doctor includes a small doctor-shaped desktop intervention surface. It is
 local-only and deterministic: `idle`, `watching`, `concerned`, or
 `intervening`, with redacted evidence and 2-3 action options.
 
@@ -158,15 +158,15 @@ Desktop display:
 
 `agent-doctor pet-display --status-file ./doctor-pet/pet-status.json`
 
-The desktop pet renders a packaged chibi doctor sprite when available and
+The desktop surface renders a packaged chibi doctor sprite when available and
 animates locally by state: idle breathing, watching scan, concerned diagnostic
 pulse, and intervening alert. In autopilot setup it is the default user-facing
 entry point: click it for the single status/action panel. That panel owns active
-controls such as Diagnose Now, Hide Alert, and Quit Pet. For transcript-backed
+controls such as Check Session, Hide Alert, and Quit. For transcript-backed
 OpenClaw/Hermes incidents, it can send the generated recovery suggestion back
 through the local host adapter; manual incidents remain copy-only.
 
-If Doctor Pet returns `action=intervene`, pause the normal success path, name
+If Agent Doctor returns `action=intervene`, pause the normal success path, name
 the concrete failure, cite the evidence, and provide one corrective next step.
 Do not defend the previous response or write a long apology.
 
@@ -184,18 +184,18 @@ to remember to ask the agent for diagnosis.
 
 The sidecar only reads existing transcript/log JSONL through Agent Doctor's
 ingestion layer and writes diagnosis cards/events under `--out`. It also
-refreshes host-local Pet status there and, after `setup autopilot`, shared
-desktop Pet status under `~/.agent-doctor/pet`. It does not send system
+refreshes host-local Agent Doctor status there and, after `setup autopilot`, shared
+desktop Agent Doctor status under `~/.agent-doctor/pet`. It does not send system
 notifications or host messages by default, and it does not modify OpenClaw,
 Hermes, or live agent configuration.
 
 When the user asks you to enable proactive diagnosis, prefer
 `agent-doctor setup autopilot`. It detects OpenClaw/Hermes, installs or
 refreshes Agent Doctor skills, baselines existing transcripts, writes the
-right launchd/systemd user services, installs the desktop Doctor Pet service,
-and starts them with changed-file scanning. Doctor Pet is the only default
+right launchd/systemd user services, installs the desktop Agent Doctor service,
+and starts them with changed-file scanning. Agent Doctor is the only default
 interactive surface; healthy idle state has no setup/start action because
-sidecar installation is handled by setup, not by the Pet window. Legacy notify
+sidecar installation is handled by setup, not by the desktop window. Legacy notify
 hooks are explicit opt-ins.
 Do not ask the user to manually edit host configuration.
 

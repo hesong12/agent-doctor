@@ -30,7 +30,7 @@ def resolve(jsonl_path: Path, adapter: HostAdapter) -> Tuple[Target, str]:
     inbox_root = Path("~/.agent-doctor").expanduser() / host / "inbox"
     inbox_path = inbox_root / f"{metadata.session_id}.md"
 
-    # TUI sessions get inbox fallback only; Doctor Pet is the default UI surface.
+    # TUI sessions get inbox fallback only; Agent Doctor is the default UI surface.
     if metadata.channel == "tui":
         return (
             Target(

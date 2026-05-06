@@ -1,13 +1,13 @@
-"""Doctor Pet action handlers.
+"""Agent Doctor action handlers.
 
-These are the backend side effects behind the desktop Pet buttons. They stay
-local and use existing host adapters; no live host config is edited.
+These are the backend side effects behind the desktop Agent Doctor buttons.
+They stay local and use existing host adapters; no live host config is edited.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +29,7 @@ def send_recovery_from_status_file(status_file: Path) -> PetActionResult:
         return PetActionResult(
             delivered=False,
             mode="unsupported",
-            detail=f"Doctor Pet recovery delivery only supports OpenClaw/Hermes, got {platform}.",
+            detail=f"Agent Doctor recovery delivery only supports OpenClaw/Hermes, got {platform}.",
         )
 
     source = _first_evidence_file(payload)
@@ -76,22 +76,39 @@ def diagnose_current_from_status_file(status_file: Path) -> PetActionResult:
             mode=f"{platform}_unreadable",
             detail=str(exc),
         )
-    paths = write_pet_artifacts(status_file.expanduser().parent, status)
     if status.state in {"concerned", "intervening"}:
-        detail = "Diagnosed the current session and found a quality incident."
+        detail = "Checked the current session and found a quality incident."
     else:
-        detail = "Diagnosed the current session. No active quality incident was found."
+        detail = "Current session checked. No active quality signal was found."
+        status = replace(
+            status,
+            headline="Current session checked.",
+            message=(
+                "Agent Doctor checked the latest OpenClaw/Hermes transcript and found "
+                "no active frustration or quality signal."
+            ),
+            diagnosis=(
+                "No active user-frustration, hidden tool-failure, or unverified-success "
+                "signal was found in the latest supported session."
+            ),
+            recommendation=(
+                "Keep working normally. Agent Doctor is still watching supported "
+                "OpenClaw/Hermes sessions."
+            ),
+            recovery_prompt="",
+        )
+    write_pet_artifacts(status_file.expanduser().parent, status)
     return PetActionResult(
         delivered=True,
         mode=f"{platform}_diagnosed",
-        detail=f"{detail} Status: {paths['status']}",
+        detail=detail,
     )
 
 
 def _read_status(path: Path) -> dict[str, Any]:
     data = json.loads(path.expanduser().read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise ValueError("Doctor Pet status must be a JSON object.")
+        raise ValueError("Agent Doctor status must be a JSON object.")
     return data
 
 
