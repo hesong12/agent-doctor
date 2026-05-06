@@ -166,6 +166,43 @@ def run_autopilot_once(
     finally:
         state.close()
 
+    # Phase 4: drafting proposals from this scan's findings ----------------
+    proposals_path = out_dir / "proposals.jsonl"
+    try:
+        from .proposer import draft_proposals_for_session, save_proposals
+        for session_id in {f.session_id for f in findings}:
+            new_proposals = draft_proposals_for_session(
+                findings=findings, session_id=session_id,
+            )
+            if new_proposals:
+                save_proposals(proposals_path, new_proposals)
+    except ImportError:
+        pass  # proposer not available; legacy path still works
+
+    # Phase 4: poll pending proposals for ✅/❌/💬 reactions ---------------
+    try:
+        from .proposer import load_proposals
+        from .reaction_watcher import poll_pending_proposals
+        from .adapters import GenericAdapter, OpenClawAdapter, HermesAdapter
+        existing = load_proposals(proposals_path)
+        if existing:
+            adapter_classes = {
+                "openclaw": OpenClawAdapter,
+                "hermes": HermesAdapter,
+                "generic": GenericAdapter,
+            }
+            adapter_cls = adapter_classes.get(platform, GenericAdapter)
+            adapter_instance = adapter_cls.detect() or GenericAdapter()
+            transitions = poll_pending_proposals(
+                existing,
+                adapter=adapter_instance,
+                applier=lambda p: _apply_and_log(p, adapter_instance, out_dir),
+            )
+            if transitions:
+                _persist_proposal_transitions(proposals_path, transitions)
+    except ImportError:
+        pass
+
     return AutopilotResult(
         platform=platform,
         input_path=str(input_path.expanduser()),
@@ -495,6 +532,61 @@ def _dispatch_via_adapter(event: AutopilotEvent, *, platform: Platform) -> str |
     except (NotImplementedError, RuntimeError) as exc:
         return f"adapter_dispatch_failed: {exc}"
     return None
+
+
+def _apply_and_log(proposal, adapter, out_dir) -> bool:
+    """Apply a proposal and log the result to patch-log.jsonl on success.
+
+    Returns True iff state == 'applied'.
+    """
+    from .applier import apply_proposal as _apply
+    result = _apply(proposal, adapter)
+    if result.state == "applied":
+        _append_patch_log(result, proposal)
+        return True
+    return False
+
+
+def _append_patch_log(applied_patch, proposal) -> None:
+    """Append a row to ~/.agent-doctor/patch-log.jsonl describing this apply."""
+    log_path = Path("~/.agent-doctor").expanduser() / "patch-log.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    payload = {
+        "id": applied_patch.patch_id,
+        "target_file": str(applied_patch.target_file),
+        "backup_path": str(applied_patch.backup_path) if applied_patch.backup_path else None,
+        "applied_at": time.time(),
+        "session_id": proposal.session_id,
+        "target_kind": proposal.target_kind,
+        "undo_command": f"agent-doctor undo {applied_patch.patch_id}",
+    }
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        with os.fdopen(fd, "a", encoding="utf-8") as h:
+            h.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    finally:
+        os.chmod(log_path, 0o600)
+
+
+def _persist_proposal_transitions(path: Path, transitions) -> None:
+    """Rewrite proposals.jsonl with new states from transitions."""
+    from .proposer import load_proposals
+    from dataclasses import replace as _dc_replace
+
+    by_id = {t.proposal_id: t for t in transitions}
+    proposals = load_proposals(path)
+    new_lines: list[str] = []
+    for p in proposals:
+        if p.id in by_id:
+            t = by_id[p.id]
+            p = _dc_replace(p, state=t.new_state, resolved_at=time.time())
+        new_lines.append(json.dumps(p.to_dict(), ensure_ascii=False))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as h:
+            h.write("\n".join(new_lines) + ("\n" if new_lines else ""))
+    finally:
+        os.chmod(path, 0o600)
 
 
 def append_delivery_error(path: Path, event: AutopilotEvent, error: str) -> None:
