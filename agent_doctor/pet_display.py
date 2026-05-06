@@ -250,6 +250,8 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
             seen.add("send_recovery")
         actions.append(DisplayAction(id="copy_recovery_prompt", label="Copy recovery prompt"))
         seen.add("copy_recovery_prompt")
+    actions.append(DisplayAction(id="diagnose_current", label="Diagnose now"))
+    seen.add("diagnose_current")
     for option in snapshot.options:
         if option.id == "start_autopilot":
             continue
@@ -257,10 +259,11 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
             continue
         actions.append(DisplayAction(id=option.id, label=option.label, command=option.command))
         seen.add(option.id)
-    if snapshot.card_path:
-        actions.append(DisplayAction(id="open_card", label="Open status card"))
     close_label = "Hide alert" if snapshot.state in ("concerned", "intervening") else "Close"
     actions.append(DisplayAction(id="dismiss_for_now", label=close_label))
+    actions.append(DisplayAction(id="quit_pet", label="Quit Pet"))
+    if snapshot.card_path:
+        actions.append(DisplayAction(id="open_card", label="Open status card"))
     return tuple(actions)
 
 
@@ -601,6 +604,26 @@ def display_pet(
             return
         show_message("Suggestion not sent", detail or "Doctor Pet could not route this incident.")
 
+    def diagnose_current_session() -> None:
+        command = [
+            sys.executable,
+            "-m",
+            "agent_doctor.cli",
+            "pet-action",
+            "diagnose-current",
+            "--status-file",
+            str(status_path),
+        ]
+        result = subprocess.run(command, text=True, capture_output=True, check=False)
+        detail = _pet_action_detail(result.stdout, result.stderr)
+        status_cache["snapshot"] = snapshot_from_payload(read_status_payload(status_path))
+        status_cache["read_at"] = time.monotonic()
+        interaction["bubble"] = True
+        if result.returncode == 0:
+            show_message("Diagnosis refreshed", detail or "Doctor Pet refreshed the current session diagnosis.")
+            return
+        show_message("Diagnosis failed", detail or "Doctor Pet could not diagnose the current session.")
+
     def run_command_action(action: DisplayAction) -> None:
         if action.command:
             subprocess.Popen(
@@ -623,6 +646,12 @@ def display_pet(
         if action.id == "dismiss_for_now":
             dismiss_snapshot(snapshot)
             popup.destroy()
+            return
+        if action.id == "diagnose_current":
+            diagnose_current_session()
+            return
+        if action.id == "quit_pet":
+            root.destroy()
             return
         run_command_action(action)
 
@@ -1007,7 +1036,7 @@ let pythonExecutable = CommandLine.arguments.count > 5 ? CommandLine.arguments[5
 let compactWindowWidth: CGFloat = 260
 let compactWindowHeight: CGFloat = 310
 let expandedWindowWidth: CGFloat = 360
-let expandedWindowHeight: CGFloat = 520
+let expandedWindowHeight: CGFloat = 560
 
 func stringValue(_ dict: [String: Any], _ key: String, _ fallback: String) -> String {
     if let value = dict[key] as? String {
@@ -1222,6 +1251,10 @@ class PetView: NSView {
             sendRecoveryToAgent(nil)
             return
         }
+        if actionId == "diagnose_current" {
+            diagnoseCurrentSession()
+            return
+        }
         if actionId == "copy_recovery_prompt" {
             copyRecoveryPrompt()
             return
@@ -1232,6 +1265,10 @@ class PetView: NSView {
         }
         if actionId == "dismiss_for_now" {
             muteForNow(nil)
+            return
+        }
+        if actionId == "quit_pet" {
+            quitPet()
             return
         }
         runOptionCommand(actionId)
@@ -1329,12 +1366,75 @@ class PetView: NSView {
         needsDisplay = true
     }
 
+    func diagnoseCurrentSession() {
+        runPetBackendAction("diagnose-current", "diagnose_current")
+    }
+
+    func runPetBackendAction(_ subcommand: String, _ actionId: String) {
+        if !runningActionId.isEmpty {
+            bubbleOpen = true
+            noticeText = actionBusyText(runningActionId)
+            needsDisplay = true
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: pythonExecutable)
+        process.arguments = [
+            "-m",
+            "agent_doctor.cli",
+            "pet-action",
+            subcommand,
+            "--status-file",
+            statusPath
+        ]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        process.terminationHandler = { [weak self, weak process] completed in
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let text = String(data: data, encoding: .utf8) ?? ""
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let process = process {
+                    self.activeProcesses.removeAll { $0 === process }
+                }
+                self.runningActionId = ""
+                let detail = self.actionDetail(text)
+                if completed.terminationStatus == 0 {
+                    self.status = loadStatus()
+                    self.noticeText = detail.isEmpty ? self.actionFinishedText(actionId) : detail
+                } else {
+                    self.noticeText = detail.isEmpty ? self.actionFailedText(actionId, text) : detail
+                }
+                self.bubbleOpen = true
+                self.needsDisplay = true
+            }
+        }
+        runningActionId = actionId
+        noticeText = actionStartedText(actionId)
+        bubbleOpen = true
+        needsDisplay = true
+        do {
+            try process.run()
+            activeProcesses.append(process)
+        } catch {
+            noticeText = error.localizedDescription
+            runningActionId = ""
+            bubbleOpen = true
+            needsDisplay = true
+        }
+    }
+
     func copyRecoveryPrompt() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(recoveryPrompt(), forType: .string)
         bubbleOpen = true
         noticeText = "Recovery prompt copied."
         needsDisplay = true
+    }
+
+    func quitPet() {
+        NSApplication.shared.terminate(nil)
     }
 
     func isRunnableCommand(_ command: String) -> Bool {
@@ -1379,6 +1479,8 @@ class PetView: NSView {
             actions.append("copy_recovery_prompt")
             seen.insert("copy_recovery_prompt")
         }
+        actions.append("diagnose_current")
+        seen.insert("diagnose_current")
         let count = Int(status["option_count"] ?? "0") ?? 0
         for index in 0..<count {
             let optionId = status["option_\(index)_id"] ?? ""
@@ -1391,15 +1493,16 @@ class PetView: NSView {
                 seen.insert(optionId)
             }
         }
+        actions.append("dismiss_for_now")
+        actions.append("quit_pet")
         if !(status["card_path"] ?? "").isEmpty {
             actions.append("open_card")
         }
-        actions.append("dismiss_for_now")
         return actions
     }
 
     func visibleActions() -> [String] {
-        return Array(displayActions().prefix(4))
+        return Array(displayActions().prefix(6))
     }
 
     func performButton(at point: NSPoint) -> Bool {
@@ -1433,17 +1536,23 @@ class PetView: NSView {
             return "Working..."
         }
         if actionId == "send_recovery" {
-            return "Send Suggestion to Agent"
+            return "Send Suggestion"
+        }
+        if actionId == "diagnose_current" {
+            return "Diagnose Now"
         }
         if actionId == "copy_recovery_prompt" {
-            return "Copy Recovery Prompt"
+            return "Copy Prompt"
         }
         if actionId == "open_card" {
-            return "Open Status Card"
+            return "Open Card"
         }
         if actionId == "dismiss_for_now" {
             let state = status["state"] ?? "idle"
             return state == "concerned" || state == "intervening" ? "Hide Alert" : "Close"
+        }
+        if actionId == "quit_pet" {
+            return "Quit Pet"
         }
         return optionValue(actionId, "label", "Run Action")
     }
@@ -1524,8 +1633,8 @@ class PetView: NSView {
             return "Copy the recovery prompt into the active agent, or hide this alert to ignore this incident for now. \(quiet)"
         }
         for actionId in displayActions() {
-            if actionId != "dismiss_for_now" && !optionValue(actionId, "command", "").isEmpty {
-                return "Use a repair/open action if you want Agent Doctor to stage reviewable follow-up work."
+            if actionId == "diagnose_current" {
+                return "Click Diagnose Now to refresh the current OpenClaw/Hermes session diagnosis, or Quit Pet to stop the desktop pet."
             }
         }
         if !(status["card_path"] ?? "").isEmpty {
@@ -1838,7 +1947,7 @@ class PetView: NSView {
         guard panelVisible(state) else {
             return
         }
-        roundRect(18, 210, 324, 292, 22, NSColor.white.withAlphaComponent(0.96), color("#111827"), 1.5)
+        roundRect(18, 210, 324, 340, 22, NSColor.white.withAlphaComponent(0.96), color("#111827"), 1.5)
         let titleY: CGFloat = 230
         if state != "idle" {
             roundRect(36, titleY - 2, 126, 24, 12, accent.withAlphaComponent(0.10), accent, 1)
@@ -1868,25 +1977,22 @@ class PetView: NSView {
         text(short(expectationText(), 132), 36, y + 18, 288, 42, 10.5, color("#374151"), false, .left)
 
         if !noticeText.isEmpty {
-            roundRect(34, 422, 292, 38, 12, accent.withAlphaComponent(0.10), accent.withAlphaComponent(0.28), 1)
-            text(short(noticeText, 118), 48, 431, 264, 20, 10.5, accent, true, .left)
+            roundRect(34, 408, 292, 38, 12, accent.withAlphaComponent(0.10), accent.withAlphaComponent(0.28), 1)
+            text(short(noticeText, 118), 48, 417, 264, 20, 10.5, accent, true, .left)
         }
 
         let actions = visibleActions()
-        let rowY: CGFloat = 468
+        let rowY: CGFloat = 452
         if actions.count == 1 {
             drawActionButton(actions[0], 36, rowY, 288, 30, true, accent)
         } else if actions.count == 2 {
             drawActionButton(actions[0], 36, rowY, 138, 30, true, accent)
             drawActionButton(actions[1], 186, rowY, 138, 30, false, accent)
         } else {
-            let firstRow = Array(actions.prefix(2))
-            let secondRow = Array(actions.dropFirst(2).prefix(2))
-            for (index, actionId) in firstRow.enumerated() {
-                drawActionButton(actionId, index == 0 ? 36 : 186, rowY - 18, 138, 28, index == 0, accent)
-            }
-            for (index, actionId) in secondRow.enumerated() {
-                drawActionButton(actionId, index == 0 ? 36 : 186, rowY + 16, 138, 28, false, accent)
+            for (index, actionId) in actions.enumerated() {
+                let row = CGFloat(index / 2)
+                let col = index % 2
+                drawActionButton(actionId, col == 0 ? 36 : 186, rowY + (row * 34), 138, 28, index == 0, accent)
             }
         }
     }

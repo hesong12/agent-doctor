@@ -1,4 +1,5 @@
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -22,7 +23,10 @@ from agent_doctor.pet_display import (
     read_status_payload,
     snapshot_from_payload,
 )
-from agent_doctor.pet_actions import send_recovery_from_status_file
+from agent_doctor.pet_actions import (
+    diagnose_current_from_status_file,
+    send_recovery_from_status_file,
+)
 from agent_doctor import pet_display
 
 
@@ -223,7 +227,9 @@ def test_pet_display_hides_manual_stage_repair_without_command() -> None:
     assert "stage_fix" not in [action.id for action in _display_actions(snapshot)]
     assert [action.id for action in _display_actions(snapshot)] == [
         "copy_recovery_prompt",
+        "diagnose_current",
         "dismiss_for_now",
+        "quit_pet",
     ]
 
 
@@ -246,7 +252,11 @@ def test_pet_display_suppresses_legacy_idle_start_monitoring_action() -> None:
         }
     )
 
-    assert [action.id for action in _display_actions(snapshot)] == ["dismiss_for_now"]
+    assert [action.id for action in _display_actions(snapshot)] == [
+        "diagnose_current",
+        "dismiss_for_now",
+        "quit_pet",
+    ]
 
 
 def test_pet_display_hides_open_card_when_card_path_is_absent() -> None:
@@ -290,9 +300,11 @@ def test_pet_display_shows_runnable_stage_repair_action() -> None:
     assert _command_is_runnable(snapshot.primary_command)
     assert [action.id for action in _display_actions(snapshot)] == [
         "copy_recovery_prompt",
+        "diagnose_current",
         "stage_fix",
-        "open_card",
         "dismiss_for_now",
+        "quit_pet",
+        "open_card",
     ]
 
 
@@ -355,6 +367,79 @@ def test_pet_action_send_recovery_rejects_manual_incident(tmp_path: Path) -> Non
     assert result.mode == "manual"
 
 
+def test_pet_action_diagnose_current_refreshes_openclaw_status(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import agent_doctor.ingest as ingest_module
+
+    openclaw_sessions = tmp_path / ".openclaw" / "agents" / "main" / "sessions"
+    openclaw_sessions.mkdir(parents=True)
+    _write_jsonl(
+        openclaw_sessions / "session.jsonl",
+        [
+            {
+                "session_id": "s-openclaw-live",
+                "role": "user",
+                "content": "你怎么这么笨？",
+            }
+        ],
+    )
+    monkeypatch.setattr(ingest_module, "DEFAULT_OPENCLAW_PATH", openclaw_sessions)
+    monkeypatch.setattr(ingest_module, "DEFAULT_HERMES_PATH", tmp_path / "missing-hermes")
+    status_file = tmp_path / "pet" / "pet-status.json"
+    status_file.parent.mkdir()
+    status_file.write_text(
+        json.dumps({"state": "idle", "platform": "openclaw"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = diagnose_current_from_status_file(status_file)
+
+    payload = json.loads(status_file.read_text(encoding="utf-8"))
+    assert result.delivered
+    assert result.mode == "openclaw_diagnosed"
+    assert payload["state"] == "intervening"
+    assert payload["platform"] == "openclaw"
+
+
+def test_pet_action_diagnose_current_uses_latest_openclaw_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import agent_doctor.ingest as ingest_module
+
+    openclaw_sessions = tmp_path / ".openclaw" / "agents" / "main" / "sessions"
+    openclaw_sessions.mkdir(parents=True)
+    old_file = openclaw_sessions / "old.jsonl"
+    new_file = openclaw_sessions / "new.jsonl"
+    _write_jsonl(
+        old_file,
+        [{"session_id": "old", "role": "user", "content": "你怎么这么笨？"}],
+    )
+    _write_jsonl(
+        new_file,
+        [{"session_id": "new", "role": "user", "content": "Please keep going."}],
+    )
+    os.utime(old_file, (1_700_000_000, 1_700_000_000))
+    os.utime(new_file, (1_800_000_000, 1_800_000_000))
+    monkeypatch.setattr(ingest_module, "DEFAULT_OPENCLAW_PATH", openclaw_sessions)
+    monkeypatch.setattr(ingest_module, "DEFAULT_HERMES_PATH", tmp_path / "missing-hermes")
+    status_file = tmp_path / "pet" / "pet-status.json"
+    status_file.parent.mkdir()
+    status_file.write_text(
+        json.dumps({"state": "idle", "platform": "openclaw"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = diagnose_current_from_status_file(status_file)
+
+    payload = json.loads(status_file.read_text(encoding="utf-8"))
+    assert result.delivered
+    assert payload["session_id"] == "new"
+    assert payload["state"] == "idle"
+
+
 def test_pet_action_send_recovery_writes_hermes_inbox(
     tmp_path: Path,
     monkeypatch,
@@ -394,33 +479,38 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     source = pet_display._appkit_source()
 
     assert "compactWindowWidth: CGFloat = 260" in source
-    assert "expandedWindowHeight: CGFloat = 520" in source
+    assert "expandedWindowHeight: CGFloat = 560" in source
     assert ".usesLineFragmentOrigin" in source
     assert "drawStateChip" in source
     assert "drawPanel" in source
     assert "drawActionButton" in source
     assert "performButton" in source
     assert "displayActions" in source
+    assert "displayActions().prefix(6)" in source
     assert "dismissedEventId" in source
     assert "isRunnableCommand" in source
     assert "evidence_0_quote" in source
     assert "Suggested next step" in source
-    assert "Copy Recovery Prompt" in source
-    assert "Send Suggestion to Agent" in source
+    assert "Copy Prompt" in source
+    assert "Send Suggestion" in source
+    assert "Diagnose Now" in source
+    assert "Quit Pet" in source
     assert "sendRecoveryToAgent" in source
+    assert "diagnoseCurrentSession" in source
     assert "pythonExecutable" in source
     assert "pet-action" in source
+    assert "diagnose-current" in source
     assert "expires_after_seconds" in source
     assert "NSPasteboard.general.setString" in source
     assert "Hide Alert" in source
     assert "Intervention needed" in source
     assert "runningActionId" in source
+    assert "NSApplication.shared.terminate(nil)" in source
     assert "rightMouseDown" not in source
     assert "NSMenu" not in source
     assert "Dismiss Current Event" not in source
     assert "Diagnose Current Session" not in source
     assert "Quit Doctor Pet" not in source
-    assert "terminate(nil)" not in source
     assert "runRepair" not in source
     assert "showStatusDialog" not in source
     assert "Start Monitoring" not in source
@@ -428,6 +518,27 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "setup\", \"autopilot" not in source
     assert "NSAlert()" not in source
     assert "runModal()" not in source
+
+
+def test_pet_panel_keeps_diagnose_and_quit_in_single_click_actions() -> None:
+    snapshot = snapshot_from_payload(
+        {
+            "state": "idle",
+            "action": "silent",
+            "severity": "low",
+            "platform": "openclaw",
+            "headline": "Doctor Pet is healthy.",
+            "message": "No active incident.",
+        }
+    )
+
+    actions = _display_actions(snapshot)
+
+    assert [action.id for action in actions] == [
+        "diagnose_current",
+        "dismiss_for_now",
+        "quit_pet",
+    ]
 
 
 def test_tk_display_canvas_is_large_enough_for_readable_pet_text() -> None:

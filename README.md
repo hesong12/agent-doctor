@@ -232,12 +232,13 @@ agent-doctor pet-display --status-file ./doctor-pet/pet-status.json
 
 Manual summon (`--message`) is for the current turn. Transcript mode (`--path`, `--hermes`, or `--openclaw`) uses the same ingestion, detectors, and autopilot event selection as the sidecar. Optional artifacts are written as `pet-status.json` and `pet-card.md` under `--out` with `0600` permissions and redacted transcript strings.
 
-In autopilot mode, Doctor Pet is always displayable by default: every sidecar pass writes the current `pet-status.json` and `pet-card.md` under the autopilot `--out` directory and, when setup installed the desktop service, also refreshes shared status under `~/.agent-doctor/pet`. The desktop pet uses a packaged chibi doctor sprite with state-specific motion: idle breathing, watching scan, concerned diagnostic pulse, and intervening alert. Drag the pet to move it, and click it to open the single status/action panel. Healthy idle is passive: it has no setup/start button and no user action requirement. For transcript-backed OpenClaw/Hermes incidents, the panel can send the generated recovery suggestion back through the local host adapter; users can also copy it manually, hide the alert, or ignore it until the pet quiets itself and keeps watching. The pet service is not `KeepAlive`, so stopping the service keeps it closed until the next login or explicit service start.
+In autopilot mode, Doctor Pet is always displayable by default: every sidecar pass writes the current `pet-status.json` and `pet-card.md` under the autopilot `--out` directory and, when setup installed the desktop service, also refreshes shared status under `~/.agent-doctor/pet`. The desktop pet uses a packaged chibi doctor sprite with state-specific motion: idle breathing, watching scan, concerned diagnostic pulse, and intervening alert. Drag the pet to move it, and click it to open the single status/action panel. Healthy idle is passive: it has no setup/start button and no user action requirement. The panel keeps explicit user controls in one place: diagnose the current OpenClaw/Hermes session, hide the current alert, or quit the Pet. For transcript-backed OpenClaw/Hermes incidents, the panel can send the generated recovery suggestion back through the local host adapter; users can also copy it manually or ignore it until the pet quiets itself and keeps watching. The pet service is not `KeepAlive`, so stopping the service keeps it closed until the next login or explicit service start.
 
 Watch mode automatically runs a full first pass, then switches to changed-file
-scanning using JSONL path, `mtime`, and size state in SQLite. To skip unchanged
-files on the first pass as well (for example, for one-shot batch jobs or daemon
-restarts), pass `--changed-only`.
+scanning using JSONL path, `mtime`, and size state in SQLite. With
+`--changed-only`, OpenClaw/Hermes first scans are bounded to the most recent
+ordinary session JSONL files and then snapshot the rest, so live monitoring does
+not replay the whole historical transcript directory on startup.
 
 Artifacts:
 

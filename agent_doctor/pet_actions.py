@@ -55,11 +55,80 @@ def send_recovery_from_status_file(status_file: Path) -> PetActionResult:
     return _send_hermes_recovery(Path(source).expanduser(), prompt, payload)
 
 
+def diagnose_current_from_status_file(status_file: Path) -> PetActionResult:
+    payload = _read_status_if_present(status_file)
+    platform, transcript_path = _current_transcript_target(payload)
+    if transcript_path is None:
+        return PetActionResult(
+            delivered=False,
+            mode="no_supported_session",
+            detail="No OpenClaw or Hermes transcript directory was found.",
+        )
+
+    from .ingest import IngestError
+    from .pet import pet_status_for_path, write_pet_artifacts
+
+    try:
+        status = pet_status_for_path(transcript_path, platform=platform)
+    except IngestError as exc:
+        return PetActionResult(
+            delivered=False,
+            mode=f"{platform}_unreadable",
+            detail=str(exc),
+        )
+    paths = write_pet_artifacts(status_file.expanduser().parent, status)
+    if status.state in {"concerned", "intervening"}:
+        detail = "Diagnosed the current session and found a quality incident."
+    else:
+        detail = "Diagnosed the current session. No active quality incident was found."
+    return PetActionResult(
+        delivered=True,
+        mode=f"{platform}_diagnosed",
+        detail=f"{detail} Status: {paths['status']}",
+    )
+
+
 def _read_status(path: Path) -> dict[str, Any]:
     data = json.loads(path.expanduser().read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("Doctor Pet status must be a JSON object.")
     return data
+
+
+def _read_status_if_present(path: Path) -> dict[str, Any]:
+    try:
+        return _read_status(path)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def _current_transcript_target(payload: dict[str, Any]) -> tuple[str, Path | None]:
+    from .ingest import DEFAULT_HERMES_PATH, DEFAULT_OPENCLAW_PATH
+
+    platform = str(payload.get("platform") or "").strip().casefold()
+    evidence_file = _first_evidence_file(payload)
+    if evidence_file and evidence_file != "<manual>":
+        path = Path(evidence_file).expanduser()
+        if path.exists() and platform in {"openclaw", "hermes"}:
+            return (platform, path)
+    if platform == "openclaw" and DEFAULT_OPENCLAW_PATH.exists():
+        return ("openclaw", _latest_transcript_path(DEFAULT_OPENCLAW_PATH))
+    if platform == "hermes" and DEFAULT_HERMES_PATH.exists():
+        return ("hermes", _latest_transcript_path(DEFAULT_HERMES_PATH))
+    if DEFAULT_OPENCLAW_PATH.exists():
+        return ("openclaw", _latest_transcript_path(DEFAULT_OPENCLAW_PATH))
+    if DEFAULT_HERMES_PATH.exists():
+        return ("hermes", _latest_transcript_path(DEFAULT_HERMES_PATH))
+    return ("generic", None)
+
+
+def _latest_transcript_path(root: Path) -> Path | None:
+    candidates = [path for path in root.rglob("*.jsonl") if path.is_file()]
+    ordinary = [path for path in candidates if not path.name.endswith(".trajectory.jsonl")]
+    selected = ordinary or candidates
+    if not selected:
+        return None
+    return max(selected, key=lambda path: path.stat().st_mtime)
 
 
 def _first_evidence_file(payload: dict[str, Any]) -> str:

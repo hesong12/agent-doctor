@@ -340,6 +340,46 @@ def test_ingest_normalizes_generic_directory() -> None:
     }
 
 
+def test_ingest_strips_agent_doctor_intervention_prefix_from_openclaw_prompt(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "openclaw.jsonl"
+    content = """System: [2026-05-05 20:24:25 PDT] AGENT DOCTOR INTERVENTION
+System:
+System: The local Agent Doctor sidecar emitted a high-severity intervention.
+
+Sender (untrusted metadata):
+```json
+{"label": "openclaw-tui"}
+```
+
+[Tue 2026-05-05 20:32 PDT] 每次都是这样，你越来越傻了"""
+    transcript.write_text(
+        json.dumps({"role": "user", "content": content}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    messages = ingest_file(transcript)
+
+    assert len(messages) == 1
+    assert messages[0].role == "user"
+    assert "AGENT DOCTOR INTERVENTION" not in messages[0].content
+    assert "每次都是这样" in messages[0].content
+
+
+def test_ingest_drops_standalone_agent_doctor_intervention_prompt(tmp_path: Path) -> None:
+    transcript = tmp_path / "openclaw.jsonl"
+    content = """System: [2026-05-05 20:24:25 PDT] AGENT DOCTOR INTERVENTION
+System:
+System: The local Agent Doctor sidecar emitted a high-severity intervention."""
+    transcript.write_text(
+        json.dumps({"role": "user", "content": content}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    assert ingest_file(transcript) == []
+
+
 def test_collect_jsonl_paths_rejects_missing_path(tmp_path: Path) -> None:
     with pytest.raises(IngestError):
         collect_jsonl_paths(tmp_path / "missing")

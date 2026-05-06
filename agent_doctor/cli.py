@@ -163,6 +163,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="pet-status.json containing the incident to route.",
     )
     send_recovery.set_defaults(func=_cmd_pet_action_send_recovery)
+    diagnose_current = pet_action_subs.add_parser(
+        "diagnose-current",
+        help="Diagnose the current OpenClaw/Hermes transcript and refresh Pet status.",
+    )
+    diagnose_current.add_argument(
+        "--status-file",
+        type=Path,
+        required=True,
+        help="pet-status.json to refresh after diagnosing the current session.",
+    )
+    diagnose_current.set_defaults(func=_cmd_pet_action_diagnose_current)
 
     autopilot = subparsers.add_parser(
         "autopilot",
@@ -737,6 +748,14 @@ def _cmd_pet_action_send_recovery(args: argparse.Namespace) -> int:
     from .pet_actions import send_recovery_from_status_file
 
     result = send_recovery_from_status_file(args.status_file)
+    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+    return 0 if result.delivered else 1
+
+
+def _cmd_pet_action_diagnose_current(args: argparse.Namespace) -> int:
+    from .pet_actions import diagnose_current_from_status_file
+
+    result = diagnose_current_from_status_file(args.status_file)
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     return 0 if result.delivered else 1
 

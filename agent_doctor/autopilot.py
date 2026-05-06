@@ -120,14 +120,23 @@ def run_autopilot_once(
     out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     state = AutopilotState(state_path or out_dir / "state.sqlite3")
     changed_paths: list[Path] | None = None
+    snapshot_paths: list[Path] | None = None
     try:
         if changed_only:
+            first_platform_scan = (
+                platform in {"openclaw", "hermes"}
+                and input_path.expanduser().is_dir()
+                and not state.has_file_snapshots()
+            )
             changed_paths = state.changed_jsonl_paths(input_path)
+            if first_platform_scan:
+                snapshot_paths = changed_paths
+                changed_paths = _latest_session_paths(changed_paths)
             messages, parse_errors = _ingest_paths(changed_paths)
         else:
             messages, parse_errors = ingest_path_with_errors(input_path)
             changed_paths = collect_jsonl_paths(input_path)
-        state.record_file_snapshots(changed_paths)
+        state.record_file_snapshots(snapshot_paths or changed_paths)
     except Exception:
         state.close()
         raise
@@ -294,6 +303,12 @@ def _ingest_paths(paths: list[Path]) -> tuple[list[Message], int]:
         messages.extend(file_messages)
         parse_errors += file_errors
     return messages, parse_errors
+
+
+def _latest_session_paths(paths: list[Path], *, limit: int = 3) -> list[Path]:
+    ordinary = [path for path in paths if not path.name.endswith(".trajectory.jsonl")]
+    selected = ordinary or paths
+    return sorted(selected, key=lambda path: path.stat().st_mtime_ns, reverse=True)[:limit]
 
 
 def detect_autopilot_events(
@@ -559,7 +574,6 @@ def _classify_user_message(
     try:
         from .classifier.fused import fused_classify
         from .classifier.user_dict import load_user_dict
-        from .adapters import GenericAdapter, HermesAdapter, OpenClawAdapter
     except ImportError:
         return classify_user_frustration(message.content)
 
@@ -578,29 +592,13 @@ def _classify_user_message(
     except Exception:
         pass
 
-    # Adapter for Tier 2
-    adapter_classes = {
-        "openclaw": OpenClawAdapter,
-        "hermes": HermesAdapter,
-        "generic": GenericAdapter,
-    }
-    cls = adapter_classes.get(platform, GenericAdapter)
-    instance = None
-    try:
-        instance = cls.detect()
-    except Exception:
-        pass
-    if instance is None:
-        instance = GenericAdapter()  # has can_infer_text=False; Tier 2 will skip
-
-    cache_path = Path("~/.agent-doctor").expanduser() / platform / "tier2-cache.db"
+    # Live monitoring must stay fast and local. Host-inference Tier 2 remains
+    # outside the production sidecar path.
     try:
         return fused_classify(
             message.content,
             recent_user_messages=recent,
             user_dict=user_dict,
-            adapter=instance,
-            tier2_cache_path=cache_path,
         )
     except Exception:
         # Defensive: if fused fails for any reason, fall back to Tier 1
@@ -803,6 +801,10 @@ class AutopilotState:
             if row is None or int(row[0]) != stat_result.st_mtime_ns or int(row[1]) != stat_result.st_size:
                 changed.append(path)
         return changed
+
+    def has_file_snapshots(self) -> bool:
+        row = self.connection.execute("SELECT 1 FROM seen_files LIMIT 1").fetchone()
+        return row is not None
 
     def record_file_snapshots(self, paths: list[Path]) -> None:
         for path in paths:

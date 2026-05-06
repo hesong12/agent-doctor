@@ -83,6 +83,8 @@ UUID_STEM = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+AGENT_DOCTOR_INTERVENTION_MARKER = "AGENT DOCTOR INTERVENTION"
+OPENCLAW_SENDER_MARKER = "Sender (untrusted metadata):"
 
 
 class IngestError(ValueError):
@@ -164,7 +166,7 @@ def normalize_event(
 
     raw_type = _first_text(event, ["type", "event", "kind", "category"]) or ""
     role = normalize_role(event)
-    content = extract_content(event)
+    content = _strip_agent_doctor_control_block(extract_content(event))
 
     return Message(
         file=str(path),
@@ -199,6 +201,19 @@ def detect_source_format(event: dict[str, Any], path: Path) -> str:
     if "payload" in event and ("event" in event or "actor" in event):
         return "openclaw"
     return "generic"
+
+
+def _strip_agent_doctor_control_block(content: str) -> str:
+    marker_index = content.find(AGENT_DOCTOR_INTERVENTION_MARKER)
+    if marker_index < 0:
+        return content
+    sender_index = content.rfind(OPENCLAW_SENDER_MARKER)
+    if sender_index > marker_index:
+        return content[sender_index:].lstrip()
+    before = content[:marker_index].strip()
+    if before.startswith("System:"):
+        return ""
+    return before
 
 
 def normalize_role(event: dict[str, Any]) -> Role:

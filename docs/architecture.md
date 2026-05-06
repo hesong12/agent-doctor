@@ -61,9 +61,11 @@ headless sensors. The display reads a packaged transparent PNG doctor sprite
 when available, falls back to code-drawn shapes, applies local state-specific
 effects, and opens one click panel for status and actions. Healthy idle status
 is passive and carries no setup/start action; host service setup belongs to
-`setup autopilot`, not to the Pet window itself. Transcript-backed
-OpenClaw/Hermes incidents can be routed back through a local Pet action; manual
-incidents stay copy-only because there is no session path to target.
+`setup autopilot`, not to the Pet window itself. The same click panel owns
+active user controls such as diagnose-current-session, hide alert, and quit Pet.
+Transcript-backed OpenClaw/Hermes incidents can be routed back through a local
+Pet action; manual incidents stay copy-only because there is no session path to
+target.
 
 ### Autopilot Sidecar
 

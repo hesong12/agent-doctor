@@ -161,9 +161,10 @@ Desktop display:
 The desktop pet renders a packaged chibi doctor sprite when available and
 animates locally by state: idle breathing, watching scan, concerned diagnostic
 pulse, and intervening alert. In autopilot setup it is the default user-facing
-entry point: click it for the single status/action panel. For transcript-backed
-OpenClaw/Hermes incidents, the dialog can send the generated recovery suggestion
-back through the local host adapter; manual incidents remain copy-only.
+entry point: click it for the single status/action panel. That panel owns active
+controls such as Diagnose Now, Hide Alert, and Quit Pet. For transcript-backed
+OpenClaw/Hermes incidents, it can send the generated recovery suggestion back
+through the local host adapter; manual incidents remain copy-only.
 
 If Doctor Pet returns `action=intervene`, pause the normal success path, name
 the concrete failure, cite the evidence, and provide one corrective next step.
