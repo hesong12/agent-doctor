@@ -31,6 +31,7 @@ from agent_doctor.pet_actions import (
     diagnose_current_from_status_file,
     send_recovery_from_status_file,
 )
+from agent_doctor import pet as pet_module
 from agent_doctor import pet_display
 
 
@@ -168,6 +169,32 @@ def test_pet_path_status_writes_private_redacted_artifacts(tmp_path: Path) -> No
     assert secret not in json.dumps(status.to_dict(), ensure_ascii=False)
 
 
+def test_pet_artifact_write_is_atomic_when_replace_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    status = pet_status_for_text("Why are you so dumb?", session_id="s-atomic")
+    paths = write_pet_artifacts(tmp_path / "pet", status)
+    original_text = paths["status"].read_text(encoding="utf-8")
+    real_replace = os.replace
+
+    def fail_status_replace(src: str | bytes | os.PathLike[str], dst: str | bytes | os.PathLike[str]) -> None:
+        if Path(dst) == paths["status"]:
+            raise OSError("simulated replace failure")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(pet_module.os, "replace", fail_status_replace)
+    try:
+        write_pet_artifacts(tmp_path / "pet", status)
+    except OSError as exc:
+        assert "simulated replace failure" in str(exc)
+    else:
+        raise AssertionError("expected status replace failure")
+
+    assert paths["status"].read_text(encoding="utf-8") == original_text
+    assert not list(paths["status"].parent.glob(".pet-status.json.*.tmp"))
+
+
 def test_pet_reports_watch_state_for_non_live_findings() -> None:
     status = pet_status_for_text("Remember that I want concise output.", session_id="s-memory")
 
@@ -247,6 +274,22 @@ def test_pet_display_cli_dry_run_reads_status_file(tmp_path: Path) -> None:
     assert payload["diagnosis"]
     assert payload["recommendation"]
     assert payload["recovery_prompt"]
+
+
+def test_pet_display_treats_unreadable_status_as_idle(tmp_path: Path) -> None:
+    status_file = tmp_path / "pet-status.json"
+    status_file.write_text("{", encoding="utf-8")
+
+    snapshot = snapshot_from_payload(read_status_payload(status_file))
+
+    assert snapshot.state == "idle"
+    assert snapshot.action == "silent"
+    assert "valid status" in snapshot.headline
+    assert [action.id for action in _display_actions(snapshot)] == [
+        "diagnose_current",
+        "dismiss_for_now",
+        "quit_pet",
+    ]
 
 
 def test_pet_display_snapshot_exposes_user_facing_state_label(tmp_path: Path) -> None:
@@ -552,6 +595,8 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "drawDeliveryResultPanel" in source
     assert "Sent to active agent" in source
     assert "已发送给当前 Agent" in source
+    assert "Agent Doctor is waiting for a valid status." in source
+    assert "Agent Doctor could not parse status." not in source
     assert "dismissedEventId" in source
     assert "isRunnableCommand" in source
     assert "evidence_0_quote" in source

@@ -101,20 +101,26 @@ def read_status_payload(status_file: Path) -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {
-            "state": "concerned",
-            "action": "notify",
-            "severity": "medium",
-            "headline": "Agent Doctor could not read its status file.",
-            "message": str(exc),
+            "state": "idle",
+            "action": "silent",
+            "severity": "low",
+            "phase": "healthy",
+            "headline": "Agent Doctor is waiting for a valid status.",
+            "message": f"Status file is temporarily unreadable: {exc}",
+            "diagnosis": "Agent Doctor could not read the latest status update.",
+            "recommendation": "Keep Agent Doctor running. The next valid status write will refresh this panel.",
             "session_id": "",
         }
     if not isinstance(data, dict):
         return {
-            "state": "concerned",
-            "action": "notify",
-            "severity": "medium",
-            "headline": "Agent Doctor status file has the wrong shape.",
+            "state": "idle",
+            "action": "silent",
+            "severity": "low",
+            "phase": "healthy",
+            "headline": "Agent Doctor is waiting for a valid status.",
             "message": "Expected a JSON object.",
+            "diagnosis": "Agent Doctor could not use the latest status update.",
+            "recommendation": "Keep Agent Doctor running. The next valid status write will refresh this panel.",
             "session_id": "",
         }
     return data
@@ -1105,16 +1111,16 @@ func loadStatus() -> [String: String] {
         let dict = obj as? [String: Any]
     else {
         return [
-            "state": "concerned",
-            "action": "notify",
-            "severity": "medium",
+            "state": "idle",
+            "action": "silent",
+            "severity": "low",
             "platform": "generic",
-            "phase": "diagnosing",
-            "headline": "Agent Doctor could not parse status.",
+            "phase": "healthy",
+            "headline": "Agent Doctor is waiting for a valid status.",
             "message": "Expected a JSON object.",
             "emotion_message": "",
-            "diagnosis": "The status file could not be parsed.",
-            "recommendation": "Check the Agent Doctor status writer and keep monitoring.",
+            "diagnosis": "Agent Doctor could not use the latest status update.",
+            "recommendation": "Keep Agent Doctor running. The next valid status write will refresh this panel.",
             "recovery_prompt": "",
             "expires_after_seconds": "120",
             "session_id": "",

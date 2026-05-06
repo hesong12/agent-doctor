@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal
@@ -713,9 +714,27 @@ def _safe_session_slug(session_id: str) -> str:
 
 
 def _write_private_text(path: Path, text: str) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        text=True,
+    )
+    tmp_path = Path(tmp_name)
     try:
+        os.chmod(tmp_path, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
-    finally:
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
         os.chmod(path, 0o600)
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
