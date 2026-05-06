@@ -2001,24 +2001,28 @@ class PetView: NSView {
     }
 
     func drawIdlePanel(_ accent: NSColor) {
-        roundRect(18, 210, 324, 244, 22, NSColor.white.withAlphaComponent(0.96), color("#111827"), 1.5)
+        let hasNotice = !noticeText.isEmpty
+        let panelHeight: CGFloat = hasNotice ? 278 : 232
+        let primaryY: CGFloat = hasNotice ? 378 : 346
+        let secondaryY: CGFloat = primaryY + 38
+        roundRect(18, 210, 324, panelHeight, 22, NSColor.white.withAlphaComponent(0.96), color("#111827"), 1.5)
         text(short(panelTitle("idle"), 82), 36, 232, 288, 36, 13.5, color("#111827"), true, .left)
-        text(short(idleSummaryText(), 120), 36, 286, 288, 52, 11.5, color("#374151"), false, .left)
+        text(short(idleSummaryText(), 120), 36, 282, 288, 42, 11.5, color("#374151"), false, .left)
 
-        if !noticeText.isEmpty {
-            roundRect(34, 344, 292, 42, 12, accent.withAlphaComponent(0.10), accent.withAlphaComponent(0.28), 1)
-            text(short(noticeText, 96), 48, 353, 264, 24, 10.5, accent, true, .left)
+        if hasNotice {
+            roundRect(34, 326, 292, 40, 12, accent.withAlphaComponent(0.10), accent.withAlphaComponent(0.28), 1)
+            text(short(noticeText, 96), 48, 335, 264, 22, 10.5, accent, true, .left)
         }
 
         let actions = visibleActions()
         if actions.count == 1 {
-            drawActionButton(actions[0], 36, 394, 288, 30, true, accent)
+            drawActionButton(actions[0], 36, primaryY, 288, 30, true, accent)
         } else {
             let primary = actions.first ?? "diagnose_current"
-            drawActionButton(primary, 36, 394, 288, 30, true, accent)
+            drawActionButton(primary, 36, primaryY, 288, 30, true, accent)
             let secondary = Array(actions.dropFirst().prefix(2))
             for (index, actionId) in secondary.enumerated() {
-                drawActionButton(actionId, index == 0 ? 36 : 186, 430, 138, 28, false, accent)
+                drawActionButton(actionId, index == 0 ? 36 : 186, secondaryY, 138, 28, false, accent)
             }
         }
     }
