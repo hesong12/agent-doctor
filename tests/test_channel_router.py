@@ -49,3 +49,52 @@ def test_resolve_with_generic_adapter_yields_inbox_target(tmp_path: Path) -> Non
     assert target.host == "generic"
     assert target.inbox_path is not None
     assert language in ("en", "zh")
+
+
+def test_resolve_falls_back_to_tui_when_channel_not_in_capabilities(tmp_path: Path, monkeypatch) -> None:
+    """If session_metadata returns a channel that is not in caps.available_channels,
+    route to TUI/inbox so we don't try to send to a non-existent host channel.
+
+    Regression for: OpenClawAdapter sending --channel=channel/--channel=generic
+    because the session was misclassified and the host had no such channel.
+    """
+    from agent_doctor.adapters import HostCapabilities, SessionMetadata
+
+    class FakeAdapter:
+        def capabilities(self) -> HostCapabilities:
+            return HostCapabilities(
+                host_name="openclaw",
+                detected_at=tmp_path,
+                can_send_message=True,
+                can_edit_message=True,
+                can_react=True,
+                can_list_reactions=True,
+                can_inject_system_event=True,
+                can_infer_text=False,
+                can_infer_embedding=False,
+                default_inference_model=None,
+                available_models=(),
+                available_channels=("telegram",),  # only telegram is real
+                skill_dir=None,
+                memory_writable=None,
+                identity_writable=None,
+                sop_writable=None,
+            )
+
+        def session_metadata(self, p: Path) -> SessionMetadata:
+            # Return an unknown channel — this is what the broken adapter did
+            return SessionMetadata(
+                session_id="abc",
+                language="zh",
+                channel="channel",  # placeholder string, not real
+                recipient="agent:main:main",
+            )
+
+    jsonl = tmp_path / "session.jsonl"
+    jsonl.write_text("{}\n", encoding="utf-8")
+
+    target, _ = resolve(jsonl, FakeAdapter())
+
+    # Must NOT pass the bogus channel through; should fall back to TUI/inbox
+    assert target.channel == "tui"
+    assert target.inbox_path is not None

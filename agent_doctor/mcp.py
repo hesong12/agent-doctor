@@ -168,6 +168,51 @@ def tool_bench(arguments: dict[str, Any]) -> str:
     return _ok({"out_dir": str(out_dir), "summary": result.to_summary()})
 
 
+def tool_doctor_pet_status(arguments: dict[str, Any]) -> str:
+    """Return the Doctor Pet state for a transcript, host, or current message."""
+
+    status, error = _pet_status_from_arguments(arguments)
+    if error:
+        return _error(error)
+    assert status is not None
+
+    payload: dict[str, Any] = {"status": status.to_dict()}
+    out_dir_value = arguments.get("out_dir")
+    if out_dir_value:
+        from .pet import write_pet_artifacts
+
+        paths = write_pet_artifacts(Path(out_dir_value).expanduser(), status)
+        payload["artifacts"] = {key: str(value) for key, value in paths.items()}
+    return _ok(payload)
+
+
+def tool_doctor_pet_intervene(arguments: dict[str, Any]) -> str:
+    """Return a concise Doctor Pet recovery prompt and actions."""
+
+    status, error = _pet_status_from_arguments(arguments)
+    if error:
+        return _error(error)
+    assert status is not None
+
+    payload: dict[str, Any] = {
+        "should_intervene": status.action == "intervene",
+        "intervention": {
+            "headline": status.headline,
+            "message": status.message,
+            "options": [option.to_dict() for option in status.options],
+            "evidence": [item.to_dict() for item in status.evidence],
+        },
+        "status": status.to_dict(),
+    }
+    out_dir_value = arguments.get("out_dir")
+    if out_dir_value:
+        from .pet import write_pet_artifacts
+
+        paths = write_pet_artifacts(Path(out_dir_value).expanduser(), status)
+        payload["artifacts"] = {key: str(value) for key, value in paths.items()}
+    return _ok(payload)
+
+
 # ---------------------------------------------------------------------------
 # Write tools (staging only)
 # ---------------------------------------------------------------------------
@@ -303,6 +348,53 @@ TOOL_DEFINITIONS: list[ToolDefinition] = [
         handler=tool_bench,
     ),
     ToolDefinition(
+        name="doctor_pet_status",
+        description=(
+            "Return the local Doctor Pet state for a JSONL transcript, host default path, "
+            "or current user message. No network calls. Optional `out_dir` writes "
+            "pet-status.json and pet-card.md under that directory only."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "JSONL file or directory of JSONL files."},
+                "host": {
+                    "type": "string",
+                    "enum": ["hermes", "openclaw"],
+                    "description": "Use this host's default sessions path instead of `path`.",
+                },
+                "message": {"type": "string", "description": "Current user message for manual summon."},
+                "session_id": {"type": "string", "default": "manual"},
+                "platform": {"type": "string", "enum": ["generic", "hermes", "openclaw"], "default": "generic"},
+                "out_dir": {"type": "string", "description": "Optional artifact directory."},
+                "strict": {"type": "boolean", "default": False},
+            },
+            "additionalProperties": False,
+        },
+        handler=tool_doctor_pet_status,
+    ),
+    ToolDefinition(
+        name="doctor_pet_intervene",
+        description=(
+            "Active-summon the Doctor Pet and return an intervention prompt plus "
+            "2-3 action options. Local-only; optional writes are limited to `out_dir`."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "JSONL file or directory of JSONL files."},
+                "host": {"type": "string", "enum": ["hermes", "openclaw"]},
+                "message": {"type": "string", "description": "Current user message for manual summon."},
+                "session_id": {"type": "string", "default": "manual"},
+                "platform": {"type": "string", "enum": ["generic", "hermes", "openclaw"], "default": "generic"},
+                "out_dir": {"type": "string", "description": "Optional artifact directory."},
+                "strict": {"type": "boolean", "default": False},
+            },
+            "additionalProperties": False,
+        },
+        handler=tool_doctor_pet_intervene,
+    ),
+    ToolDefinition(
         name="stage_patches",
         description=(
             "Stage reviewable patches from findings.json into `staging_dir`. "
@@ -387,6 +479,36 @@ def _finding_summary(finding: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _pet_status_from_arguments(arguments: dict[str, Any]) -> tuple[Any | None, str | None]:
+    from .pet import pet_status_for_path, pet_status_for_text
+
+    path = arguments.get("path")
+    host = arguments.get("host")
+    message = arguments.get("message")
+    selected = [bool(path), bool(host), bool(message)]
+    if sum(selected) != 1:
+        return None, "provide exactly one of `path`, `host`, or `message`"
+
+    strict = bool(arguments.get("strict", False))
+    platform = arguments.get("platform", "generic")
+    if platform not in {"generic", "hermes", "openclaw"}:
+        return None, "`platform` must be generic, hermes, or openclaw"
+
+    try:
+        if message:
+            session_id = str(arguments.get("session_id") or "manual")
+            return pet_status_for_text(str(message), platform=platform, session_id=session_id), None
+        if host == "hermes":
+            return pet_status_for_path(DEFAULT_HERMES_PATH, platform="hermes", strict=strict), None
+        if host == "openclaw":
+            return pet_status_for_path(DEFAULT_OPENCLAW_PATH, platform="openclaw", strict=strict), None
+        if host:
+            return None, f"unknown host {host!r}; expected hermes or openclaw"
+        return pet_status_for_path(Path(path).expanduser(), platform=platform, strict=strict), None
+    except IngestError as exc:
+        return None, str(exc)
+
+
 # ---------------------------------------------------------------------------
 # CLI helpers (kept for backward compatibility with `agent-doctor mcp`)
 # ---------------------------------------------------------------------------
@@ -411,7 +533,15 @@ def placeholder_payload() -> dict[str, Any]:
             {
                 "name": tool.name,
                 "description": tool.description,
-                "writes": tool.name in {"scan", "stage_patches", "generate_corpus", "bench"},
+                "writes": tool.name
+                in {
+                    "scan",
+                    "stage_patches",
+                    "generate_corpus",
+                    "bench",
+                    "doctor_pet_status",
+                    "doctor_pet_intervene",
+                },
             }
             for tool in TOOL_DEFINITIONS
         ],

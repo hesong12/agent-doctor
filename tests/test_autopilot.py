@@ -52,6 +52,13 @@ def test_autopilot_detects_negative_feedback_and_writes_card(tmp_path: Path) -> 
     assert event.severity == "high"
     assert event.action == "intervene"
     assert event.card_path is not None
+    assert result.pet_state == "intervening"
+    assert result.pet_status_path is not None
+    assert result.pet_card_path is not None
+    pet_status = json.loads(Path(result.pet_status_path).read_text(encoding="utf-8"))
+    assert pet_status["state"] == "intervening"
+    assert pet_status["action"] == "intervene"
+    assert pet_status["card_path"] == event.card_path
     card = Path(event.card_path)
     assert card.exists()
     assert stat.S_IMODE(card.stat().st_mode) == 0o600
@@ -79,6 +86,8 @@ def test_autopilot_uses_state_to_suppress_repeated_events(tmp_path: Path) -> Non
     assert len(first.events) == 1
     assert second.events == []
     assert second.suppressed == 1
+    assert second.pet_state == "intervening"
+    assert second.pet_status_path is not None
 
 
 def test_autopilot_changed_only_skips_unchanged_files_then_detects_modified_file(tmp_path: Path) -> None:
@@ -129,7 +138,34 @@ def test_autopilot_changed_only_skips_unchanged_files_then_detects_modified_file
     assert len(first.events) == 1
     assert second.messages == 0
     assert second.events == []
+    assert second.pet_state == "idle"
+    assert (tmp_path / "doctor" / "pet-status.json").exists()
     assert [event.session_id for event in third.events] == ["s2"]
+
+
+def test_autopilot_always_writes_pet_status_even_without_event(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {"session_id": "s-idle", "role": "user", "content": "Please list the files."},
+            {"session_id": "s-idle", "role": "assistant", "content": "I can help with that."},
+        ],
+    )
+
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+    )
+
+    assert result.events == []
+    assert result.pet_state == "idle"
+    assert result.pet_status_path == str(tmp_path / "doctor" / "pet-status.json")
+    assert result.pet_card_path == str(tmp_path / "doctor" / "pet-card.md")
+    payload = json.loads((tmp_path / "doctor" / "pet-status.json").read_text(encoding="utf-8"))
+    assert payload["state"] == "idle"
+    assert payload["action"] == "silent"
 
 
 def test_autopilot_detects_completion_claim_without_verification(tmp_path: Path) -> None:

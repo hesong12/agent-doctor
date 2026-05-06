@@ -4,7 +4,7 @@
 
 Local-first session postmortem and improvement engine for **memoryful AI agent frameworks** — agents that have their own persistent identity, memory, skills, and SOP files. Today: **Hermes, OpenClaw, Claude Code**. Same shape works for any framework that records sessions as JSONL and stores its own configuration files.
 
-**Turn frustrating agent sessions into durable fixes.** Read JSONL transcripts → detect failure patterns deterministically → aggregate into one finding per session → stage reviewable patches for memory, SOP, identity, tool discipline, and evals. For productized agent deployments, let the host agent run `agent-doctor setup autopilot` so diagnosis triggers automatically from user frustration, insults/profanity, trust-break language, hidden tool failures, and unverified completion claims. No network calls in the production path. No automatic edits to your agent config.
+**Turn frustrating agent sessions into durable fixes.** Read JSONL transcripts → detect failure patterns deterministically → aggregate into one finding per session → stage reviewable patches for memory, SOP, identity, tool discipline, and evals. For productized agent deployments, let the host agent run `agent-doctor setup autopilot` so diagnosis triggers automatically from user frustration, insults/profanity, trust-break language, hidden tool failures, and unverified completion claims. The same local signals power **Doctor Pet**, a small doctor-shaped intervention surface that can be summoned by the user or woken by autopilot. No network calls in the production path. No automatic edits to your agent config.
 
 Agent Doctor is an engineering diagnosis tool. It is *not* therapy, HR performance management, or surveillance analytics, and it is *not* aimed at chat clients without their own memory or identity surface (Claude Desktop, Cursor, Cline, ChatGPT, …) — those have nothing for `apply` to patch.
 
@@ -100,6 +100,7 @@ Read this section if you are an AI agent inside a memoryful framework (Hermes, O
 | "why does the agent keep doing X" | same `scan`; look for findings with `count >= 3` and severity `high` |
 | "fix the patterns you found" | `agent-doctor apply --findings ./postmortem --out ./staging --target <live-config-dir>` |
 | "enable proactive diagnosis / install Agent Doctor autopilot" | `agent-doctor setup autopilot` |
+| "help right now / user is angry in this turn" | `agent-doctor pet --message "<current user message>"` |
 | "is the detector accurate / measure improvement" | `agent-doctor eval generate` → `eval bench` → `eval replay` |
 
 **Operating rules** (these mirror the SKILL.md `bootstrap` installs):
@@ -112,7 +113,7 @@ Read this section if you are an AI agent inside a memoryful framework (Hermes, O
 
 **MCP-native invocation** (if the host speaks MCP and the `[mcp]` extra is installed):
 
-The server exposes six tools (`scan`, `list_findings`, `read_finding`, `bench`, `stage_patches`, `generate_corpus`). All write tools restrict writes to caller-supplied `staging_dir` / `out_dir`. No tool calls a remote LLM. See [MCP server](#mcp-server) below.
+The server exposes `scan`, `list_findings`, `read_finding`, `bench`, `stage_patches`, `generate_corpus`, `doctor_pet_status`, and `doctor_pet_intervene`. All write tools restrict writes to caller-supplied `staging_dir` / `out_dir`. No tool calls a remote LLM. See [MCP server](#mcp-server) below.
 
 **One-shot golden flow** an agent can run end-to-end:
 
@@ -169,6 +170,9 @@ staging/
 
 ```bash
 agent-doctor doctor                                          # environment + privacy info
+agent-doctor pet --message "Why are you so dumb?"            # manually summon Doctor Pet
+agent-doctor pet --path ./sessions --out ./doctor-pet        # write pet-status.json/card
+agent-doctor pet-display --status-file ./doctor-pet/pet-status.json
 agent-doctor setup autopilot                                 # auto-detect hosts, install skills, start sidecars
 agent-doctor notify openclaw-system-event                    # deliver an intervention card via OpenClaw system event
 agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw
@@ -219,6 +223,21 @@ Current automatic triggers:
 
 High-severity frustration emits an `intervene` event instead of a passive notification. Intervention cards tell the host agent to pause the normal success path, identify the concrete failure, cite evidence, and provide a short corrective action instead of defending itself or writing a long apology.
 
+### Doctor Pet
+
+Doctor Pet is the user-facing state model for those intervention moments. It is intentionally local and small: a doctor persona, a state (`idle`, `watching`, `concerned`, or `intervening`), redacted evidence, and 2-3 action options. It can be rendered by a desktop widget later, but it is already usable through CLI and MCP:
+
+```bash
+agent-doctor pet --message "This is useless. You keep doing this." --format markdown
+agent-doctor pet --path ./sessions --format json --out ./doctor-pet
+agent-doctor pet --message "This is useless." --display
+agent-doctor pet-display --status-file ./doctor-pet/pet-status.json
+```
+
+Manual summon (`--message`) is for the current turn. Transcript mode (`--path`, `--hermes`, or `--openclaw`) uses the same ingestion, detectors, and autopilot event selection as the sidecar. Optional artifacts are written as `pet-status.json` and `pet-card.md` under `--out` with `0600` permissions and redacted transcript strings.
+
+In autopilot mode, Doctor Pet is always displayable by default: every sidecar pass writes the current `pet-status.json` and `pet-card.md` under the autopilot `--out` directory, even when the state is `idle`. Use `agent-doctor pet-display --status-file <out>/pet-status.json` to open the borderless always-on-top desktop pet and keep it synced while autopilot handles activation. Drag the pet to move it.
+
 Watch mode automatically runs a full first pass, then switches to changed-file
 scanning using JSONL path, `mtime`, and size state in SQLite. To skip unchanged
 files on the first pass as well (for example, for one-shot batch jobs or daemon
@@ -231,6 +250,8 @@ Artifacts:
   state.sqlite3       # local de-dupe / cooldown state
   events.jsonl        # machine-readable emitted interventions
   latest.md           # most recent short diagnosis card
+  pet-status.json     # always-present Doctor Pet state for desktop/UI shells
+  pet-card.md         # always-present human-readable Doctor Pet card
   cards/<event>.md    # one card per emitted event
 ```
 
@@ -371,6 +392,8 @@ Tools exposed:
 | `bench` | corpus dir | `bench.json`, `bench.md` under `out_dir` |
 | `stage_patches` | `findings.json` (+ optional read-only `target_dir`) | `staging_dir` only |
 | `generate_corpus` | scenario cards | corpus under `out_dir` |
+| `doctor_pet_status` | JSONL transcripts or current message | optional `pet-status.json` / `pet-card.md` under `out_dir` |
+| `doctor_pet_intervene` | JSONL transcripts or current message | optional `pet-status.json` / `pet-card.md` under `out_dir` |
 
 The trust boundary matches the CLI: write tools never touch live host-agent configuration, only `staging_dir` / `out_dir`. No tool calls a remote LLM — the LLM-augmented generator is a CLI-only path on purpose.
 

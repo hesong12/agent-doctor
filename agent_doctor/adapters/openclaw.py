@@ -41,6 +41,30 @@ _log = logging.getLogger(__name__)
 
 OPENCLAW_HOME = Path("~/.openclaw").expanduser()
 
+# OpenClaw sessionKey scope markers that indicate a local session
+# (no external channel surface; route to TUI/inbox).
+_LOCAL_SCOPES = frozenset({"main", "tui", "cron", "subagent", "explicit"})
+
+
+def _classify_session_scope(session_key: str) -> str:
+    """Map an OpenClaw sessionKey to a channel slug.
+
+    Returns 'tui' for any local scope, or the external channel slug
+    (e.g. 'telegram') otherwise. Channel slug is the leading component
+    of the third sessionKey field, before any '-' or ':' suffix.
+    """
+    parts = session_key.split(":")
+    if len(parts) < 3:
+        return "tui"  # safest default for unrecognized shapes
+    third = parts[2]
+    # tui-<UUID> and tui both classify as local TUI
+    if third.startswith("tui-") or third == "tui":
+        return "tui"
+    if third in _LOCAL_SCOPES:
+        return "tui"
+    # External channel: parse slug before first '-' (e.g. 'telegram-12345' → 'telegram')
+    return third.split("-", 1)[0] if "-" in third else third
+
 
 def _resolve_openclaw_or_none() -> str | None:
     try:
@@ -298,7 +322,16 @@ class OpenClawAdapter:
 
     def session_metadata(self, jsonl_path: Path) -> SessionMetadata:
         """Parse OpenClaw session JSONL: trace files contain sessionKey
-        like 'agent:main:tui-XXXX'; sessions/<id>.jsonl uses traceId.
+        like 'agent:<agent>:<scope>[:...]' where scope is one of:
+          - 'main' (default TUI session)
+          - 'tui' or 'tui-<UUID>' (named TUI sessions)
+          - 'cron:<job>:run:<id>' (scheduled job)
+          - 'subagent:<id>' (sub-agent)
+          - 'explicit:<name>' (named one-off session)
+          - '<channel>[-<id>]' (real external channel: telegram, discord, etc.)
+
+        Local scopes resolve to channel='tui' (we only do inbox + OS notify).
+        External channels keep their channel slug for `openclaw message send`.
 
         Falls back to GenericAdapter's parser if structure is unexpected.
         """
@@ -313,15 +346,10 @@ class OpenClawAdapter:
                             continue
                         session_key = obj.get("sessionKey", "")
                         if session_key:
-                            channel = (
-                                "tui"
-                                if (":tui-" in session_key or session_key.endswith(":tui"))
-                                else "channel"
-                            )
                             return SessionMetadata(
                                 session_id=str(obj.get("sessionId") or jsonl_path.stem),
                                 language=GenericAdapter._detect_language(line),
-                                channel=channel,
+                                channel=_classify_session_scope(session_key),
                                 recipient=session_key,
                             )
         except OSError:

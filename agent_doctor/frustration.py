@@ -54,7 +54,16 @@ DIRECT_QUALITY_COMPLAINT = re.compile(
     r"|你(?:怎么|怎麼)?(?:这么|這麼|那么|那麼|很|好)?笨(?!重)"
     r"|(?:这么|這麼|那么|那麼|太|真|很|好)笨(?!重)|笨蛋|笨死"
     r"|你(?:怎么|怎麼)?(?:这么|這麼|那么|那麼|很|好)?蠢(?!动|動)"
-    r"|(?:这么|這麼|那么|那麼|太|真|很|好)蠢(?!动|動)|蠢蛋|蠢死",
+    r"|(?:这么|這麼|那么|那麼|太|真|真是|很|好)蠢(?!动|動)|蠢蛋|蠢死"
+    # 傻 (sha = dumb): same shape as 笨/蠢. Exclude common compounds where
+    # 傻 is part of a different word and not a frustration signal:
+    #   傻瓜 (fool / point-and-shoot camera), 傻笑 (silly laugh),
+    #   傻眼 (stunned), 傻乎乎 (silly way, often endearing).
+    r"|你(?:怎么|怎麼)?(?:这么|這麼|那么|那麼|很|好)?傻(?!瓜|笑|眼|乎)"
+    r"|(?:这么|這麼|那么|那麼|太|真|真是|很|好)傻(?!瓜|笑|眼|乎)|傻蛋|傻死"
+    # 越来越X / 越來越X — escalation form. Strong frustration signal:
+    # the user is asserting quality is degrading over time.
+    r"|越[来來]越(?:笨|蠢|傻|差|烂|爛|糟|垃圾)",
     re.IGNORECASE,
 )
 
@@ -64,7 +73,7 @@ TRUST_BREAK = re.compile(
     r"i give up|this keeps happening|you keep doing this"
     r")\b"
     r"|不能相信你|不信任你|信任崩|又来了|又來了|一直这样|一直這樣|"
-    r"每次都这样|每次都這樣|你又错了|你又錯了|你又搞错|你又搞錯",
+    r"每次都(?:是)?这样|每次都(?:是)?這樣|你又错了|你又錯了|你又搞错|你又搞錯",
     re.IGNORECASE,
 )
 

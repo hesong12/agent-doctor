@@ -83,6 +83,9 @@ class AutopilotResult:
     events: list[AutopilotEvent]
     suppressed: int = 0
     delivery_errors: list[str] | None = None
+    pet_state: str = "idle"
+    pet_status_path: str | None = None
+    pet_card_path: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
@@ -166,6 +169,28 @@ def run_autopilot_once(
     finally:
         state.close()
 
+    pet_status_path: str | None = None
+    pet_card_path: str | None = None
+    pet_state = "idle"
+    try:
+        from .pet import build_pet_status, write_pet_artifacts
+
+        event_overrides = {event.id: event for event in emitted}
+        pet_events = [event_overrides.get(event.id, event) for event in candidates]
+        pet_status = build_pet_status(
+            messages,
+            findings,
+            platform=platform,
+            events=pet_events,
+            parse_errors=parse_errors,
+        )
+        pet_paths = write_pet_artifacts(out_dir, pet_status)
+        pet_state = pet_status.state
+        pet_status_path = str(pet_paths["status"])
+        pet_card_path = str(pet_paths["card"])
+    except OSError as exc:
+        delivery_errors.append(f"pet_status_write_failed: {exc}")
+
     # Phase 4: drafting proposals from this scan's findings ----------------
     proposals_path = out_dir / "proposals.jsonl"
     try:
@@ -230,6 +255,9 @@ def run_autopilot_once(
         events=emitted,
         suppressed=suppressed,
         delivery_errors=delivery_errors,
+        pet_state=pet_state,
+        pet_status_path=pet_status_path,
+        pet_card_path=pet_card_path,
     )
 
 

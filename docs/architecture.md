@@ -11,6 +11,8 @@ Agent Doctor is CLI-first with an optional MCP stdio server in front. The trust 
 - `scan` — ingest JSONL transcripts, detect findings, write reports. On first use (no SKILL.md installed in any detected host), prints a one-line hint to stderr suggesting `agent-doctor bootstrap --invalidate-cache`.
 - `apply` — read `findings.json`, stage reviewable patches into a directory plus a unified diff against an optional `--target`. Live config is never modified.
 - `eval` — sub-command group: `generate`, `bench`, `replay` for the LLM-first eval framework (see `docs/evaluation.md`).
+- `pet` — render the Doctor Pet state for a transcript or current user message. Optional `--out` writes `pet-status.json` and `pet-card.md` for desktop/widget shells.
+- `pet-display` — open the always-on-top desktop Doctor Pet window by watching a `pet-status.json` file. This lazy-imports Tkinter and is isolated from the headless production path.
 - `autopilot` — run the platform-agnostic sidecar trigger engine. It reads host transcripts through adapters, keeps local SQLite state for de-duplication/cooldown, and writes diagnosis cards/events under `--out`.
 - `setup autopilot` — opinionated agent-managed installation: detect OpenClaw/Hermes, bootstrap skills, baseline existing transcripts, write launchd/systemd user services, and start the sidecar with safe defaults.
 - `notify openclaw-system-event` — host-native delivery adapter for OpenClaw. It reads `AGENT_DOCTOR_*` metadata from autopilot's notify hook and enqueues an `openclaw system event` for live intervention cards.
@@ -21,6 +23,41 @@ Agent Doctor is CLI-first with an optional MCP stdio server in front. The trust 
 - `mcp serve` — run the stdio MCP server (requires the `[mcp]` extra).
 
 The console script is `agent-doctor`; the same commands run via `python3 -m agent_doctor.cli`.
+
+### Doctor Pet
+
+`agent_doctor.pet` is the product-facing state adapter above the deterministic
+detection/autopilot layer. It does not introduce new detection rules. Instead,
+it consumes normalized `Message` objects plus `Finding` / `AutopilotEvent`
+outputs and returns an immutable `PetStatus`:
+
+- persona: currently `doctor`.
+- state: `idle`, `watching`, `concerned`, or `intervening`.
+- action: `silent`, `notify`, or `intervene`.
+- redacted evidence and stable action options such as `pause_and_diagnose`,
+  `stage_fix`, and `keep_watching`.
+
+There are two entry paths:
+
+```bash
+agent-doctor pet --message "<current user message>"
+agent-doctor pet --path ./sessions --out ./doctor-pet
+agent-doctor pet-display --status-file ./doctor-pet/pet-status.json
+```
+
+The first path is manual summon for an active turn; it creates one synthetic
+local `Message` and runs the same deterministic detectors. The second path
+reads transcripts through normal ingestion and picks the highest-priority
+autopilot event or finding. Optional artifacts are written only under `--out`
+as `pet-status.json` and `pet-card.md` with `0o600` permissions. This lets a
+future desktop widget render the pet without linking to the detection core or
+watching live host runtime state.
+
+Autopilot writes the same `pet-status.json` / `pet-card.md` pair by default on
+every sidecar pass. That is the always-display contract: the pet is always
+renderable, and `pet-display` can keep a small borderless topmost desktop
+window synced while its state changes from `idle` to `intervening` only when
+the local trigger engine sees a quality incident.
 
 ### Autopilot Sidecar
 
@@ -36,8 +73,9 @@ changes. The connection to host platforms is adapter-based:
   (or caller-provided `--state`) for event fingerprints, per-session cooldowns,
   and de-duplication.
 - **Write side:** emit `events.jsonl`, `latest.md`, and one short diagnosis
-  card per event under `cards/`. These are intervention artifacts, not live
-  config changes.
+  card per event under `cards/`. It also refreshes `pet-status.json` and
+  `pet-card.md` every pass so Doctor Pet can remain visible even when idle.
+  These are intervention/display artifacts, not live config changes.
 
 Current triggers are intentionally deterministic and local:
 
@@ -55,7 +93,9 @@ Current triggers are intentionally deterministic and local:
 High-severity `user_frustration_signal` events are emitted with action
 `intervene`, not just `notify`. The card instructs the host agent to pause the
 normal success path, name the concrete quality failure, cite evidence, and
-provide the next corrective action.
+provide the next corrective action. Doctor Pet renders the same event as an
+`intervening` state so the product can show a visible small-doctor presence
+instead of only writing a background card.
 
 Run modes:
 
@@ -252,6 +292,8 @@ Tools:
 | `bench` | corpus dir | `bench.json`, `bench.md` under `out_dir` |
 | `stage_patches` | `findings.json` (+ optional read-only `target_dir`) | `staging_dir` only |
 | `generate_corpus` | scenario cards | corpus under `out_dir` |
+| `doctor_pet_status` | JSONL transcripts or current message | optional `pet-status.json` / `pet-card.md` under `out_dir` |
+| `doctor_pet_intervene` | JSONL transcripts or current message | optional `pet-status.json` / `pet-card.md` under `out_dir` |
 
 Pure-Python tool handlers are testable without the SDK; the SDK glue (`build_server`, `serve`) lazy-imports `mcp`. Missing-extra path exits with a clean install hint, not a stacktrace. No tool calls a remote LLM — the LLM-augmented generator is a CLI-only path on purpose.
 
@@ -288,15 +330,19 @@ scenario cards
   → eval replay → before/after delta with patched agent
 
 Autopilot:
-
-```text
 OpenClaw/Hermes/generic transcript JSONL
   → adapter default path or --path
   → ingest + deterministic detectors
   → trigger engine + cooldown state
-  → events.jsonl + latest.md + cards/<event>.md
+  → events.jsonl + latest.md + pet-status.json + pet-card.md + cards/<event>.md
   → user/session notification by the host's existing delivery mechanism
-```
+
+Doctor Pet:
+current user message or transcript JSONL
+  → ingest/synthetic Message
+  → deterministic detectors + autopilot event selection
+  → PetStatus {state, action, evidence, options}
+  → CLI/MCP response or pet-status.json + pet-card.md under --out
 ```
 
 ## Trust Boundary

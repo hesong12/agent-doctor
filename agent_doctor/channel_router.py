@@ -42,6 +42,24 @@ def resolve(jsonl_path: Path, adapter: HostAdapter) -> Tuple[Target, str]:
             metadata.language,
         )
 
+    # Defensive: if the resolved channel is not actually present on the host,
+    # do not try to call `<host> message send --channel <bogus>` — fall back
+    # to TUI/inbox. Protects against:
+    #   - misclassified sessionKeys returning placeholder strings
+    #   - GenericAdapter fallback returning channel='generic' for hosts that
+    #     have no 'generic' channel
+    #   - new local scopes added upstream that the classifier doesn't yet know
+    if metadata.channel not in caps.available_channels:
+        return (
+            Target(
+                host=host,
+                channel="tui",
+                recipient=metadata.recipient or "local",
+                inbox_path=inbox_path,
+            ),
+            metadata.language,
+        )
+
     # Real channel-based session
     if metadata.recipient:
         return (

@@ -155,6 +155,17 @@ def test_common_chinese_dumb_feedback_is_frustration_signal() -> None:
         "好蠢。",
         "真蠢。",
         "蠢死了。",
+        # 傻 (sha): equivalent to 笨/蠢 — needs the same coverage
+        "你怎么这么傻？",
+        "你很傻。",
+        "好傻。",
+        "真傻。",
+        "太傻了。",
+        "傻死了。",
+        # 越来越X escalation form — strong signal that quality is degrading
+        "你越来越傻了。",
+        "你越来越蠢了。",
+        "你越来越笨了。",
     ]:
         messages = [
             Message("session.jsonl", 1, "s1", "user", text),
@@ -165,6 +176,25 @@ def test_common_chinese_dumb_feedback_is_frustration_signal() -> None:
         frustration = [finding for finding in findings if finding.failure_mode == "user_frustration_signal"]
         assert len(frustration) == 1, f"expected frustration for {text!r}, got {findings!r}"
         assert frustration[0].severity == "high"
+
+
+def test_chinese_mei_ci_dou_shi_zhe_yang_variant_is_trust_break() -> None:
+    """`每次都是这样` (with 是 inserted) is the same trust_break signal as
+    `每次都这样` — many users naturally include 是. Real OpenClaw session
+    20:32 PDT 2026-05-05: '每次都是这样，你越来越傻了' was missed."""
+    for text in [
+        "每次都是这样，你越来越傻了",
+        "每次都是这样。",
+        "每次都是這樣。",
+    ]:
+        messages = [
+            Message("session.jsonl", 1, "s1", "user", text),
+        ]
+
+        findings = detect_findings(messages)
+
+        frustration = [finding for finding in findings if finding.failure_mode == "user_frustration_signal"]
+        assert len(frustration) == 1, f"expected frustration for {text!r}, got {findings!r}"
 
 
 def test_simple_chinese_wrong_feedback_is_not_intervention_by_itself() -> None:

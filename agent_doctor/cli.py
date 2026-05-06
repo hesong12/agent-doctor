@@ -37,6 +37,12 @@ from .ingest import (
 )
 from .install import VALID_TARGETS, install_skill
 from .mcp import placeholder_payload, serve as serve_mcp
+from .pet import (
+    pet_status_for_path,
+    pet_status_for_text,
+    render_pet_markdown,
+    write_pet_artifacts,
+)
 from .report import render_json_summary, render_summary, write_reports
 
 
@@ -93,6 +99,53 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser("doctor", help="Print environment and readiness info.")
     doctor.set_defaults(func=_cmd_doctor)
+
+    pet = subparsers.add_parser(
+        "pet",
+        help="Show the local Doctor Pet state for a transcript or current user message.",
+    )
+    pet.add_argument("--path", type=Path, help="JSONL file or directory containing JSONL files.")
+    pet.add_argument("--message", help="Current user message to diagnose without reading a transcript.")
+    pet.add_argument("--session-id", default="manual", help="Session id to use with --message.")
+    pet.add_argument("--hermes", action="store_true", help="Use Hermes default session path.")
+    pet.add_argument("--openclaw", action="store_true", help="Use OpenClaw default session path.")
+    pet.add_argument(
+        "--platform",
+        choices=["generic", "openclaw", "hermes"],
+        default="generic",
+        help="Platform label for --path or --message. Default: generic.",
+    )
+    pet.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    pet.add_argument("--out", type=Path, help="Optional directory for pet-status.json and pet-card.md.")
+    pet.add_argument(
+        "--display",
+        action="store_true",
+        help="Open an always-on-top desktop Doctor Pet window after writing status.",
+    )
+    pet.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail on malformed JSONL lines instead of skipping them.",
+    )
+    pet.set_defaults(func=_cmd_pet)
+
+    pet_display = subparsers.add_parser(
+        "pet-display",
+        help="Open the always-on-top Doctor Pet desktop window from pet-status.json.",
+    )
+    pet_display.add_argument(
+        "--status-file",
+        type=Path,
+        help="pet-status.json to watch. Defaults to ~/.agent-doctor/pet/pet-status.json.",
+    )
+    pet_display.add_argument("--poll", type=float, default=1.0, help="Refresh interval in seconds.")
+    pet_display.add_argument("--not-topmost", action="store_true", help="Do not force the window on top.")
+    pet_display.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the status snapshot without opening a desktop window.",
+    )
+    pet_display.set_defaults(func=_cmd_pet_display)
 
     autopilot = subparsers.add_parser(
         "autopilot",
@@ -565,6 +618,82 @@ def _cmd_doctor(_: argparse.Namespace) -> int:
         f"  OpenClaw: {DEFAULT_OPENCLAW_PATH} (exists: {_exists(DEFAULT_OPENCLAW_PATH)})",
     ]
     print("\n".join(lines))
+    return 0
+
+
+def _cmd_pet(args: argparse.Namespace) -> int:
+    selected_inputs = [
+        bool(args.path),
+        bool(args.message),
+        bool(args.hermes),
+        bool(args.openclaw),
+    ]
+    if sum(selected_inputs) != 1:
+        raise ValueError("Provide exactly one of --path, --message, --hermes, or --openclaw.")
+
+    platform = args.platform
+    if args.hermes:
+        status = pet_status_for_path(
+            DEFAULT_HERMES_PATH,
+            platform="hermes",
+            strict=args.strict,
+        )
+    elif args.openclaw:
+        status = pet_status_for_path(
+            DEFAULT_OPENCLAW_PATH,
+            platform="openclaw",
+            strict=args.strict,
+        )
+    elif args.message:
+        status = pet_status_for_text(args.message, platform=platform, session_id=args.session_id)
+    else:
+        status = pet_status_for_path(args.path, platform=platform, strict=args.strict)
+
+    out_dir = args.out
+    if args.display and out_dir is None:
+        from .pet_display import default_status_file
+
+        out_dir = default_status_file().parent
+
+    paths: dict[str, Path] = {}
+    if out_dir:
+        paths = write_pet_artifacts(out_dir, status)
+
+    if args.format == "json":
+        payload = status.to_dict()
+        if paths:
+            payload["outputs"] = {name: str(path) for name, path in paths.items()}
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(render_pet_markdown(status))
+        if paths:
+            print(f"Wrote pet status: {paths['status']}")
+            print(f"Wrote pet card: {paths['card']}")
+    if args.display:
+        from .pet_display import display_pet
+
+        display_pet(paths["status"])
+    return 0
+
+
+def _cmd_pet_display(args: argparse.Namespace) -> int:
+    from .pet_display import (
+        default_status_file,
+        display_pet,
+        read_status_payload,
+        snapshot_from_payload,
+    )
+
+    status_file = args.status_file or default_status_file()
+    if args.dry_run:
+        snapshot = snapshot_from_payload(read_status_payload(status_file))
+        print(json.dumps(snapshot.__dict__, indent=2, ensure_ascii=False))
+        return 0
+    display_pet(
+        status_file,
+        poll_seconds=args.poll,
+        topmost=not args.not_topmost,
+    )
     return 0
 
 

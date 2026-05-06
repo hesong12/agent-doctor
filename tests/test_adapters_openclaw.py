@@ -324,7 +324,8 @@ def test_session_metadata_recognizes_tui_session_key(tmp_path: Path) -> None:
 
 def test_session_metadata_does_not_match_intuit_substring(tmp_path: Path) -> None:
     """A hypothetical 'intuit-bot' channel must NOT be misread as TUI just
-    because 'tui' appears as a substring of 'intuit'."""
+    because 'tui' appears as a substring of 'intuit'. It should resolve to
+    the channel slug 'intuit' (parsed from before the dash)."""
     jsonl = tmp_path / "session.jsonl"
     jsonl.write_text("", encoding="utf-8")
     trajectory = tmp_path / "session.trajectory.jsonl"
@@ -334,7 +335,44 @@ def test_session_metadata_does_not_match_intuit_substring(tmp_path: Path) -> Non
     )
 
     meta = OpenClawAdapter().session_metadata(jsonl)
-    assert meta.channel == "channel"
+    assert meta.channel == "intuit"
+
+
+def test_session_metadata_main_session_key_is_tui(tmp_path: Path) -> None:
+    """OpenClaw's default TUI session sessionKey is 'agent:main:main' — third
+    field is the session name 'main', not a channel. Must classify as TUI."""
+    jsonl = tmp_path / "session.jsonl"
+    jsonl.write_text("", encoding="utf-8")
+    trajectory = tmp_path / "session.trajectory.jsonl"
+    trajectory.write_text(
+        json.dumps({"sessionKey": "agent:main:main", "sessionId": "sess-main"}) + "\n",
+        encoding="utf-8",
+    )
+
+    meta = OpenClawAdapter().session_metadata(jsonl)
+    assert meta.channel == "tui"
+
+
+def test_session_metadata_local_scopes_classified_as_tui(tmp_path: Path) -> None:
+    """OpenClaw has multiple local session scopes that look channel-shaped but
+    aren't external channels: cron jobs, subagents, named explicit sessions."""
+    cases = [
+        ("agent:main:cron:50a3a8ac-596a-4626-ba1b-296f91f5e52a:run:7c265799", "tui"),
+        ("agent:main:subagent:c08ba6e0-e522-45ea-94dd-8237aa116e77", "tui"),
+        ("agent:main:explicit:codex-smoke-20260502", "tui"),
+        ("agent:main:tui-abc123", "tui"),
+        ("agent:main:tui", "tui"),
+    ]
+    for i, (session_key, expected_channel) in enumerate(cases):
+        jsonl = tmp_path / f"session-{i}.jsonl"
+        jsonl.write_text("", encoding="utf-8")
+        trajectory = tmp_path / f"session-{i}.trajectory.jsonl"
+        trajectory.write_text(
+            json.dumps({"sessionKey": session_key, "sessionId": f"s{i}"}) + "\n",
+            encoding="utf-8",
+        )
+        meta = OpenClawAdapter().session_metadata(jsonl)
+        assert meta.channel == expected_channel, f"{session_key!r} → expected {expected_channel}, got {meta.channel!r}"
 
 
 # --- contract conformance ---------------------------------------------------
