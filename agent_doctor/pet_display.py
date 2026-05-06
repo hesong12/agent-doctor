@@ -1413,7 +1413,11 @@ class PetView: NSView {
                 }
                 if completed.terminationStatus == 0 {
                     self.status = loadStatus()
-                    self.noticeText = detail.isEmpty ? self.actionFinishedText(actionId) : detail
+                    if actionId == "diagnose_current" {
+                        self.noticeText = ""
+                    } else {
+                        self.noticeText = detail.isEmpty ? self.actionFinishedText(actionId) : detail
+                    }
                 } else {
                     self.noticeText = detail.isEmpty ? self.actionFailedText(actionId, text) : detail
                 }
@@ -1630,6 +1634,16 @@ class PetView: NSView {
             return "Keep working normally. Agent Doctor is still watching supported OpenClaw/Hermes sessions."
         }
         return expectationText()
+    }
+
+    func idleSummaryText() -> String {
+        if checkResultActive() {
+            return "No quality signal found in the latest supported session."
+        }
+        if status["headline"] == "Current session checked." {
+            return "No quality signal found in the latest supported session."
+        }
+        return "No active incident. Agent Doctor is watching supported sessions."
     }
 
     func evidenceText() -> String {
@@ -1986,9 +2000,36 @@ class PetView: NSView {
         buttonFrames.append((actionId, rect))
     }
 
+    func drawIdlePanel(_ accent: NSColor) {
+        roundRect(18, 210, 324, 244, 22, NSColor.white.withAlphaComponent(0.96), color("#111827"), 1.5)
+        text(short(panelTitle("idle"), 82), 36, 232, 288, 36, 13.5, color("#111827"), true, .left)
+        text(short(idleSummaryText(), 120), 36, 286, 288, 52, 11.5, color("#374151"), false, .left)
+
+        if !noticeText.isEmpty {
+            roundRect(34, 344, 292, 42, 12, accent.withAlphaComponent(0.10), accent.withAlphaComponent(0.28), 1)
+            text(short(noticeText, 96), 48, 353, 264, 24, 10.5, accent, true, .left)
+        }
+
+        let actions = visibleActions()
+        if actions.count == 1 {
+            drawActionButton(actions[0], 36, 394, 288, 30, true, accent)
+        } else {
+            let primary = actions.first ?? "diagnose_current"
+            drawActionButton(primary, 36, 394, 288, 30, true, accent)
+            let secondary = Array(actions.dropFirst().prefix(2))
+            for (index, actionId) in secondary.enumerated() {
+                drawActionButton(actionId, index == 0 ? 36 : 186, 430, 138, 28, false, accent)
+            }
+        }
+    }
+
     func drawPanel(_ state: String, _ accent: NSColor) {
         buttonFrames.removeAll()
         guard panelVisible(state) else {
+            return
+        }
+        if state == "idle" {
+            drawIdlePanel(accent)
             return
         }
         roundRect(18, 210, 324, 340, 22, NSColor.white.withAlphaComponent(0.96), color("#111827"), 1.5)

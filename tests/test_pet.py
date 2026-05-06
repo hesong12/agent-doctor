@@ -487,6 +487,7 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert ".usesLineFragmentOrigin" in source
     assert "drawStateChip" in source
     assert "drawPanel" in source
+    assert "drawIdlePanel" in source
     assert "drawActionButton" in source
     assert "performButton" in source
     assert "displayActions" in source
