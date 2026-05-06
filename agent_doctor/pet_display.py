@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import platform
 import shutil
 import subprocess
@@ -19,8 +20,8 @@ from pathlib import Path
 from tempfile import gettempdir
 from typing import Any
 
-_WINDOW_WIDTH = 190
-_WINDOW_HEIGHT = 210
+_WINDOW_WIDTH = 260
+_WINDOW_HEIGHT = 310
 _ASSET_NAME = "doctor_pet.png"
 
 
@@ -32,6 +33,9 @@ class DisplaySnapshot:
     headline: str
     message: str
     session_id: str
+    card_path: str
+    primary_label: str
+    primary_command: str
     fill: str
     accent: str
 
@@ -85,6 +89,7 @@ def snapshot_from_payload(payload: dict[str, Any]) -> DisplaySnapshot:
     state = str(payload.get("state") or "idle")
     action = str(payload.get("action") or "silent")
     severity = str(payload.get("severity") or "low")
+    primary_label, primary_command = _primary_option(payload)
     if state == "intervening":
         fill = "#f8d3d0"
         accent = "#b42318"
@@ -104,9 +109,37 @@ def snapshot_from_payload(payload: dict[str, Any]) -> DisplaySnapshot:
         headline=str(payload.get("headline") or "Doctor Pet is idle."),
         message=str(payload.get("message") or ""),
         session_id=str(payload.get("session_id") or ""),
+        card_path=str(payload.get("card_path") or ""),
+        primary_label=primary_label,
+        primary_command=primary_command,
         fill=fill,
         accent=accent,
     )
+
+
+def _primary_option(payload: dict[str, Any]) -> tuple[str, str]:
+    options = payload.get("options")
+    if not isinstance(options, list):
+        return ("Stage repair", "")
+    candidates = [item for item in options if isinstance(item, dict)]
+    selected = next(
+        (item for item in candidates if item.get("id") == "stage_fix"),
+        candidates[0] if candidates else {},
+    )
+    return (
+        str(selected.get("label") or "Stage repair"),
+        str(selected.get("command") or ""),
+    )
+
+
+def _state_label(snapshot: DisplaySnapshot) -> str:
+    if snapshot.state == "intervening":
+        return "Intervention needed"
+    if snapshot.state == "concerned":
+        return "Needs review"
+    if snapshot.state == "watching":
+        return "Watching"
+    return "Idle"
 
 
 def display_pet(
@@ -166,16 +199,144 @@ def display_pet(
         except Exception:
             pet_image = None
     drag = {"x": 0, "y": 0}
+    interaction = {"moved": False, "bubble": False}
+    dialog: dict[str, Any] = {"window": None}
 
     def start_drag(event: Any) -> None:
         drag["x"] = event.x
         drag["y"] = event.y
+        interaction["moved"] = False
 
     def move_drag(event: Any) -> None:
+        interaction["moved"] = True
         root.geometry(f"+{event.x_root - drag['x']}+{event.y_root - drag['y']}")
+
+    def finish_click(event: Any) -> None:
+        if not interaction["moved"]:
+            interaction["bubble"] = True
+            open_status_dialog(status_cache["snapshot"])
+
+    def quit_pet() -> None:
+        root.destroy()
+
+    def open_status_card(snapshot: DisplaySnapshot) -> None:
+        if not snapshot.card_path:
+            return
+        if platform.system() == "Darwin":
+            subprocess.run(["open", snapshot.card_path], check=False)
+        elif os.name == "nt":
+            os.startfile(snapshot.card_path)  # type: ignore[attr-defined]
+        else:
+            subprocess.run(["xdg-open", snapshot.card_path], check=False)
+
+    def run_primary_action(snapshot: DisplaySnapshot) -> None:
+        if snapshot.primary_command:
+            subprocess.Popen(
+                ["/bin/sh", "-lc", snapshot.primary_command],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        open_status_card(snapshot)
+
+    def open_status_dialog(snapshot: DisplaySnapshot) -> None:
+        existing = dialog.get("window")
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except Exception:
+                dialog["window"] = None
+
+        popup = tk.Toplevel(root)
+        dialog["window"] = popup
+        popup.title("Agent Doctor Pet")
+        popup.resizable(False, False)
+        if topmost:
+            popup.attributes("-topmost", True)
+        try:
+            popup.transient(root)
+        except Exception:
+            pass
+        popup.configure(bg="#ffffff")
+        x = root.winfo_x() + 18
+        y = root.winfo_y() + _WINDOW_HEIGHT + 8
+        popup.geometry(f"320x210+{x}+{y}")
+        popup.protocol("WM_DELETE_WINDOW", popup.destroy)
+
+        frame = tk.Frame(popup, bg="#ffffff", padx=14, pady=12)
+        frame.pack(fill="both", expand=True)
+        tk.Label(
+            frame,
+            text=_state_label(snapshot),
+            fg=snapshot.accent,
+            bg="#ffffff",
+            font=("Helvetica", 11, "bold"),
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            frame,
+            text=snapshot.headline,
+            fg="#111827",
+            bg="#ffffff",
+            font=("Helvetica", 12, "bold"),
+            anchor="w",
+            justify="left",
+            wraplength=290,
+        ).pack(fill="x", pady=(6, 0))
+        tk.Label(
+            frame,
+            text=snapshot.message,
+            fg="#374151",
+            bg="#ffffff",
+            font=("Helvetica", 10),
+            anchor="w",
+            justify="left",
+            wraplength=290,
+        ).pack(fill="x", pady=(6, 0))
+        if snapshot.session_id:
+            tk.Label(
+                frame,
+                text=f"Session: {snapshot.session_id}",
+                fg="#6b7280",
+                bg="#ffffff",
+                font=("Helvetica", 9),
+                anchor="w",
+            ).pack(fill="x", pady=(6, 0))
+
+        buttons = tk.Frame(frame, bg="#ffffff")
+        buttons.pack(fill="x", pady=(12, 0))
+        tk.Button(
+            buttons,
+            text=snapshot.primary_label,
+            command=lambda: run_primary_action(snapshot),
+        ).pack(side="left")
+        tk.Button(
+            buttons,
+            text="Open card",
+            command=lambda: open_status_card(snapshot),
+        ).pack(side="left", padx=(8, 0))
+        tk.Button(buttons, text="Later", command=popup.destroy).pack(side="right")
+
+    menu = tk.Menu(root, tearoff=0)
+    menu.add_command(
+        label="Diagnose current session",
+        command=lambda: open_status_dialog(status_cache["snapshot"]),
+    )
+    menu.add_command(label="Mute for 1 hour", command=lambda: interaction.update({"bubble": False}))
+    menu.add_separator()
+    menu.add_command(label="Quit Doctor Pet", command=quit_pet)
+
+    def show_menu(event: Any) -> None:
+        menu.tk_popup(event.x_root, event.y_root)
 
     canvas.bind("<ButtonPress-1>", start_drag)
     canvas.bind("<B1-Motion>", move_drag)
+    canvas.bind("<ButtonRelease-1>", finish_click)
+    canvas.bind("<Button-2>", show_menu)
+    canvas.bind("<Button-3>", show_menu)
 
     status_cache: dict[str, Any] = {
         "read_at": 0.0,
@@ -190,6 +351,9 @@ def display_pet(
         snapshot = status_cache["snapshot"]
         canvas.delete("all")
         _draw_pet(canvas, snapshot, phase=now, pet_image=pet_image)
+        _draw_tk_state_chip(canvas, snapshot)
+        if interaction["bubble"] or snapshot.state in ("concerned", "intervening"):
+            _draw_tk_bubble(canvas, snapshot)
         canvas.after(66, draw)
 
     draw()
@@ -210,6 +374,59 @@ def _draw_pet(
     _draw_vector_pet(canvas, snapshot, phase=phase)
 
 
+def _draw_tk_bubble(canvas: Any, snapshot: DisplaySnapshot) -> None:
+    headline = _shorten(snapshot.headline, 54)
+    message = _shorten(snapshot.message, 90)
+    canvas.create_rectangle(12, 10, 248, 140, fill="#ffffff", outline="#111827", width=2)
+    canvas.create_polygon(108, 140, 130, 158, 152, 140, fill="#ffffff", outline="#111827")
+    canvas.create_text(
+        26,
+        25,
+        text=_state_label(snapshot),
+        fill=snapshot.accent,
+        font=("Helvetica", 12, "bold"),
+        anchor="w",
+        width=208,
+    )
+    canvas.create_text(
+        26,
+        50,
+        text=headline,
+        fill="#111827",
+        font=("Helvetica", 12, "bold"),
+        anchor="w",
+        width=208,
+    )
+    canvas.create_text(
+        26,
+        82,
+        text=message,
+        fill="#374151",
+        font=("Helvetica", 11),
+        anchor="w",
+        width=208,
+    )
+    canvas.create_rectangle(26, 112, 130, 134, fill=snapshot.accent, outline="")
+    canvas.create_text(78, 123, text="Stage fix", fill="#ffffff", font=("Helvetica", 10, "bold"))
+    canvas.create_rectangle(144, 112, 230, 134, fill="#f3f4f6", outline="#d1d5db")
+    canvas.create_text(187, 123, text="Later", fill="#111827", font=("Helvetica", 10, "bold"))
+
+
+def _draw_tk_state_chip(canvas: Any, snapshot: DisplaySnapshot) -> None:
+    label = _state_label(snapshot)
+    canvas.create_rectangle(28, 264, 232, 296, fill="#ffffff", outline=snapshot.accent, width=2)
+    canvas.create_oval(43, 276, 53, 286, fill=snapshot.accent, outline="")
+    canvas.create_text(
+        64,
+        281,
+        text=label,
+        fill="#111827",
+        font=("Helvetica", 11, "bold"),
+        anchor="w",
+        width=150,
+    )
+
+
 def _draw_sprite_pet(
     canvas: Any,
     snapshot: DisplaySnapshot,
@@ -219,42 +436,42 @@ def _draw_sprite_pet(
 ) -> None:
     bob = _bob_for_state(snapshot.state, phase)
     center_x = _WINDOW_WIDTH / 2
-    center_y = 102 - bob
+    center_y = 194 - bob
 
     _draw_tk_effects(canvas, snapshot, phase)
     shadow_width = 66 + (5 * math.sin(phase * 2.0))
     canvas.create_oval(
         center_x - shadow_width / 2,
-        182,
+        288,
         center_x + shadow_width / 2,
-        197,
+        304,
         fill="#111827",
         outline="",
         stipple="gray50",
     )
     canvas.create_image(center_x, center_y, image=pet_image)
     if snapshot.state == "watching":
-        scan_y = 80 + (18 * ((math.sin(phase * 3.2) + 1) / 2))
+        scan_y = 172 + (18 * ((math.sin(phase * 3.2) + 1) / 2))
         canvas.create_line(56, scan_y, 134, scan_y, fill="#9ff6ff", width=3)
     elif snapshot.state == "concerned":
         ring = 20 + (10 * ((math.sin(phase * 4.0) + 1) / 2))
         canvas.create_oval(
             center_x - ring,
-            130 - ring,
+            222 - ring,
             center_x + ring,
-            130 + ring,
+            222 + ring,
             outline=snapshot.accent,
             width=2,
         )
     elif snapshot.state == "intervening":
-        canvas.create_oval(142, 26, 171, 55, fill=snapshot.accent, outline="#ffffff", width=2)
-        canvas.create_text(156, 39, text="!", fill="#ffffff", font=("Helvetica", 17, "bold"))
+        canvas.create_oval(178, 152, 207, 181, fill=snapshot.accent, outline="#ffffff", width=2)
+        canvas.create_text(192, 165, text="!", fill="#ffffff", font=("Helvetica", 17, "bold"))
         pulse = 3 + (8 * ((math.sin(phase * 5.5) + 1) / 2))
         canvas.create_oval(
-            142 - pulse,
-            26 - pulse,
-            171 + pulse,
-            55 + pulse,
+            178 - pulse,
+            152 - pulse,
+            207 + pulse,
+            181 + pulse,
             outline=snapshot.accent,
             width=2,
         )
@@ -262,31 +479,47 @@ def _draw_sprite_pet(
 
 def _draw_tk_effects(canvas: Any, snapshot: DisplaySnapshot, phase: float) -> None:
     pulse = (math.sin(phase * 2.0) + 1) / 2
+    x_offset = 35
+    y_offset = 92
     if snapshot.state == "idle":
-        canvas.create_oval(48, 36, 142, 134, fill="#dbeafe", outline="")
+        canvas.create_oval(
+            48 + x_offset,
+            36 + y_offset,
+            142 + x_offset,
+            134 + y_offset,
+            fill="#dbeafe",
+            outline="",
+        )
     elif snapshot.state == "watching":
-        canvas.create_oval(35, 28, 155, 148, outline="#60a5fa", width=2)
-        x = 48 + (94 * pulse)
-        canvas.create_oval(x - 4, 27, x + 4, 35, fill="#9ff6ff", outline="")
+        canvas.create_oval(
+            35 + x_offset,
+            28 + y_offset,
+            155 + x_offset,
+            148 + y_offset,
+            outline="#60a5fa",
+            width=2,
+        )
+        x = 48 + x_offset + (94 * pulse)
+        canvas.create_oval(x - 4, 27 + y_offset, x + 4, 35 + y_offset, fill="#9ff6ff", outline="")
     elif snapshot.state == "concerned":
         size = 104 + (18 * pulse)
         canvas.create_oval(
-            95 - size / 2,
-            88 - size / 2,
-            95 + size / 2,
-            88 + size / 2,
+            95 + x_offset - size / 2,
+            88 + y_offset - size / 2,
+            95 + x_offset + size / 2,
+            88 + y_offset + size / 2,
             outline="#f59e0b",
             width=3,
         )
     elif snapshot.state == "intervening":
-        size = 118 + (20 * pulse)
+        size = 108 + (16 * pulse)
         canvas.create_oval(
-            95 - size / 2,
-            86 - size / 2,
-            95 + size / 2,
-            86 + size / 2,
+            95 + x_offset - size / 2,
+            86 + y_offset - size / 2,
+            95 + x_offset + size / 2,
+            86 + y_offset + size / 2,
             outline=snapshot.accent,
-            width=4,
+            width=2,
         )
 
 
@@ -375,8 +608,10 @@ let statusPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
 let pollSeconds = CommandLine.arguments.count > 2 ? (Double(CommandLine.arguments[2]) ?? 1.0) : 1.0
 let topmost = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] == "1" : true
 let assetPath = CommandLine.arguments.count > 4 ? CommandLine.arguments[4] : ""
-let windowWidth: CGFloat = 190
-let windowHeight: CGFloat = 210
+let windowWidth: CGFloat = 260
+let windowHeight: CGFloat = 310
+let petCanvasXOffset: CGFloat = 35
+let petCanvasYOffset: CGFloat = 88
 
 func stringValue(_ dict: [String: Any], _ key: String, _ fallback: String) -> String {
     if let value = dict[key] as? String {
@@ -394,7 +629,11 @@ func loadStatus() -> [String: String] {
             "severity": "low",
             "headline": "Doctor Pet is waiting for status.",
             "message": "Status file not found yet.",
-            "session_id": ""
+            "session_id": "",
+            "card_path": "",
+            "option_0": "Scan",
+            "option_1": "Later",
+            "action_command": ""
         ]
     }
     guard
@@ -407,8 +646,24 @@ func loadStatus() -> [String: String] {
             "severity": "medium",
             "headline": "Doctor Pet could not parse status.",
             "message": "Expected a JSON object.",
-            "session_id": ""
+            "session_id": "",
+            "card_path": "",
+            "option_0": "Open",
+            "option_1": "Later",
+            "action_command": ""
         ]
+    }
+    let options = dict["options"] as? [[String: Any]] ?? []
+    func actionValue(_ key: String, _ fallback: String) -> String {
+        for option in options {
+            if let id = option["id"] as? String, id == "stage_fix" {
+                return option[key] as? String ?? fallback
+            }
+        }
+        if let first = options.first {
+            return first[key] as? String ?? fallback
+        }
+        return fallback
     }
     return [
         "state": stringValue(dict, "state", "idle"),
@@ -416,7 +671,11 @@ func loadStatus() -> [String: String] {
         "severity": stringValue(dict, "severity", "low"),
         "headline": stringValue(dict, "headline", "Doctor Pet is idle."),
         "message": stringValue(dict, "message", ""),
-        "session_id": stringValue(dict, "session_id", "")
+        "session_id": stringValue(dict, "session_id", ""),
+        "card_path": stringValue(dict, "card_path", ""),
+        "option_0": actionValue("label", "Repair Agent"),
+        "option_1": "Later",
+        "action_command": actionValue("command", "")
     ]
 }
 
@@ -465,6 +724,9 @@ class PetView: NSView {
         didSet { needsDisplay = true }
     }
     var dragOffset: NSPoint = .zero
+    var isDragging = false
+    var bubbleOpen = false
+    var buttonRects: [String: NSRect] = [:]
     var startedAt = Date()
     var lastStatusReload = Date(timeIntervalSince1970: 0)
     let petImage: NSImage? = assetPath.isEmpty ? nil : NSImage(contentsOfFile: assetPath)
@@ -477,15 +739,122 @@ class PetView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         dragOffset = event.locationInWindow
+        isDragging = false
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let window = self.window else { return }
+        isDragging = true
         let mouse = NSEvent.mouseLocation
         window.setFrameOrigin(NSPoint(x: mouse.x - dragOffset.x, y: mouse.y - dragOffset.y))
     }
 
+    override func mouseUp(with event: NSEvent) {
+        if isDragging {
+            return
+        }
+        let location = event.locationInWindow
+        if let rect = buttonRects["repair"], rect.contains(location) {
+            runRepair(nil)
+            return
+        }
+        if let rect = buttonRects["later"], rect.contains(location) {
+            bubbleOpen = false
+            needsDisplay = true
+            return
+        }
+        bubbleOpen = true
+        needsDisplay = true
+        showStatusDialog(nil)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+        func item(_ title: String, _ action: Selector, _ key: String = "") -> NSMenuItem {
+            let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            menuItem.target = self
+            return menuItem
+        }
+        menu.addItem(item("Diagnose Current Session", #selector(showStatusDialog(_:))))
+        menu.addItem(item("Stage Repair", #selector(runRepair(_:))))
+        menu.addItem(item("Open Status Card", #selector(openStatusCard(_:))))
+        menu.addItem(item("Mute for 1 Hour", #selector(muteForNow(_:))))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(item("Quit Doctor Pet", #selector(quitPet(_:)), "q"))
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc func showBubble(_ sender: Any?) {
+        bubbleOpen = true
+        needsDisplay = true
+    }
+
+    @objc func showStatusDialog(_ sender: Any?) {
+        bubbleOpen = true
+        needsDisplay = true
+        let state = status["state"] ?? "idle"
+        let action = status["action"] ?? "silent"
+        let alert = NSAlert()
+        alert.messageText = status["headline"] ?? "Agent Doctor Pet"
+        var details = stateLabel(state, action)
+        if let session = status["session_id"], !session.isEmpty {
+            details += "\nSession: \(session)"
+        }
+        if let message = status["message"], !message.isEmpty {
+            details += "\n\n\(message)"
+        }
+        alert.informativeText = details
+        alert.alertStyle = action == "intervene" ? .warning : .informational
+        alert.addButton(withTitle: status["option_0"] ?? "Stage Repair")
+        alert.addButton(withTitle: "Open Status Card")
+        alert.addButton(withTitle: "Later")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            runRepair(sender)
+        } else if response == .alertSecondButtonReturn {
+            openStatusCard(sender)
+        }
+    }
+
+    @objc func muteForNow(_ sender: Any?) {
+        bubbleOpen = false
+        needsDisplay = true
+    }
+
+    @objc func openStatusCard(_ sender: Any?) {
+        let path = status["card_path"] ?? ""
+        if !path.isEmpty {
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        } else {
+            bubbleOpen = true
+            needsDisplay = true
+        }
+    }
+
+    @objc func runRepair(_ sender: Any?) {
+        let command = status["action_command"] ?? ""
+        if command.isEmpty {
+            openStatusCard(sender)
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-lc", command]
+        try? process.run()
+        bubbleOpen = true
+        needsDisplay = true
+    }
+
+    @objc func quitPet(_ sender: Any?) {
+        NSApplication.shared.terminate(nil)
+    }
+
     func r(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> NSRect {
+        return NSRect(x: x, y: bounds.height - y - h, width: w, height: h)
+    }
+
+    func viewRect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> NSRect {
         return NSRect(x: x, y: bounds.height - y - h, width: w, height: h)
     }
 
@@ -498,7 +867,12 @@ class PetView: NSView {
             .foregroundColor: colorValue,
             .paragraphStyle: style
         ]
-        NSString(string: value).draw(in: r(x, y, w, h), withAttributes: attrs)
+        let options: NSString.DrawingOptions = [
+            .usesLineFragmentOrigin,
+            .usesFontLeading,
+            .truncatesLastVisibleLine
+        ]
+        NSString(string: value).draw(with: r(x, y, w, h), options: options, attributes: attrs)
     }
 
     func oval(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ fill: NSColor, _ stroke: NSColor = color("#111827"), _ width: CGFloat = 2) {
@@ -568,9 +942,9 @@ class PetView: NSView {
                 NSPoint(x: 132, y: y)
             ], accent.withAlphaComponent(0.75), 3)
         } else if state == "intervening" {
-            let size = 116 + (22 * p)
-            oval(95 - size / 2, 86 - size / 2, size, size, color("#ef4444").withAlphaComponent(0.08), accent.withAlphaComponent(0.75), 4)
-            oval(49, 37, 92, 92, color("#fee2e2").withAlphaComponent(0.13), NSColor.clear, 0)
+            let size = 106 + (16 * p)
+            oval(95 - size / 2, 86 - size / 2, size, size, color("#ef4444").withAlphaComponent(0.05), accent.withAlphaComponent(0.38), 2)
+            oval(52, 40, 86, 86, color("#fee2e2").withAlphaComponent(0.09), NSColor.clear, 0)
         }
     }
 
@@ -627,8 +1001,66 @@ class PetView: NSView {
             let p = pulse(t, 5.5)
             roundRect(142, 25, 30, 30, 15, accent, .white, 2)
             text("!", 142, 28, 30, 22, 17, .white, true)
-            oval(142 - (8 * p), 25 - (8 * p), 30 + (16 * p), 30 + (16 * p), NSColor.clear, accent.withAlphaComponent(0.7), 2)
+            oval(142 - (6 * p), 25 - (6 * p), 30 + (12 * p), 30 + (12 * p), NSColor.clear, accent.withAlphaComponent(0.45), 2)
         }
+    }
+
+    func short(_ value: String, _ limit: Int) -> String {
+        if value.count <= limit {
+            return value
+        }
+        let end = value.index(value.startIndex, offsetBy: max(0, limit - 1))
+        return String(value[..<end]) + "..."
+    }
+
+    func stateLabel(_ state: String, _ action: String) -> String {
+        if state == "intervening" {
+            return "Intervention needed"
+        }
+        if state == "concerned" {
+            return "Needs review"
+        }
+        if state == "watching" {
+            return "Watching"
+        }
+        return "Idle"
+    }
+
+    func button(_ id: String, _ title: String, _ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ fill: NSColor, _ textColor: NSColor) {
+        let rect = viewRect(x, y, w, h)
+        buttonRects[id] = rect
+        roundRect(x, y, w, h, 8, fill, fill, 1)
+        text(short(title, 18), x + 4, y + 5, w - 8, h - 8, 11, textColor, true)
+    }
+
+    func drawStateChip(_ state: String, _ action: String, _ accent: NSColor) {
+        roundRect(28, 270, 204, 30, 15, NSColor.white.withAlphaComponent(0.96), accent, 2)
+        oval(43, 281, 10, 10, accent, NSColor.clear, 0)
+        text(stateLabel(state, action), 64, 276, 152, 18, 11, color("#111827"), true, .left)
+    }
+
+    func drawBubble(_ state: String, _ accent: NSColor) {
+        guard bubbleOpen || state == "concerned" || state == "intervening" else {
+            buttonRects = [:]
+            return
+        }
+        buttonRects = [:]
+        roundRect(14, 10, 232, 132, 14, NSColor.white.withAlphaComponent(0.97), color("#111827"), 2)
+        let tail = NSBezierPath()
+        tail.move(to: NSPoint(x: 108, y: bounds.height - 142))
+        tail.line(to: NSPoint(x: 130, y: bounds.height - 160))
+        tail.line(to: NSPoint(x: 152, y: bounds.height - 142))
+        tail.close()
+        NSColor.white.withAlphaComponent(0.96).setFill()
+        tail.fill()
+        color("#111827").setStroke()
+        tail.lineWidth = 2
+        tail.stroke()
+        text(stateLabel(state, status["action"] ?? "silent"), 28, 22, 204, 18, 12, accent, true, .left)
+        text(short(status["headline"] ?? "Doctor Pet", 54), 28, 46, 204, 32, 12, color("#111827"), true, .left)
+        text(short(status["message"] ?? "", 90), 28, 82, 204, 28, 11, color("#374151"), false, .left)
+        button("repair", status["option_0"] ?? "Stage Repair", 28, 114, 104, 24, accent, .white)
+        button("later", "Later", 146, 114, 86, 24, color("#f3f4f6"), color("#111827"))
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -637,10 +1069,17 @@ class PetView: NSView {
         let t = Date().timeIntervalSince(startedAt)
         let shadowPulse = 1.0 + (0.08 * pulse(t, 2.0))
 
+        NSGraphicsContext.saveGraphicsState()
+        let transform = NSAffineTransform()
+        transform.translateX(by: petCanvasXOffset, yBy: -petCanvasYOffset)
+        transform.concat()
         drawEffects(state, t, accent, glow)
         oval(57 - (3 * shadowPulse), 180, 76 + (6 * shadowPulse), 16, color("#111827").withAlphaComponent(0.22), NSColor.clear, 0)
         drawSprite(state, t)
         drawOverlays(state, t, accent, glow)
+        NSGraphicsContext.restoreGraphicsState()
+        drawStateChip(state, status["action"] ?? "silent", accent)
+        drawBubble(state, accent)
     }
 }
 

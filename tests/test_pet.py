@@ -10,7 +10,12 @@ from agent_doctor.pet import (
     render_pet_markdown,
     write_pet_artifacts,
 )
-from agent_doctor.pet_display import pet_asset_path, read_status_payload, snapshot_from_payload
+from agent_doctor.pet_display import (
+    _state_label,
+    pet_asset_path,
+    read_status_payload,
+    snapshot_from_payload,
+)
 from agent_doctor import pet_display
 
 
@@ -146,11 +151,37 @@ def test_pet_display_cli_dry_run_reads_status_file(tmp_path: Path) -> None:
     assert payload["action"] == "intervene"
 
 
-def test_appkit_display_source_does_not_quit_on_click() -> None:
+def test_pet_display_snapshot_exposes_user_facing_state_label(tmp_path: Path) -> None:
+    status = pet_status_for_text("Why are you so dumb?", session_id="s-display")
+    paths = write_pet_artifacts(tmp_path / "pet", status)
+    snapshot = snapshot_from_payload(read_status_payload(paths["status"]))
+
+    assert snapshot.state == "intervening"
+    assert snapshot.action == "intervene"
+    assert snapshot.primary_label == "Stage repair"
+    assert _state_label(snapshot) == "Intervention needed"
+
+
+def test_appkit_display_source_has_context_menu_quit() -> None:
     source = pet_display._appkit_source()
 
-    assert "rightMouseDown" not in source
-    assert "terminate(nil)" not in source
+    assert "windowWidth: CGFloat = 260" in source
+    assert "windowHeight: CGFloat = 310" in source
+    assert ".usesLineFragmentOrigin" in source
+    assert "drawStateChip" in source
+    assert "rightMouseDown" in source
+    assert "NSMenu" in source
+    assert "Quit Doctor Pet" in source
+    assert "Stage Repair" in source
+    assert "runRepair" in source
+    assert "terminate(nil)" in source
+    assert "showStatusDialog" in source
+    assert "Intervention needed" in source
+
+
+def test_tk_display_canvas_is_large_enough_for_readable_pet_text() -> None:
+    assert pet_display._WINDOW_WIDTH >= 240
+    assert pet_display._WINDOW_HEIGHT >= 300
 
 
 def test_pet_display_uses_packaged_sprite_asset() -> None:
