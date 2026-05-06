@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import sys
 import time
@@ -791,24 +792,145 @@ def _cmd_eval_replay(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_approve(args: argparse.Namespace) -> int:
-    """Phase 4 scaffold: marks proposal_id approved.
+def _find_proposal_across_hosts(proposal_id: str) -> tuple | None:
+    """Search all known host proposal files for an id.
 
-    Wired in Task 8 to flip proposals.jsonl state to applied via the
-    applier. For now, prints a placeholder so the CLI surface is
-    discoverable.
+    Returns (Proposal, proposals_path) on hit, None on miss.
     """
-    print(f"approve: {args.proposal_id} (driver wired in Phase 4 Task 8)")
+    from .proposer import load_proposals
+
+    base = Path("~/.agent-doctor").expanduser()
+    if not base.exists():
+        return None
+    for host_dir in base.iterdir():
+        if not host_dir.is_dir():
+            continue
+        path = host_dir / "proposals.jsonl"
+        if not path.exists():
+            continue
+        for proposal in load_proposals(path):
+            if proposal.id == proposal_id:
+                return (proposal, path)
+    return None
+
+
+def _rewrite_proposal_state(proposals_path: Path, proposal_id: str, new_state: str) -> None:
+    """Rewrite proposals.jsonl with the given proposal's state changed."""
+    from dataclasses import replace as _dc_replace
+
+    from .proposer import load_proposals
+
+    proposals = load_proposals(proposals_path)
+    new_lines: list[str] = []
+    for p in proposals:
+        if p.id == proposal_id:
+            p = _dc_replace(p, state=new_state, resolved_at=time.time())
+        new_lines.append(json.dumps(p.to_dict(), ensure_ascii=False))
+    fd = os.open(proposals_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as h:
+            h.write("\n".join(new_lines) + ("\n" if new_lines else ""))
+    finally:
+        os.chmod(proposals_path, 0o600)
+
+
+def _cmd_approve(args: argparse.Namespace) -> int:
+    """Apply a pending proposal via the applier."""
+    from .adapters import GenericAdapter, HermesAdapter, OpenClawAdapter
+    from .applier import apply_proposal as _apply
+
+    found = _find_proposal_across_hosts(args.proposal_id)
+    if found is None:
+        print(f"approve: proposal {args.proposal_id!r} not found", file=sys.stderr)
+        return 1
+    proposal, proposals_path = found
+    if proposal.state != "pending":
+        print(
+            f"approve: proposal {args.proposal_id} is already {proposal.state}",
+            file=sys.stderr,
+        )
+        return 1
+
+    adapter_classes = {
+        "openclaw": OpenClawAdapter,
+        "hermes": HermesAdapter,
+        "generic": GenericAdapter,
+    }
+    cls = adapter_classes.get(proposal.target_host or "generic", GenericAdapter)
+    instance = cls.detect() or GenericAdapter()
+
+    result = _apply(proposal, instance)
+    if result.state != "applied":
+        print(
+            f"approve: apply produced state={result.state} "
+            f"error={result.error or 'unknown'}",
+            file=sys.stderr,
+        )
+        if result.state == "conflict":
+            _rewrite_proposal_state(proposals_path, proposal.id, "conflict")
+        return 1
+
+    # Patch log
+    log_path = Path("~/.agent-doctor").expanduser() / "patch-log.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    payload = {
+        "id": result.patch_id,
+        "target_file": str(result.target_file),
+        "backup_path": str(result.backup_path) if result.backup_path else None,
+        "applied_at": time.time(),
+        "session_id": proposal.session_id,
+        "target_kind": proposal.target_kind,
+        "undo_command": f"agent-doctor undo {result.patch_id}",
+    }
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        with os.fdopen(fd, "a", encoding="utf-8") as h:
+            h.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    finally:
+        os.chmod(log_path, 0o600)
+
+    _rewrite_proposal_state(proposals_path, proposal.id, "applied")
+    print(
+        f"approve: applied. wrote {result.target_file}; backup {result.backup_path}; "
+        f"undo with: agent-doctor undo {result.patch_id}"
+    )
     return 0
 
 
 def _cmd_dismiss(args: argparse.Namespace) -> int:
-    print(f"dismiss: {args.proposal_id} (driver wired in Phase 4 Task 8)")
+    found = _find_proposal_across_hosts(args.proposal_id)
+    if found is None:
+        print(f"dismiss: proposal {args.proposal_id!r} not found", file=sys.stderr)
+        return 1
+    proposal, proposals_path = found
+    if proposal.state != "pending":
+        print(
+            f"dismiss: proposal {args.proposal_id} is already {proposal.state}",
+            file=sys.stderr,
+        )
+        return 1
+    _rewrite_proposal_state(proposals_path, proposal.id, "dismissed")
+    print(f"dismiss: proposal {proposal.id} marked dismissed")
     return 0
 
 
 def _cmd_redraft(args: argparse.Namespace) -> int:
-    print(f"redraft: {args.proposal_id} (driver wired in Phase 4 Task 8)")
+    found = _find_proposal_across_hosts(args.proposal_id)
+    if found is None:
+        print(f"redraft: proposal {args.proposal_id!r} not found", file=sys.stderr)
+        return 1
+    proposal, proposals_path = found
+    if proposal.state != "pending":
+        print(
+            f"redraft: proposal {args.proposal_id} is already {proposal.state}",
+            file=sys.stderr,
+        )
+        return 1
+    _rewrite_proposal_state(proposals_path, proposal.id, "refining")
+    print(
+        f"redraft: proposal {proposal.id} marked refining. "
+        f"Next user message in this session will trigger a redraft."
+    )
     return 0
 
 

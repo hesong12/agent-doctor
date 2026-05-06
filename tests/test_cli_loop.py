@@ -35,23 +35,82 @@ def test_undo_with_unknown_id_returns_error(tmp_path: Path) -> None:
     assert result.returncode != 0
 
 
-def test_approve_signature_parses(tmp_path: Path) -> None:
+def test_approve_unknown_id_returns_error(tmp_path: Path) -> None:
     env = {**os.environ, "HOME": str(tmp_path)}
-    result = _run_agent_doctor(["approve", "--help"], env=env)
-    assert result.returncode == 0
-    assert "approve" in result.stdout.lower()
+    result = _run_agent_doctor(["approve", "no-such-id"], env=env)
+    assert result.returncode == 1
+    assert "not found" in result.stderr
 
 
-def test_dismiss_signature_parses(tmp_path: Path) -> None:
+def test_dismiss_unknown_id_returns_error(tmp_path: Path) -> None:
     env = {**os.environ, "HOME": str(tmp_path)}
-    result = _run_agent_doctor(["dismiss", "--help"], env=env)
-    assert result.returncode == 0
+    result = _run_agent_doctor(["dismiss", "no-such-id"], env=env)
+    assert result.returncode == 1
+    assert "not found" in result.stderr
 
 
-def test_redraft_signature_parses(tmp_path: Path) -> None:
+def test_redraft_unknown_id_returns_error(tmp_path: Path) -> None:
     env = {**os.environ, "HOME": str(tmp_path)}
-    result = _run_agent_doctor(["redraft", "--help"], env=env)
-    assert result.returncode == 0
+    result = _run_agent_doctor(["redraft", "no-such-id"], env=env)
+    assert result.returncode == 1
+    assert "not found" in result.stderr
+
+
+def test_dismiss_marks_proposal_dismissed(tmp_path: Path) -> None:
+    """Write a fake proposal, run dismiss, verify state changed."""
+    import time
+    proposals_dir = tmp_path / ".agent-doctor" / "generic"
+    proposals_dir.mkdir(parents=True)
+    proposals_path = proposals_dir / "proposals.jsonl"
+    proposals_path.write_text(json.dumps({
+        "id": "p-test-dismiss",
+        "session_id": "s",
+        "finding_id": "f",
+        "target_kind": "memory",
+        "target_file_hint": "",
+        "patch_body": "- x",
+        "reason_summary": "x",
+        "baseline_hash": None,
+        "state": "pending",
+        "message_id": None,
+        "target_host": "generic",
+        "target_channel": "inbox",
+        "target_recipient": "",
+        "created_at": time.time(),
+        "ttl_at": time.time() + 3600,
+        "resolved_at": None,
+    }) + "\n", encoding="utf-8")
+
+    env = {**os.environ, "HOME": str(tmp_path)}
+    result = _run_agent_doctor(["dismiss", "p-test-dismiss"], env=env)
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    # Verify state changed
+    raw = proposals_path.read_text(encoding="utf-8")
+    line = json.loads([l for l in raw.splitlines() if l.strip()][0])
+    assert line["state"] == "dismissed"
+    assert line["resolved_at"] is not None
+
+
+def test_redraft_marks_proposal_refining(tmp_path: Path) -> None:
+    import time
+    proposals_dir = tmp_path / ".agent-doctor" / "generic"
+    proposals_dir.mkdir(parents=True)
+    proposals_path = proposals_dir / "proposals.jsonl"
+    proposals_path.write_text(json.dumps({
+        "id": "p-test-redraft",
+        "session_id": "s", "finding_id": "f", "target_kind": "memory",
+        "target_file_hint": "", "patch_body": "- x", "reason_summary": "x",
+        "baseline_hash": None, "state": "pending", "message_id": None,
+        "target_host": "generic", "target_channel": "inbox", "target_recipient": "",
+        "created_at": time.time(), "ttl_at": time.time() + 3600, "resolved_at": None,
+    }) + "\n", encoding="utf-8")
+
+    env = {**os.environ, "HOME": str(tmp_path)}
+    result = _run_agent_doctor(["redraft", "p-test-redraft"], env=env)
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    raw = proposals_path.read_text(encoding="utf-8")
+    line = json.loads([l for l in raw.splitlines() if l.strip()][0])
+    assert line["state"] == "refining"
 
 
 def test_undo_signature_parses(tmp_path: Path) -> None:
