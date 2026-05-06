@@ -15,7 +15,7 @@ import platform
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import gettempdir
 from typing import Any
@@ -23,6 +23,21 @@ from typing import Any
 _WINDOW_WIDTH = 260
 _WINDOW_HEIGHT = 310
 _ASSET_NAME = "doctor_pet.png"
+
+
+@dataclass(frozen=True)
+class DisplayOption:
+    id: str
+    label: str
+    description: str
+    command: str = ""
+
+
+@dataclass(frozen=True)
+class DisplayAction:
+    id: str
+    label: str
+    command: str = ""
 
 
 @dataclass(frozen=True)
@@ -36,6 +51,9 @@ class DisplaySnapshot:
     card_path: str
     primary_label: str
     primary_command: str
+    latest_event_id: str
+    latest_trigger: str
+    options: tuple[DisplayOption, ...]
     fill: str
     accent: str
 
@@ -89,7 +107,8 @@ def snapshot_from_payload(payload: dict[str, Any]) -> DisplaySnapshot:
     state = str(payload.get("state") or "idle")
     action = str(payload.get("action") or "silent")
     severity = str(payload.get("severity") or "low")
-    primary_label, primary_command = _primary_option(payload)
+    options = _display_options(payload)
+    primary_label, primary_command = _primary_option(options)
     if state == "intervening":
         fill = "#f8d3d0"
         accent = "#b42318"
@@ -112,24 +131,96 @@ def snapshot_from_payload(payload: dict[str, Any]) -> DisplaySnapshot:
         card_path=str(payload.get("card_path") or ""),
         primary_label=primary_label,
         primary_command=primary_command,
+        latest_event_id=str(payload.get("latest_event_id") or ""),
+        latest_trigger=str(payload.get("latest_trigger") or ""),
+        options=options,
         fill=fill,
         accent=accent,
     )
 
 
-def _primary_option(payload: dict[str, Any]) -> tuple[str, str]:
+def _display_options(payload: dict[str, Any]) -> tuple[DisplayOption, ...]:
     options = payload.get("options")
     if not isinstance(options, list):
-        return ("Stage repair", "")
-    candidates = [item for item in options if isinstance(item, dict)]
+        return ()
+    parsed: list[DisplayOption] = []
+    for item in options:
+        if not isinstance(item, dict):
+            continue
+        option_id = str(item.get("id") or "").strip()
+        if not option_id:
+            continue
+        label = str(item.get("label") or option_id.replace("_", " ").title()).strip()
+        parsed.append(
+            DisplayOption(
+                id=option_id,
+                label=label or option_id,
+                description=str(item.get("description") or ""),
+                command=str(item.get("command") or ""),
+            )
+        )
+    return tuple(parsed)
+
+
+def _primary_option(options: tuple[DisplayOption, ...]) -> tuple[str, str]:
     selected = next(
-        (item for item in candidates if item.get("id") == "stage_fix"),
-        candidates[0] if candidates else {},
+        (item for item in options if item.id == "stage_fix"),
+        options[0] if options else None,
     )
-    return (
-        str(selected.get("label") or "Stage repair"),
-        str(selected.get("command") or ""),
-    )
+    if selected is None:
+        return ("Stage repair", "")
+    return (selected.label, selected.command)
+
+
+def _option_by_id(snapshot: DisplaySnapshot, option_id: str) -> DisplayOption | None:
+    for option in snapshot.options:
+        if option.id == option_id:
+            return option
+    return None
+
+
+def _command_is_runnable(command: str) -> bool:
+    stripped = command.strip()
+    return bool(stripped) and "<" not in stripped and ">" not in stripped
+
+
+def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
+    actions: list[DisplayAction] = []
+    seen: set[str] = set()
+    for option in snapshot.options:
+        if option.id in seen or not _command_is_runnable(option.command):
+            continue
+        actions.append(DisplayAction(id=option.id, label=option.label, command=option.command))
+        seen.add(option.id)
+    if snapshot.card_path:
+        actions.append(DisplayAction(id="open_card", label="Open status card"))
+    close_label = "Dismiss for now" if snapshot.state in ("concerned", "intervening") else "Close"
+    actions.append(DisplayAction(id="dismiss_for_now", label=close_label))
+    return tuple(actions)
+
+
+def _guidance_text(snapshot: DisplaySnapshot) -> str:
+    preferred_ids = ("pause_and_diagnose", "review_evidence", "keep_watching")
+    for option_id in preferred_ids:
+        option = _option_by_id(snapshot, option_id)
+        if option is not None and option.description:
+            return f"{option.label}: {option.description}"
+    for option in snapshot.options:
+        if option.description and not _command_is_runnable(option.command):
+            return f"{option.label}: {option.description}"
+    return ""
+
+
+def _snapshot_event_key(snapshot: DisplaySnapshot) -> str:
+    if snapshot.latest_event_id:
+        return snapshot.latest_event_id
+    return "|".join((snapshot.state, snapshot.session_id, snapshot.headline))
+
+
+def snapshot_to_dict(snapshot: DisplaySnapshot) -> dict[str, Any]:
+    data = asdict(snapshot)
+    data["actions"] = [asdict(action) for action in _display_actions(snapshot)]
+    return data
 
 
 def _state_label(snapshot: DisplaySnapshot) -> str:
@@ -152,6 +243,7 @@ def display_pet(
 
     try:
         import tkinter as tk
+        from tkinter import messagebox
     except ImportError as exc:  # pragma: no cover - environment-specific
         if platform.system() == "Darwin" and shutil.which("swift"):
             _display_pet_appkit(
@@ -199,7 +291,7 @@ def display_pet(
         except Exception:
             pet_image = None
     drag = {"x": 0, "y": 0}
-    interaction = {"moved": False, "bubble": False}
+    interaction = {"moved": False, "bubble": False, "dismissed_event": ""}
     dialog: dict[str, Any] = {"window": None}
 
     def start_drag(event: Any) -> None:
@@ -229,15 +321,31 @@ def display_pet(
         else:
             subprocess.run(["xdg-open", snapshot.card_path], check=False)
 
-    def run_primary_action(snapshot: DisplaySnapshot) -> None:
-        if snapshot.primary_command:
+    def show_message(title: str, body: str) -> None:
+        messagebox.showinfo(title, body, parent=root)
+
+    def dismiss_snapshot(snapshot: DisplaySnapshot) -> None:
+        interaction["bubble"] = False
+        interaction["dismissed_event"] = _snapshot_event_key(snapshot)
+
+    def run_command_action(action: DisplayAction) -> None:
+        if action.command:
             subprocess.Popen(
-                ["/bin/sh", "-lc", snapshot.primary_command],
+                ["/bin/sh", "-lc", action.command],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            show_message(f"{action.label} started", action.command)
+
+    def perform_dialog_action(action: DisplayAction, snapshot: DisplaySnapshot, popup: Any) -> None:
+        if action.id == "open_card":
+            open_status_card(snapshot)
             return
-        open_status_card(snapshot)
+        if action.id == "dismiss_for_now":
+            dismiss_snapshot(snapshot)
+            popup.destroy()
+            return
+        run_command_action(action)
 
     def open_status_dialog(snapshot: DisplaySnapshot) -> None:
         existing = dialog.get("window")
@@ -263,7 +371,7 @@ def display_pet(
         popup.configure(bg="#ffffff")
         x = root.winfo_x() + 18
         y = root.winfo_y() + _WINDOW_HEIGHT + 8
-        popup.geometry(f"320x210+{x}+{y}")
+        popup.geometry(f"360x260+{x}+{y}")
         popup.protocol("WM_DELETE_WINDOW", popup.destroy)
 
         frame = tk.Frame(popup, bg="#ffffff", padx=14, pady=12)
@@ -284,7 +392,7 @@ def display_pet(
             font=("Helvetica", 12, "bold"),
             anchor="w",
             justify="left",
-            wraplength=290,
+            wraplength=330,
         ).pack(fill="x", pady=(6, 0))
         tk.Label(
             frame,
@@ -294,8 +402,22 @@ def display_pet(
             font=("Helvetica", 10),
             anchor="w",
             justify="left",
-            wraplength=290,
+            wraplength=330,
         ).pack(fill="x", pady=(6, 0))
+        guidance = _guidance_text(snapshot)
+        if guidance:
+            tk.Label(
+                frame,
+                text=guidance,
+                fg="#111827",
+                bg="#f8fafc",
+                font=("Helvetica", 10, "bold"),
+                anchor="w",
+                justify="left",
+                wraplength=320,
+                padx=8,
+                pady=6,
+            ).pack(fill="x", pady=(8, 0))
         if snapshot.session_id:
             tk.Label(
                 frame,
@@ -308,24 +430,24 @@ def display_pet(
 
         buttons = tk.Frame(frame, bg="#ffffff")
         buttons.pack(fill="x", pady=(12, 0))
-        tk.Button(
-            buttons,
-            text=snapshot.primary_label,
-            command=lambda: run_primary_action(snapshot),
-        ).pack(side="left")
-        tk.Button(
-            buttons,
-            text="Open card",
-            command=lambda: open_status_card(snapshot),
-        ).pack(side="left", padx=(8, 0))
-        tk.Button(buttons, text="Later", command=popup.destroy).pack(side="right")
+        for index, action in enumerate(_display_actions(snapshot)):
+            side = "right" if action.id == "dismiss_for_now" else "left"
+            padx = (8, 0) if index else (0, 0)
+            tk.Button(
+                buttons,
+                text=action.label,
+                command=lambda item=action: perform_dialog_action(item, snapshot, popup),
+            ).pack(side=side, padx=padx)
 
     menu = tk.Menu(root, tearoff=0)
     menu.add_command(
         label="Diagnose current session",
         command=lambda: open_status_dialog(status_cache["snapshot"]),
     )
-    menu.add_command(label="Mute for 1 hour", command=lambda: interaction.update({"bubble": False}))
+    menu.add_command(
+        label="Dismiss current event",
+        command=lambda: dismiss_snapshot(status_cache["snapshot"]),
+    )
     menu.add_separator()
     menu.add_command(label="Quit Doctor Pet", command=quit_pet)
 
@@ -352,7 +474,11 @@ def display_pet(
         canvas.delete("all")
         _draw_pet(canvas, snapshot, phase=now, pet_image=pet_image)
         _draw_tk_state_chip(canvas, snapshot)
-        if interaction["bubble"] or snapshot.state in ("concerned", "intervening"):
+        auto_show = (
+            snapshot.state in ("concerned", "intervening")
+            and _snapshot_event_key(snapshot) != interaction["dismissed_event"]
+        )
+        if interaction["bubble"] or auto_show:
             _draw_tk_bubble(canvas, snapshot)
         canvas.after(66, draw)
 
@@ -406,10 +532,15 @@ def _draw_tk_bubble(canvas: Any, snapshot: DisplaySnapshot) -> None:
         anchor="w",
         width=208,
     )
-    canvas.create_rectangle(26, 112, 130, 134, fill=snapshot.accent, outline="")
-    canvas.create_text(78, 123, text="Stage fix", fill="#ffffff", font=("Helvetica", 10, "bold"))
-    canvas.create_rectangle(144, 112, 230, 134, fill="#f3f4f6", outline="#d1d5db")
-    canvas.create_text(187, 123, text="Later", fill="#111827", font=("Helvetica", 10, "bold"))
+    canvas.create_text(
+        26,
+        122,
+        text="Click for details",
+        fill=snapshot.accent,
+        font=("Helvetica", 11, "bold"),
+        anchor="w",
+        width=208,
+    )
 
 
 def _draw_tk_state_chip(canvas: Any, snapshot: DisplaySnapshot) -> None:
@@ -631,9 +762,9 @@ func loadStatus() -> [String: String] {
             "message": "Status file not found yet.",
             "session_id": "",
             "card_path": "",
-            "option_0": "Scan",
-            "option_1": "Later",
-            "action_command": ""
+            "latest_event_id": "",
+            "latest_trigger": "",
+            "option_count": "0"
         ]
     }
     guard
@@ -648,24 +779,14 @@ func loadStatus() -> [String: String] {
             "message": "Expected a JSON object.",
             "session_id": "",
             "card_path": "",
-            "option_0": "Open",
-            "option_1": "Later",
-            "action_command": ""
+            "latest_event_id": "",
+            "latest_trigger": "",
+            "option_count": "0"
         ]
     }
     let options = dict["options"] as? [[String: Any]] ?? []
-    func actionValue(_ key: String, _ fallback: String) -> String {
-        for option in options {
-            if let id = option["id"] as? String, id == "stage_fix" {
-                return option[key] as? String ?? fallback
-            }
-        }
-        if let first = options.first {
-            return first[key] as? String ?? fallback
-        }
-        return fallback
-    }
-    return [
+    let limitedOptions = Array(options.prefix(6))
+    var result = [
         "state": stringValue(dict, "state", "idle"),
         "action": stringValue(dict, "action", "silent"),
         "severity": stringValue(dict, "severity", "low"),
@@ -673,10 +794,17 @@ func loadStatus() -> [String: String] {
         "message": stringValue(dict, "message", ""),
         "session_id": stringValue(dict, "session_id", ""),
         "card_path": stringValue(dict, "card_path", ""),
-        "option_0": actionValue("label", "Repair Agent"),
-        "option_1": "Later",
-        "action_command": actionValue("command", "")
+        "latest_event_id": stringValue(dict, "latest_event_id", ""),
+        "latest_trigger": stringValue(dict, "latest_trigger", ""),
+        "option_count": String(limitedOptions.count)
     ]
+    for (index, option) in limitedOptions.enumerated() {
+        result["option_\(index)_id"] = stringValue(option, "id", "")
+        result["option_\(index)_label"] = stringValue(option, "label", "")
+        result["option_\(index)_description"] = stringValue(option, "description", "")
+        result["option_\(index)_command"] = stringValue(option, "command", "")
+    }
+    return result
 }
 
 func color(_ hex: String) -> NSColor {
@@ -726,7 +854,7 @@ class PetView: NSView {
     var dragOffset: NSPoint = .zero
     var isDragging = false
     var bubbleOpen = false
-    var buttonRects: [String: NSRect] = [:]
+    var dismissedEventId = ""
     var startedAt = Date()
     var lastStatusReload = Date(timeIntervalSince1970: 0)
     let petImage: NSImage? = assetPath.isEmpty ? nil : NSImage(contentsOfFile: assetPath)
@@ -753,16 +881,6 @@ class PetView: NSView {
         if isDragging {
             return
         }
-        let location = event.locationInWindow
-        if let rect = buttonRects["repair"], rect.contains(location) {
-            runRepair(nil)
-            return
-        }
-        if let rect = buttonRects["later"], rect.contains(location) {
-            bubbleOpen = false
-            needsDisplay = true
-            return
-        }
         bubbleOpen = true
         needsDisplay = true
         showStatusDialog(nil)
@@ -776,9 +894,14 @@ class PetView: NSView {
             return menuItem
         }
         menu.addItem(item("Diagnose Current Session", #selector(showStatusDialog(_:))))
-        menu.addItem(item("Stage Repair", #selector(runRepair(_:))))
-        menu.addItem(item("Open Status Card", #selector(openStatusCard(_:))))
-        menu.addItem(item("Mute for 1 Hour", #selector(muteForNow(_:))))
+        let actions = displayActions()
+        if actions.contains("stage_fix") {
+            menu.addItem(item("Stage Repair", #selector(runRepair(_:))))
+        }
+        if actions.contains("open_card") {
+            menu.addItem(item("Open Status Card", #selector(openStatusCard(_:))))
+        }
+        menu.addItem(item("Dismiss Current Event", #selector(muteForNow(_:))))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(item("Quit Doctor Pet", #selector(quitPet(_:)), "q"))
         NSMenu.popUpContextMenu(menu, with: event, for: self)
@@ -794,6 +917,7 @@ class PetView: NSView {
         needsDisplay = true
         let state = status["state"] ?? "idle"
         let action = status["action"] ?? "silent"
+        let actions = displayActions()
         let alert = NSAlert()
         alert.messageText = status["headline"] ?? "Agent Doctor Pet"
         var details = stateLabel(state, action)
@@ -803,22 +927,26 @@ class PetView: NSView {
         if let message = status["message"], !message.isEmpty {
             details += "\n\n\(message)"
         }
+        let guidance = guidanceText()
+        if !guidance.isEmpty {
+            details += "\n\nNext: \(guidance)"
+        }
         alert.informativeText = details
         alert.alertStyle = action == "intervene" ? .warning : .informational
-        alert.addButton(withTitle: status["option_0"] ?? "Stage Repair")
-        alert.addButton(withTitle: "Open Status Card")
-        alert.addButton(withTitle: "Later")
+        for actionId in actions {
+            alert.addButton(withTitle: actionTitle(actionId))
+        }
         NSApplication.shared.activate(ignoringOtherApps: true)
         let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            runRepair(sender)
-        } else if response == .alertSecondButtonReturn {
-            openStatusCard(sender)
+        let selected = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        if selected >= 0 && selected < actions.count {
+            performAction(actions[selected])
         }
     }
 
     @objc func muteForNow(_ sender: Any?) {
         bubbleOpen = false
+        dismissedEventId = currentEventKey()
         needsDisplay = true
     }
 
@@ -833,17 +961,129 @@ class PetView: NSView {
     }
 
     @objc func runRepair(_ sender: Any?) {
-        let command = status["action_command"] ?? ""
-        if command.isEmpty {
-            openStatusCard(sender)
+        if displayActions().contains("stage_fix") {
+            runOptionCommand("stage_fix")
+        } else {
+            showStatusDialog(sender)
+        }
+    }
+
+    func performAction(_ actionId: String) {
+        if actionId == "open_card" {
+            openStatusCard(nil)
+            return
+        }
+        if actionId == "dismiss_for_now" {
+            muteForNow(nil)
+            return
+        }
+        runOptionCommand(actionId)
+    }
+
+    func runOptionCommand(_ optionId: String) {
+        let command = optionValue(optionId, "command", "")
+        if !isRunnableCommand(command) {
+            showStatusDialog(nil)
             return
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-lc", command]
         try? process.run()
+        showNotice(title: "\(actionTitle(optionId)) started", message: command)
         bubbleOpen = true
         needsDisplay = true
+    }
+
+    func isRunnableCommand(_ command: String) -> Bool {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && !trimmed.contains("<") && !trimmed.contains(">")
+    }
+
+    func optionValue(_ optionId: String, _ key: String, _ fallback: String) -> String {
+        let count = Int(status["option_count"] ?? "0") ?? 0
+        for index in 0..<count {
+            if status["option_\(index)_id"] == optionId {
+                let value = status["option_\(index)_\(key)"] ?? ""
+                return value.isEmpty ? fallback : value
+            }
+        }
+        return fallback
+    }
+
+    func displayActions() -> [String] {
+        var actions: [String] = []
+        var seen = Set<String>()
+        let count = Int(status["option_count"] ?? "0") ?? 0
+        for index in 0..<count {
+            let optionId = status["option_\(index)_id"] ?? ""
+            let command = status["option_\(index)_command"] ?? ""
+            if !optionId.isEmpty && !seen.contains(optionId) && isRunnableCommand(command) {
+                actions.append(optionId)
+                seen.insert(optionId)
+            }
+        }
+        if !(status["card_path"] ?? "").isEmpty {
+            actions.append("open_card")
+        }
+        actions.append("dismiss_for_now")
+        return actions
+    }
+
+    func actionTitle(_ actionId: String) -> String {
+        if actionId == "open_card" {
+            return "Open Status Card"
+        }
+        if actionId == "dismiss_for_now" {
+            let state = status["state"] ?? "idle"
+            return state == "concerned" || state == "intervening" ? "Dismiss for Now" : "Close"
+        }
+        return optionValue(actionId, "label", "Run Action")
+    }
+
+    func guidanceText() -> String {
+        for optionId in ["pause_and_diagnose", "review_evidence", "keep_watching"] {
+            let label = optionValue(optionId, "label", "")
+            let description = optionValue(optionId, "description", "")
+            if !label.isEmpty && !description.isEmpty {
+                return "\(label): \(description)"
+            }
+        }
+        let count = Int(status["option_count"] ?? "0") ?? 0
+        for index in 0..<count {
+            let label = status["option_\(index)_label"] ?? ""
+            let description = status["option_\(index)_description"] ?? ""
+            let command = status["option_\(index)_command"] ?? ""
+            if !label.isEmpty && !description.isEmpty && !isRunnableCommand(command) {
+                return "\(label): \(description)"
+            }
+        }
+        return ""
+    }
+
+    func currentEventKey() -> String {
+        let eventId = status["latest_event_id"] ?? ""
+        if !eventId.isEmpty {
+            return eventId
+        }
+        return "\(status["state"] ?? "")|\(status["session_id"] ?? "")|\(status["headline"] ?? "")"
+    }
+
+    func shouldAutoShowBubble(_ state: String) -> Bool {
+        if state != "concerned" && state != "intervening" {
+            return false
+        }
+        return currentEventKey() != dismissedEventId
+    }
+
+    func showNotice(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     @objc func quitPet(_ sender: Any?) {
@@ -851,10 +1091,6 @@ class PetView: NSView {
     }
 
     func r(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> NSRect {
-        return NSRect(x: x, y: bounds.height - y - h, width: w, height: h)
-    }
-
-    func viewRect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> NSRect {
         return NSRect(x: x, y: bounds.height - y - h, width: w, height: h)
     }
 
@@ -1026,13 +1262,6 @@ class PetView: NSView {
         return "Idle"
     }
 
-    func button(_ id: String, _ title: String, _ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ fill: NSColor, _ textColor: NSColor) {
-        let rect = viewRect(x, y, w, h)
-        buttonRects[id] = rect
-        roundRect(x, y, w, h, 8, fill, fill, 1)
-        text(short(title, 18), x + 4, y + 5, w - 8, h - 8, 11, textColor, true)
-    }
-
     func drawStateChip(_ state: String, _ action: String, _ accent: NSColor) {
         roundRect(28, 270, 204, 30, 15, NSColor.white.withAlphaComponent(0.96), accent, 2)
         oval(43, 281, 10, 10, accent, NSColor.clear, 0)
@@ -1040,11 +1269,9 @@ class PetView: NSView {
     }
 
     func drawBubble(_ state: String, _ accent: NSColor) {
-        guard bubbleOpen || state == "concerned" || state == "intervening" else {
-            buttonRects = [:]
+        guard bubbleOpen || shouldAutoShowBubble(state) else {
             return
         }
-        buttonRects = [:]
         roundRect(14, 10, 232, 132, 14, NSColor.white.withAlphaComponent(0.97), color("#111827"), 2)
         let tail = NSBezierPath()
         tail.move(to: NSPoint(x: 108, y: bounds.height - 142))
@@ -1059,8 +1286,7 @@ class PetView: NSView {
         text(stateLabel(state, status["action"] ?? "silent"), 28, 22, 204, 18, 12, accent, true, .left)
         text(short(status["headline"] ?? "Doctor Pet", 54), 28, 46, 204, 32, 12, color("#111827"), true, .left)
         text(short(status["message"] ?? "", 90), 28, 82, 204, 28, 11, color("#374151"), false, .left)
-        button("repair", status["option_0"] ?? "Stage Repair", 28, 114, 104, 24, accent, .white)
-        button("later", "Later", 146, 114, 86, 24, color("#f3f4f6"), color("#111827"))
+        text("Click for details", 28, 116, 204, 18, 11, accent, true, .left)
     }
 
     override func draw(_ dirtyRect: NSRect) {

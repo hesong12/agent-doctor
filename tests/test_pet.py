@@ -11,6 +11,8 @@ from agent_doctor.pet import (
     write_pet_artifacts,
 )
 from agent_doctor.pet_display import (
+    _command_is_runnable,
+    _display_actions,
     _state_label,
     pet_asset_path,
     read_status_payload,
@@ -159,7 +161,67 @@ def test_pet_display_snapshot_exposes_user_facing_state_label(tmp_path: Path) ->
     assert snapshot.state == "intervening"
     assert snapshot.action == "intervene"
     assert snapshot.primary_label == "Stage repair"
+    assert [option.id for option in snapshot.options] == [
+        "pause_and_diagnose",
+        "stage_fix",
+        "keep_watching",
+    ]
     assert _state_label(snapshot) == "Intervention needed"
+
+
+def test_pet_display_hides_manual_stage_repair_without_command() -> None:
+    status = pet_status_for_text("Why are you so dumb?", session_id="s-manual")
+    snapshot = snapshot_from_payload(status.to_dict())
+
+    assert snapshot.primary_label == "Stage repair"
+    assert snapshot.primary_command == ""
+    assert "stage_fix" not in [action.id for action in _display_actions(snapshot)]
+
+
+def test_pet_display_hides_open_card_when_card_path_is_absent() -> None:
+    snapshot = snapshot_from_payload(
+        {
+            "state": "intervening",
+            "action": "intervene",
+            "severity": "high",
+            "headline": "Doctor is intervening.",
+            "message": "Pause and diagnose.",
+            "session_id": "s-card",
+            "card_path": "",
+            "options": [],
+        }
+    )
+
+    assert "open_card" not in [action.id for action in _display_actions(snapshot)]
+
+
+def test_pet_display_shows_runnable_stage_repair_action() -> None:
+    snapshot = snapshot_from_payload(
+        {
+            "state": "intervening",
+            "action": "intervene",
+            "severity": "high",
+            "headline": "Doctor is intervening.",
+            "message": "Pause and diagnose.",
+            "session_id": "s-repair",
+            "card_path": "/tmp/agent-doctor-card.md",
+            "options": [
+                {
+                    "id": "stage_fix",
+                    "label": "Stage repair",
+                    "description": "Create reviewable patches.",
+                    "command": "agent-doctor scan --path /tmp/session.jsonl --out /tmp/repair",
+                }
+            ],
+        }
+    )
+
+    assert _command_is_runnable(snapshot.primary_command)
+    assert [action.id for action in _display_actions(snapshot)] == [
+        "stage_fix",
+        "open_card",
+        "dismiss_for_now",
+    ]
 
 
 def test_appkit_display_source_has_context_menu_quit() -> None:
@@ -176,6 +238,10 @@ def test_appkit_display_source_has_context_menu_quit() -> None:
     assert "runRepair" in source
     assert "terminate(nil)" in source
     assert "showStatusDialog" in source
+    assert "displayActions" in source
+    assert "dismissedEventId" in source
+    assert "isRunnableCommand" in source
+    assert "Click for details" in source
     assert "Intervention needed" in source
 
 

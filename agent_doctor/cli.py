@@ -682,12 +682,13 @@ def _cmd_pet_display(args: argparse.Namespace) -> int:
         display_pet,
         read_status_payload,
         snapshot_from_payload,
+        snapshot_to_dict,
     )
 
     status_file = args.status_file or default_status_file()
     if args.dry_run:
         snapshot = snapshot_from_payload(read_status_payload(status_file))
-        print(json.dumps(snapshot.__dict__, indent=2, ensure_ascii=False))
+        print(json.dumps(snapshot_to_dict(snapshot), indent=2, ensure_ascii=False))
         return 0
     display_pet(
         status_file,
