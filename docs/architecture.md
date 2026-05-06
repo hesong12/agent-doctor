@@ -57,7 +57,10 @@ Autopilot writes the same `pet-status.json` / `pet-card.md` pair by default on
 every sidecar pass. That is the always-display contract: the pet is always
 renderable, and `pet-display` can keep a small borderless topmost desktop
 window synced while its state changes from `idle` to `intervening` only when
-the local trigger engine sees a quality incident.
+the local trigger engine sees a quality incident. The display layer is still
+optional UI glue: it reads a packaged transparent PNG doctor sprite when
+available, falls back to code-drawn shapes, and applies local state-specific
+effects without changing the detection model.
 
 ### Autopilot Sidecar
 

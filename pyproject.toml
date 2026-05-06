@@ -26,6 +26,9 @@ agent-doctor = "agent_doctor.cli:main"
 [tool.setuptools.packages.find]
 include = ["agent_doctor*"]
 
+[tool.setuptools.package-data]
+agent_doctor = ["assets/*.png"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-config", "--strict-markers"]

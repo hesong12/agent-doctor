@@ -10,7 +10,7 @@ from agent_doctor.pet import (
     render_pet_markdown,
     write_pet_artifacts,
 )
-from agent_doctor.pet_display import read_status_payload, snapshot_from_payload
+from agent_doctor.pet_display import pet_asset_path, read_status_payload, snapshot_from_payload
 from agent_doctor import pet_display
 
 
@@ -151,3 +151,23 @@ def test_appkit_display_source_does_not_quit_on_click() -> None:
 
     assert "rightMouseDown" not in source
     assert "terminate(nil)" not in source
+
+
+def test_pet_display_uses_packaged_sprite_asset() -> None:
+    path = pet_asset_path()
+
+    assert path is not None
+    assert path.name == "doctor_pet.png"
+    assert path.exists()
+
+
+def test_appkit_display_source_loads_sprite_and_animates_states() -> None:
+    source = pet_display._appkit_source()
+
+    assert "NSImage(contentsOfFile: assetPath)" in source
+    assert "drawEffects" in source
+    assert "drawOverlays" in source
+    assert "state == \"watching\"" in source
+    assert "state == \"concerned\"" in source
+    assert "state == \"intervening\"" in source
+    assert "1.0 / 15.0" in source

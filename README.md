@@ -236,7 +236,7 @@ agent-doctor pet-display --status-file ./doctor-pet/pet-status.json
 
 Manual summon (`--message`) is for the current turn. Transcript mode (`--path`, `--hermes`, or `--openclaw`) uses the same ingestion, detectors, and autopilot event selection as the sidecar. Optional artifacts are written as `pet-status.json` and `pet-card.md` under `--out` with `0600` permissions and redacted transcript strings.
 
-In autopilot mode, Doctor Pet is always displayable by default: every sidecar pass writes the current `pet-status.json` and `pet-card.md` under the autopilot `--out` directory, even when the state is `idle`. Use `agent-doctor pet-display --status-file <out>/pet-status.json` to open the borderless always-on-top desktop pet and keep it synced while autopilot handles activation. Drag the pet to move it.
+In autopilot mode, Doctor Pet is always displayable by default: every sidecar pass writes the current `pet-status.json` and `pet-card.md` under the autopilot `--out` directory, even when the state is `idle`. Use `agent-doctor pet-display --status-file <out>/pet-status.json` to open the borderless always-on-top desktop pet and keep it synced while autopilot handles activation. The desktop pet uses a packaged chibi doctor sprite with state-specific motion: idle breathing, watching scan, concerned diagnostic pulse, and intervening alert. Drag the pet to move it.
 
 Watch mode automatically runs a full first pass, then switches to changed-file
 scanning using JSONL path, `mtime`, and size state in SQLite. To skip unchanged

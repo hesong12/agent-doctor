@@ -158,6 +158,10 @@ Desktop display:
 
 `agent-doctor pet-display --status-file ./doctor-pet/pet-status.json`
 
+The desktop pet renders a packaged chibi doctor sprite when available and
+animates locally by state: idle breathing, watching scan, concerned diagnostic
+pulse, and intervening alert.
+
 If Doctor Pet returns `action=intervene`, pause the normal success path, name
 the concrete failure, cite the evidence, and provide one corrective next step.
 Do not defend the previous response or write a long apology.
