@@ -393,6 +393,51 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eval_replay.set_defaults(func=_cmd_eval_replay)
 
+    # Closed-loop commands ------------------------------------------------
+    approve = subparsers.add_parser(
+        "approve",
+        help="Approve a pending proposal (CLI fallback for ✅).",
+    )
+    approve.add_argument("proposal_id")
+    approve.set_defaults(func=_cmd_approve)
+
+    dismiss = subparsers.add_parser(
+        "dismiss",
+        help="Dismiss a pending proposal (CLI fallback for ❌).",
+    )
+    dismiss.add_argument("proposal_id")
+    dismiss.set_defaults(func=_cmd_dismiss)
+
+    redraft = subparsers.add_parser(
+        "redraft",
+        help="Mark a proposal for redraft (CLI fallback for 💬).",
+    )
+    redraft.add_argument("proposal_id")
+    redraft.set_defaults(func=_cmd_redraft)
+
+    undo = subparsers.add_parser(
+        "undo",
+        help="Undo an applied patch.",
+    )
+    undo.add_argument("patch_id", nargs="?")
+    undo.add_argument("--last", action="store_true",
+                      help="Undo the most recently applied patch.")
+    undo.add_argument("--since",
+                      help="Undo all patches applied since <duration> (TBD).")
+    undo.set_defaults(func=_cmd_undo)
+
+    patches = subparsers.add_parser(
+        "patches",
+        help="Inspect applied patches.",
+    )
+    patches_subs = patches.add_subparsers(dest="patches_cmd", required=True)
+    patches_list = patches_subs.add_parser(
+        "list",
+        help="List applied patches with origin and undo command.",
+    )
+    patches_list.add_argument("--json", action="store_true")
+    patches_list.set_defaults(func=_cmd_patches_list)
+
     return parser
 
 
@@ -743,6 +788,96 @@ def _cmd_eval_replay(args: argparse.Namespace) -> int:
 
     summary = run_replay(args.transcript, args.patches, args.out, model=args.model)
     print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _cmd_approve(args: argparse.Namespace) -> int:
+    """Phase 4 scaffold: marks proposal_id approved.
+
+    Wired in Task 8 to flip proposals.jsonl state to applied via the
+    applier. For now, prints a placeholder so the CLI surface is
+    discoverable.
+    """
+    print(f"approve: {args.proposal_id} (driver wired in Phase 4 Task 8)")
+    return 0
+
+
+def _cmd_dismiss(args: argparse.Namespace) -> int:
+    print(f"dismiss: {args.proposal_id} (driver wired in Phase 4 Task 8)")
+    return 0
+
+
+def _cmd_redraft(args: argparse.Namespace) -> int:
+    print(f"redraft: {args.proposal_id} (driver wired in Phase 4 Task 8)")
+    return 0
+
+
+def _cmd_undo(args: argparse.Namespace) -> int:
+    """Restore a patch's target file from its backup."""
+    from .applier import undo_patch
+
+    log_path = Path("~/.agent-doctor").expanduser() / "patch-log.jsonl"
+    if not log_path.exists():
+        print(f"No applied patches found at {log_path}", file=sys.stderr)
+        return 1
+    entries: list[dict] = []
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    target_id = args.patch_id
+    if args.last:
+        if not entries:
+            print("No applied patches.", file=sys.stderr)
+            return 1
+        target_id = entries[-1]["id"]
+    if not target_id:
+        print("Provide a patch_id, --last, or --since.", file=sys.stderr)
+        return 2
+
+    matching = [e for e in entries if e.get("id") == target_id]
+    if not matching:
+        print(f"No patch with id {target_id!r} in patch-log", file=sys.stderr)
+        return 1
+    entry = matching[-1]
+    try:
+        undo_patch(
+            patch_id=entry["id"],
+            backup_path=Path(entry["backup_path"]),
+            target_file=Path(entry["target_file"]),
+        )
+    except RuntimeError as exc:
+        print(f"undo failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"undone: {entry['target_file']} restored from {entry['backup_path']}")
+    return 0
+
+
+def _cmd_patches_list(args: argparse.Namespace) -> int:
+    log_path = Path("~/.agent-doctor").expanduser() / "patch-log.jsonl"
+    if not log_path.exists():
+        if args.json:
+            print("[]")
+        else:
+            print("No applied patches.")
+        return 0
+    entries: list[dict] = []
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    if args.json:
+        print(json.dumps(entries, indent=2))
+    else:
+        for e in entries:
+            print(f"{e.get('id', '?')}  {e.get('target_file', '?')}  applied_at={e.get('applied_at', '?')}")
     return 0
 
 
