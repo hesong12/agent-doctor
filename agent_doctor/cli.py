@@ -460,6 +460,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     digest.set_defaults(func=_cmd_digest)
 
+    # Calibration subcommands (Tier 3) ----------------------------------------
+    calibrate = subparsers.add_parser(
+        "calibrate",
+        help="Manage Tier 3 calibration (weekly opt-in LLM judges past transcripts).",
+    )
+    calibrate_subs = calibrate.add_subparsers(dest="calibrate_cmd", required=True)
+    calibrate_subs.add_parser("enable", help="Enable Tier 3 calibration.").set_defaults(func=_cmd_calibrate_enable)
+    calibrate_subs.add_parser("disable", help="Disable Tier 3 calibration.").set_defaults(func=_cmd_calibrate_disable)
+    calibrate_subs.add_parser("review", help="Review pending calibration suggestions.").set_defaults(func=_cmd_calibrate_review)
+    calibrate_status = calibrate_subs.add_parser("status", help="Show whether calibration is enabled.")
+    calibrate_status.set_defaults(func=_cmd_calibrate_status)
+
     return parser
 
 
@@ -1072,6 +1084,51 @@ def _cmd_digest(args: argparse.Namespace) -> int:
         print(f"\nposted to {inbox}")
     except (NotImplementedError, RuntimeError) as exc:
         print(f"\nnot posted: {exc}", file=sys.stderr)
+    return 0
+
+
+# --- Tier 3 calibration -----------------------------------------------------
+# v1: opt-in via a flag file. Real weekly cron + LLM judging is a follow-up.
+
+_CALIBRATE_FLAG = Path("~/.agent-doctor/calibrate-enabled").expanduser()
+_CALIBRATE_SUGGESTIONS = Path("~/.agent-doctor/calibration-suggestions.md").expanduser()
+
+
+def _cmd_calibrate_enable(args: argparse.Namespace) -> int:
+    _CALIBRATE_FLAG.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _CALIBRATE_FLAG.write_text("enabled\n", encoding="utf-8")
+    _CALIBRATE_FLAG.chmod(0o600)
+    print(
+        "Tier 3 calibration enabled. Weekly batch will judge the past 7 days "
+        "of transcripts and write suggestions to "
+        f"{_CALIBRATE_SUGGESTIONS}. Review with: agent-doctor calibrate review."
+    )
+    return 0
+
+
+def _cmd_calibrate_disable(args: argparse.Namespace) -> int:
+    if _CALIBRATE_FLAG.exists():
+        _CALIBRATE_FLAG.unlink()
+    print("Tier 3 calibration disabled.")
+    return 0
+
+
+def _cmd_calibrate_status(args: argparse.Namespace) -> int:
+    enabled = _CALIBRATE_FLAG.exists()
+    print(f"calibrate enabled: {enabled}")
+    if enabled:
+        print(f"flag file: {_CALIBRATE_FLAG}")
+        print(f"suggestions file: {_CALIBRATE_SUGGESTIONS} "
+              f"({'exists' if _CALIBRATE_SUGGESTIONS.exists() else 'not yet generated'})")
+    return 0
+
+
+def _cmd_calibrate_review(args: argparse.Namespace) -> int:
+    if not _CALIBRATE_SUGGESTIONS.exists():
+        print("No calibration suggestions yet. Run `agent-doctor calibrate enable` "
+              "and wait for the next weekly batch.")
+        return 0
+    print(_CALIBRATE_SUGGESTIONS.read_text(encoding="utf-8"))
     return 0
 
 
