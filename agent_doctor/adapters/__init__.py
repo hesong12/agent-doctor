@@ -27,6 +27,7 @@ from .base import (
     SessionMetadata,
 )
 from .generic import GenericAdapter
+from .openclaw import OpenClawAdapter
 
 __all__ = [
     "HostAdapter",
@@ -37,4 +38,5 @@ __all__ = [
     "Reaction",
     "SessionMetadata",
     "GenericAdapter",
+    "OpenClawAdapter",
 ]
