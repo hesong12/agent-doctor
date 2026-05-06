@@ -4,8 +4,22 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from agent_doctor.autopilot import run_notify_command
 from agent_doctor.autopilot import run_autopilot_once
+
+
+@pytest.fixture(autouse=True)
+def _isolate_home_for_tests(monkeypatch, tmp_path_factory):
+    """Redirect ~/.agent-doctor writes to a temp dir per-test.
+
+    Phase 3 wired adapter.send_message → ~/.agent-doctor/<host>/inbox/.
+    Without this fixture, every test that fires an event would create
+    a real file under the developer's HOME — test pollution.
+    """
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
