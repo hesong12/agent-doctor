@@ -14,9 +14,9 @@ from agent_doctor.autopilot import run_autopilot_once
 def _isolate_home_for_tests(monkeypatch, tmp_path_factory):
     """Redirect ~/.agent-doctor writes to a temp dir per-test.
 
-    Phase 3 wired adapter.send_message → ~/.agent-doctor/<host>/inbox/.
-    Without this fixture, every test that fires an event would create
-    a real file under the developer's HOME — test pollution.
+    Legacy adapter dispatch can still write ~/.agent-doctor/<host>/inbox/.
+    Without this fixture, tests that opt into dispatch would create real
+    files under the developer's HOME.
     """
     home = tmp_path_factory.mktemp("home")
     monkeypatch.setenv("HOME", str(home))
@@ -546,9 +546,41 @@ def test_dispatch_event_returns_error_string_on_adapter_failure(tmp_path: Path) 
     assert "boom" in err
 
 
-def test_run_autopilot_once_calls_dispatch_event_via_adapter(tmp_path: Path, monkeypatch) -> None:
-    """When an event fires, run_autopilot_once should call adapter.send_message
-    via dispatch_event (in addition to any --notify-command)."""
+def test_run_autopilot_once_is_pet_only_by_default(tmp_path: Path, monkeypatch) -> None:
+    """Default autopilot delivery writes Pet status, not adapter/inbox messages."""
+    transcript = tmp_path / "session.jsonl"
+    state = tmp_path / "doctor" / "state.sqlite3"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s-pet-only",
+                "role": "user",
+                "content": "你太蠢了，又错了",
+            }
+        ],
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        state_path=state,
+        pet_out_dir=tmp_path / "pet",
+    )
+
+    assert len(result.events) == 1
+    assert not (tmp_path / ".agent-doctor" / "generic" / "inbox" / "s-pet-only.md").exists()
+    assert (tmp_path / "pet" / "pet-status.json").exists()
+    pet_status = json.loads((tmp_path / "pet" / "pet-status.json").read_text(encoding="utf-8"))
+    assert pet_status["state"] == "intervening"
+
+
+def test_run_autopilot_once_can_dispatch_event_via_adapter_explicitly(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Legacy adapter delivery is still available when explicitly requested."""
     from agent_doctor.adapters import GenericAdapter
 
     # Simulate frustration message
@@ -573,6 +605,7 @@ def test_run_autopilot_once_calls_dispatch_event_via_adapter(tmp_path: Path, mon
         path=transcript,
         out_dir=tmp_path / "doctor",
         state_path=state,
+        dispatch_adapter=True,
     )
 
     assert len(result.events) == 1

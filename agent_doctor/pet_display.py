@@ -14,8 +14,9 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from tempfile import gettempdir
 from typing import Any
@@ -41,18 +42,34 @@ class DisplayAction:
 
 
 @dataclass(frozen=True)
+class DisplayEvidence:
+    file: str
+    line: int
+    role: str
+    quote: str
+
+
+@dataclass(frozen=True)
 class DisplaySnapshot:
+    platform: str
+    phase: str
     state: str
     action: str
     severity: str
     headline: str
     message: str
+    emotion_message: str
+    diagnosis: str
+    recommendation: str
+    recovery_prompt: str
+    expires_after_seconds: int
     session_id: str
     card_path: str
     primary_label: str
     primary_command: str
     latest_event_id: str
     latest_trigger: str
+    evidence: tuple[DisplayEvidence, ...]
     options: tuple[DisplayOption, ...]
     fill: str
     accent: str
@@ -107,6 +124,7 @@ def snapshot_from_payload(payload: dict[str, Any]) -> DisplaySnapshot:
     state = str(payload.get("state") or "idle")
     action = str(payload.get("action") or "silent")
     severity = str(payload.get("severity") or "low")
+    evidence = _display_evidence(payload)
     options = _display_options(payload)
     primary_label, primary_command = _primary_option(options)
     if state == "intervening":
@@ -122,21 +140,60 @@ def snapshot_from_payload(payload: dict[str, Any]) -> DisplaySnapshot:
         fill = "#e7f0ff"
         accent = "#3556c7"
     return DisplaySnapshot(
+        platform=str(payload.get("platform") or "generic"),
+        phase=str(payload.get("phase") or "healthy"),
         state=state,
         action=action,
         severity=severity,
         headline=str(payload.get("headline") or "Doctor Pet is idle."),
         message=str(payload.get("message") or ""),
+        emotion_message=str(payload.get("emotion_message") or ""),
+        diagnosis=str(payload.get("diagnosis") or ""),
+        recommendation=str(payload.get("recommendation") or ""),
+        recovery_prompt=str(payload.get("recovery_prompt") or ""),
+        expires_after_seconds=_int_payload(payload, "expires_after_seconds", 120),
         session_id=str(payload.get("session_id") or ""),
         card_path=str(payload.get("card_path") or ""),
         primary_label=primary_label,
         primary_command=primary_command,
         latest_event_id=str(payload.get("latest_event_id") or ""),
         latest_trigger=str(payload.get("latest_trigger") or ""),
+        evidence=evidence,
         options=options,
         fill=fill,
         accent=accent,
     )
+
+
+def _int_payload(payload: dict[str, Any], key: str, fallback: int) -> int:
+    try:
+        return int(payload.get(key) or fallback)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _display_evidence(payload: dict[str, Any]) -> tuple[DisplayEvidence, ...]:
+    evidence = payload.get("evidence")
+    if not isinstance(evidence, list):
+        return ()
+    parsed: list[DisplayEvidence] = []
+    for item in evidence[:3]:
+        if not isinstance(item, dict):
+            continue
+        line_value = item.get("line")
+        try:
+            line = int(line_value)
+        except (TypeError, ValueError):
+            line = 0
+        parsed.append(
+            DisplayEvidence(
+                file=str(item.get("file") or ""),
+                line=line,
+                role=str(item.get("role") or ""),
+                quote=str(item.get("quote") or ""),
+            )
+        )
+    return tuple(parsed)
 
 
 def _display_options(payload: dict[str, Any]) -> tuple[DisplayOption, ...]:
@@ -187,6 +244,12 @@ def _command_is_runnable(command: str) -> bool:
 def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
     actions: list[DisplayAction] = []
     seen: set[str] = set()
+    if snapshot.state in ("concerned", "intervening"):
+        if _can_send_recovery(snapshot):
+            actions.append(DisplayAction(id="send_recovery", label="Send suggestion to agent"))
+            seen.add("send_recovery")
+        actions.append(DisplayAction(id="copy_recovery_prompt", label="Copy recovery prompt"))
+        seen.add("copy_recovery_prompt")
     for option in snapshot.options:
         if option.id in seen or not _command_is_runnable(option.command):
             continue
@@ -194,21 +257,142 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
         seen.add(option.id)
     if snapshot.card_path:
         actions.append(DisplayAction(id="open_card", label="Open status card"))
-    close_label = "Dismiss for now" if snapshot.state in ("concerned", "intervening") else "Close"
+    close_label = "Hide alert" if snapshot.state in ("concerned", "intervening") else "Close"
     actions.append(DisplayAction(id="dismiss_for_now", label=close_label))
     return tuple(actions)
 
 
-def _guidance_text(snapshot: DisplaySnapshot) -> str:
-    preferred_ids = ("pause_and_diagnose", "review_evidence", "keep_watching")
-    for option_id in preferred_ids:
-        option = _option_by_id(snapshot, option_id)
-        if option is not None and option.description:
-            return f"{option.label}: {option.description}"
-    for option in snapshot.options:
-        if option.description and not _command_is_runnable(option.command):
-            return f"{option.label}: {option.description}"
-    return ""
+def _can_send_recovery(snapshot: DisplaySnapshot) -> bool:
+    if snapshot.platform not in {"openclaw", "hermes"}:
+        return False
+    if snapshot.state not in {"concerned", "intervening"}:
+        return False
+    if not snapshot.evidence:
+        return False
+    source = snapshot.evidence[0].file
+    return bool(source and source != "<manual>")
+
+
+def _issue_title(snapshot: DisplaySnapshot) -> str:
+    if snapshot.latest_trigger == "user_frustration_signal":
+        return "User frustration detected"
+    if snapshot.latest_trigger == "completion_claim_without_nearby_verification":
+        return "Completion claim needs verification"
+    if snapshot.latest_trigger == "tool_failure_or_hidden_error":
+        return "Tool failure needs acknowledgement"
+    if snapshot.headline:
+        return snapshot.headline
+    return _state_label(snapshot)
+
+
+def _evidence_text(snapshot: DisplaySnapshot) -> str:
+    if not snapshot.evidence:
+        return "No transcript evidence was included in this status."
+    item = snapshot.evidence[0]
+    source = _evidence_source_label(item)
+    if item.line and item.file and item.file != "<manual>":
+        source = f"{source}:{item.line}" if source else f"line {item.line}"
+    role = item.role.title() if item.role else "Evidence"
+    quote = _shorten(item.quote, 180)
+    return f'{role} quote: "{quote}"\nSource: {source}'
+
+
+def _evidence_source_label(item: DisplayEvidence) -> str:
+    if not item.file or item.file == "<manual>":
+        return "Manual report"
+    return item.file
+
+
+def _expectation_text(snapshot: DisplaySnapshot) -> str:
+    if snapshot.recommendation:
+        return snapshot.recommendation
+    if snapshot.latest_trigger == "user_frustration_signal":
+        return (
+            "The active agent should stop the normal success path, acknowledge the concrete "
+            "failure, and give one evidence-backed recovery step."
+        )
+    if snapshot.latest_trigger == "completion_claim_without_nearby_verification":
+        return (
+            "The active agent should verify the claim before repeating success or saying the "
+            "work is done."
+        )
+    if snapshot.latest_trigger == "tool_failure_or_hidden_error":
+        return (
+            "The active agent should surface the tool failure and adjust the plan before "
+            "claiming progress."
+        )
+    if snapshot.message:
+        return snapshot.message
+    return "Review the concrete evidence before changing the current response."
+
+
+def _user_action_text(snapshot: DisplaySnapshot) -> str:
+    if snapshot.state in ("concerned", "intervening"):
+        quiet = (
+            f"If you do nothing, the Pet will quiet this alert after "
+            f"{snapshot.expires_after_seconds} seconds and keep watching."
+        )
+        if _can_send_recovery(snapshot):
+            return (
+                "Send the suggestion to the active agent, copy the prompt manually, or hide "
+                f"this alert to ignore this incident for now. {quiet}"
+            )
+        return (
+            "Copy the recovery prompt into the active agent, or hide this alert to ignore this "
+            f"incident for now. {quiet}"
+        )
+    has_runnable_action = any(
+        action.command for action in _display_actions(snapshot) if action.id != "dismiss_for_now"
+    )
+    if has_runnable_action:
+        return "Use a repair/open action if you want Agent Doctor to stage reviewable follow-up work."
+    if snapshot.card_path:
+        return "Open the status card for details, or hide this alert after you have seen it."
+    return (
+        "No extra input is needed in this popup. Use the issue and evidence above to correct "
+        "the active agent response, then hide this alert."
+    )
+
+
+def _recovery_prompt(snapshot: DisplaySnapshot) -> str:
+    if snapshot.recovery_prompt:
+        return snapshot.recovery_prompt
+    return "\n".join(
+        [
+            "Agent Doctor detected a live quality issue.",
+            "",
+            "Concrete evidence:",
+            _evidence_text(snapshot),
+            "",
+            "Do this now:",
+            _expectation_text(snapshot),
+            "",
+            "Do not continue the normal success path until the failure is acknowledged and the next corrective step is clear.",
+        ]
+    )
+
+
+def _detail_sections(snapshot: DisplaySnapshot) -> tuple[tuple[str, str], ...]:
+    sections: list[tuple[str, str]] = []
+    if snapshot.emotion_message:
+        sections.append(("First", snapshot.emotion_message))
+    sections.append(("Diagnosis", snapshot.diagnosis or snapshot.message or _issue_title(snapshot)))
+    sections.append(("Evidence", _evidence_text(snapshot)))
+    sections.append(("Suggested next step", _expectation_text(snapshot)))
+    sections.append(("Your choices", _user_action_text(snapshot)))
+    return tuple(sections)
+
+
+def _dialog_detail_text(snapshot: DisplaySnapshot) -> str:
+    lines: list[str] = []
+    if snapshot.session_id:
+        lines.append(f"Session: {snapshot.session_id}")
+    for title, body in _detail_sections(snapshot):
+        if lines:
+            lines.append("")
+        lines.append(f"{title}:")
+        lines.append(body)
+    return "\n".join(lines)
 
 
 def _snapshot_event_key(snapshot: DisplaySnapshot) -> str:
@@ -220,10 +404,15 @@ def _snapshot_event_key(snapshot: DisplaySnapshot) -> str:
 def snapshot_to_dict(snapshot: DisplaySnapshot) -> dict[str, Any]:
     data = asdict(snapshot)
     data["actions"] = [asdict(action) for action in _display_actions(snapshot)]
+    data["recovery_prompt"] = _recovery_prompt(snapshot)
     return data
 
 
 def _state_label(snapshot: DisplaySnapshot) -> str:
+    if snapshot.phase == "advice_ready":
+        return "Suggestion ready"
+    if snapshot.phase == "diagnosing":
+        return "Diagnosing"
     if snapshot.state == "intervening":
         return "Intervention needed"
     if snapshot.state == "concerned":
@@ -231,6 +420,57 @@ def _state_label(snapshot: DisplaySnapshot) -> str:
     if snapshot.state == "watching":
         return "Watching"
     return "Idle"
+
+
+def _visible_snapshot(
+    snapshot: DisplaySnapshot,
+    interaction: dict[str, Any],
+    now: float,
+) -> DisplaySnapshot:
+    event_key = _snapshot_event_key(snapshot)
+    if interaction.get("seen_event") != event_key:
+        interaction["seen_event"] = event_key
+        interaction["seen_at"] = now
+        if interaction.get("dismissed_event") != event_key:
+            interaction["bubble"] = False
+    if not _snapshot_expired(snapshot, float(interaction.get("seen_at") or now), now):
+        return snapshot
+    return replace(
+        snapshot,
+        state="idle",
+        action="silent",
+        severity="low",
+        phase="healthy",
+        headline="Doctor Pet is watching.",
+        message="The previous alert quieted after inactivity.",
+        emotion_message="",
+        diagnosis="No active visible incident. Doctor Pet will wake again when it sees a new frustration signal.",
+        recommendation="Keep working normally.",
+        recovery_prompt="",
+        fill="#e7f0ff",
+        accent="#3556c7",
+    )
+
+
+def _snapshot_expired(snapshot: DisplaySnapshot, first_seen: float, now: float) -> bool:
+    if snapshot.state not in {"concerned", "intervening"}:
+        return False
+    if snapshot.expires_after_seconds <= 0:
+        return False
+    return now - first_seen >= snapshot.expires_after_seconds
+
+
+def _pet_action_detail(stdout: str, stderr: str) -> str:
+    text = (stdout or stderr or "").strip()
+    if not text:
+        return ""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return _shorten(text.replace("\n", " "), 320)
+    if isinstance(payload, dict):
+        return str(payload.get("detail") or payload.get("mode") or "").strip()
+    return _shorten(text.replace("\n", " "), 320)
 
 
 def display_pet(
@@ -291,7 +531,13 @@ def display_pet(
         except Exception:
             pet_image = None
     drag = {"x": 0, "y": 0}
-    interaction = {"moved": False, "bubble": False, "dismissed_event": ""}
+    interaction = {
+        "moved": False,
+        "bubble": False,
+        "dismissed_event": "",
+        "seen_event": "",
+        "seen_at": time.monotonic(),
+    }
     dialog: dict[str, Any] = {"window": None}
 
     def start_drag(event: Any) -> None:
@@ -306,7 +552,7 @@ def display_pet(
     def finish_click(event: Any) -> None:
         if not interaction["moved"]:
             interaction["bubble"] = True
-            open_status_dialog(status_cache["snapshot"])
+            open_status_dialog(active_snapshot())
 
     def quit_pet() -> None:
         root.destroy()
@@ -328,6 +574,35 @@ def display_pet(
         interaction["bubble"] = False
         interaction["dismissed_event"] = _snapshot_event_key(snapshot)
 
+    def copy_recovery_prompt(snapshot: DisplaySnapshot) -> None:
+        root.clipboard_clear()
+        root.clipboard_append(_recovery_prompt(snapshot))
+        root.update_idletasks()
+        show_message(
+            "Recovery prompt copied",
+            "Paste it into the active agent so it can correct the current response.",
+        )
+
+    def send_recovery_to_agent(snapshot: DisplaySnapshot, popup: Any | None = None) -> None:
+        command = [
+            sys.executable,
+            "-m",
+            "agent_doctor.cli",
+            "pet-action",
+            "send-recovery",
+            "--status-file",
+            str(status_path),
+        ]
+        result = subprocess.run(command, text=True, capture_output=True, check=False)
+        detail = _pet_action_detail(result.stdout, result.stderr)
+        if result.returncode == 0:
+            dismiss_snapshot(snapshot)
+            if popup is not None:
+                popup.destroy()
+            show_message("Suggestion sent", detail or "The active agent received the recovery suggestion.")
+            return
+        show_message("Suggestion not sent", detail or "Doctor Pet could not route this incident.")
+
     def run_command_action(action: DisplayAction) -> None:
         if action.command:
             subprocess.Popen(
@@ -338,6 +613,12 @@ def display_pet(
             show_message(f"{action.label} started", action.command)
 
     def perform_dialog_action(action: DisplayAction, snapshot: DisplaySnapshot, popup: Any) -> None:
+        if action.id == "send_recovery":
+            send_recovery_to_agent(snapshot, popup)
+            return
+        if action.id == "copy_recovery_prompt":
+            copy_recovery_prompt(snapshot)
+            return
         if action.id == "open_card":
             open_status_card(snapshot)
             return
@@ -371,7 +652,7 @@ def display_pet(
         popup.configure(bg="#ffffff")
         x = root.winfo_x() + 18
         y = root.winfo_y() + _WINDOW_HEIGHT + 8
-        popup.geometry(f"360x260+{x}+{y}")
+        popup.geometry(f"420x360+{x}+{y}")
         popup.protocol("WM_DELETE_WINDOW", popup.destroy)
 
         frame = tk.Frame(popup, bg="#ffffff", padx=14, pady=12)
@@ -386,38 +667,14 @@ def display_pet(
         ).pack(fill="x")
         tk.Label(
             frame,
-            text=snapshot.headline,
+            text=_issue_title(snapshot),
             fg="#111827",
             bg="#ffffff",
-            font=("Helvetica", 12, "bold"),
+            font=("Helvetica", 14, "bold"),
             anchor="w",
             justify="left",
-            wraplength=330,
+            wraplength=390,
         ).pack(fill="x", pady=(6, 0))
-        tk.Label(
-            frame,
-            text=snapshot.message,
-            fg="#374151",
-            bg="#ffffff",
-            font=("Helvetica", 10),
-            anchor="w",
-            justify="left",
-            wraplength=330,
-        ).pack(fill="x", pady=(6, 0))
-        guidance = _guidance_text(snapshot)
-        if guidance:
-            tk.Label(
-                frame,
-                text=guidance,
-                fg="#111827",
-                bg="#f8fafc",
-                font=("Helvetica", 10, "bold"),
-                anchor="w",
-                justify="left",
-                wraplength=320,
-                padx=8,
-                pady=6,
-            ).pack(fill="x", pady=(8, 0))
         if snapshot.session_id:
             tk.Label(
                 frame,
@@ -427,6 +684,25 @@ def display_pet(
                 font=("Helvetica", 9),
                 anchor="w",
             ).pack(fill="x", pady=(6, 0))
+        for title, body in _detail_sections(snapshot):
+            tk.Label(
+                frame,
+                text=title,
+                fg="#111827",
+                bg="#ffffff",
+                font=("Helvetica", 10, "bold"),
+                anchor="w",
+            ).pack(fill="x", pady=(10, 0))
+            tk.Label(
+                frame,
+                text=body,
+                fg="#374151",
+                bg="#ffffff",
+                font=("Helvetica", 10),
+                anchor="w",
+                justify="left",
+                wraplength=390,
+            ).pack(fill="x", pady=(2, 0))
 
         buttons = tk.Frame(frame, bg="#ffffff")
         buttons.pack(fill="x", pady=(12, 0))
@@ -442,11 +718,11 @@ def display_pet(
     menu = tk.Menu(root, tearoff=0)
     menu.add_command(
         label="Diagnose current session",
-        command=lambda: open_status_dialog(status_cache["snapshot"]),
+        command=lambda: open_status_dialog(active_snapshot()),
     )
     menu.add_command(
         label="Dismiss current event",
-        command=lambda: dismiss_snapshot(status_cache["snapshot"]),
+        command=lambda: dismiss_snapshot(active_snapshot()),
     )
     menu.add_separator()
     menu.add_command(label="Quit Doctor Pet", command=quit_pet)
@@ -465,12 +741,16 @@ def display_pet(
         "snapshot": snapshot_from_payload(read_status_payload(status_path)),
     }
 
+    def active_snapshot() -> DisplaySnapshot:
+        return _visible_snapshot(status_cache["snapshot"], interaction, time.monotonic())
+
     def draw() -> None:
         now = time.monotonic()
         if now - float(status_cache["read_at"]) >= poll_interval:
             status_cache["snapshot"] = snapshot_from_payload(read_status_payload(status_path))
             status_cache["read_at"] = now
-        snapshot = status_cache["snapshot"]
+        raw_snapshot = status_cache["snapshot"]
+        snapshot = _visible_snapshot(raw_snapshot, interaction, now)
         canvas.delete("all")
         _draw_pet(canvas, snapshot, phase=now, pet_image=pet_image)
         _draw_tk_state_chip(canvas, snapshot)
@@ -501,8 +781,8 @@ def _draw_pet(
 
 
 def _draw_tk_bubble(canvas: Any, snapshot: DisplaySnapshot) -> None:
-    headline = _shorten(snapshot.headline, 54)
-    message = _shorten(snapshot.message, 90)
+    headline = _shorten(_issue_title(snapshot), 54)
+    message = _shorten(_evidence_text(snapshot), 90)
     canvas.create_rectangle(12, 10, 248, 140, fill="#ffffff", outline="#111827", width=2)
     canvas.create_polygon(108, 140, 130, 158, 152, 140, fill="#ffffff", outline="#111827")
     canvas.create_text(
@@ -725,6 +1005,7 @@ def _display_pet_appkit(
         str(max(0.2, poll_seconds)),
         "1" if topmost else "0",
         str(asset_path.expanduser()) if asset_path is not None else "",
+        sys.executable,
     ]
     completed = subprocess.run(command, check=False)
     if completed.returncode != 0:
@@ -739,6 +1020,7 @@ let statusPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
 let pollSeconds = CommandLine.arguments.count > 2 ? (Double(CommandLine.arguments[2]) ?? 1.0) : 1.0
 let topmost = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] == "1" : true
 let assetPath = CommandLine.arguments.count > 4 ? CommandLine.arguments[4] : ""
+let pythonExecutable = CommandLine.arguments.count > 5 ? CommandLine.arguments[5] : "/usr/bin/python3"
 let windowWidth: CGFloat = 260
 let windowHeight: CGFloat = 310
 let petCanvasXOffset: CGFloat = 35
@@ -747,6 +1029,9 @@ let petCanvasYOffset: CGFloat = 88
 func stringValue(_ dict: [String: Any], _ key: String, _ fallback: String) -> String {
     if let value = dict[key] as? String {
         return value
+    }
+    if let value = dict[key] as? NSNumber {
+        return value.stringValue
     }
     return fallback
 }
@@ -758,12 +1043,20 @@ func loadStatus() -> [String: String] {
             "state": "idle",
             "action": "silent",
             "severity": "low",
+            "platform": "generic",
+            "phase": "healthy",
             "headline": "Doctor Pet is waiting for status.",
             "message": "Status file not found yet.",
+            "emotion_message": "",
+            "diagnosis": "No active incident was detected.",
+            "recommendation": "Keep Doctor Pet running while the session continues.",
+            "recovery_prompt": "",
+            "expires_after_seconds": "120",
             "session_id": "",
             "card_path": "",
             "latest_event_id": "",
             "latest_trigger": "",
+            "evidence_count": "0",
             "option_count": "0"
         ]
     }
@@ -775,29 +1068,53 @@ func loadStatus() -> [String: String] {
             "state": "concerned",
             "action": "notify",
             "severity": "medium",
+            "platform": "generic",
+            "phase": "diagnosing",
             "headline": "Doctor Pet could not parse status.",
             "message": "Expected a JSON object.",
+            "emotion_message": "",
+            "diagnosis": "The status file could not be parsed.",
+            "recommendation": "Check the Pet status writer and keep monitoring.",
+            "recovery_prompt": "",
+            "expires_after_seconds": "120",
             "session_id": "",
             "card_path": "",
             "latest_event_id": "",
             "latest_trigger": "",
+            "evidence_count": "0",
             "option_count": "0"
         ]
     }
     let options = dict["options"] as? [[String: Any]] ?? []
     let limitedOptions = Array(options.prefix(6))
+    let evidence = dict["evidence"] as? [[String: Any]] ?? []
+    let limitedEvidence = Array(evidence.prefix(3))
     var result = [
         "state": stringValue(dict, "state", "idle"),
         "action": stringValue(dict, "action", "silent"),
         "severity": stringValue(dict, "severity", "low"),
+        "platform": stringValue(dict, "platform", "generic"),
+        "phase": stringValue(dict, "phase", "healthy"),
         "headline": stringValue(dict, "headline", "Doctor Pet is idle."),
         "message": stringValue(dict, "message", ""),
+        "emotion_message": stringValue(dict, "emotion_message", ""),
+        "diagnosis": stringValue(dict, "diagnosis", ""),
+        "recommendation": stringValue(dict, "recommendation", ""),
+        "recovery_prompt": stringValue(dict, "recovery_prompt", ""),
+        "expires_after_seconds": stringValue(dict, "expires_after_seconds", "120"),
         "session_id": stringValue(dict, "session_id", ""),
         "card_path": stringValue(dict, "card_path", ""),
         "latest_event_id": stringValue(dict, "latest_event_id", ""),
         "latest_trigger": stringValue(dict, "latest_trigger", ""),
+        "evidence_count": String(limitedEvidence.count),
         "option_count": String(limitedOptions.count)
     ]
+    for (index, item) in limitedEvidence.enumerated() {
+        result["evidence_\(index)_file"] = stringValue(item, "file", "")
+        result["evidence_\(index)_line"] = stringValue(item, "line", "")
+        result["evidence_\(index)_role"] = stringValue(item, "role", "")
+        result["evidence_\(index)_quote"] = stringValue(item, "quote", "")
+    }
     for (index, option) in limitedOptions.enumerated() {
         result["option_\(index)_id"] = stringValue(option, "id", "")
         result["option_\(index)_label"] = stringValue(option, "label", "")
@@ -849,12 +1166,17 @@ func bob(_ state: String, _ t: Double) -> CGFloat {
 
 class PetView: NSView {
     var status: [String: String] = loadStatus() {
-        didSet { needsDisplay = true }
+        didSet {
+            observeCurrentEvent()
+            needsDisplay = true
+        }
     }
     var dragOffset: NSPoint = .zero
     var isDragging = false
     var bubbleOpen = false
     var dismissedEventId = ""
+    var activeEventId = ""
+    var eventFirstSeenAt = Date()
     var startedAt = Date()
     var lastStatusReload = Date(timeIntervalSince1970: 0)
     let petImage: NSImage? = assetPath.isEmpty ? nil : NSImage(contentsOfFile: assetPath)
@@ -895,6 +1217,9 @@ class PetView: NSView {
         }
         menu.addItem(item("Diagnose Current Session", #selector(showStatusDialog(_:))))
         let actions = displayActions()
+        if actions.contains("send_recovery") {
+            menu.addItem(item("Send Suggestion to Agent", #selector(sendRecoveryToAgent(_:))))
+        }
         if actions.contains("stage_fix") {
             menu.addItem(item("Stage Repair", #selector(runRepair(_:))))
         }
@@ -913,25 +1238,22 @@ class PetView: NSView {
     }
 
     @objc func showStatusDialog(_ sender: Any?) {
+        observeCurrentEvent()
+        if incidentExpired() {
+            showNotice(
+                title: "Doctor Pet is Watching",
+                message: "The previous alert quieted after inactivity. A new frustration signal will wake the Pet again."
+            )
+            return
+        }
         bubbleOpen = true
         needsDisplay = true
         let state = status["state"] ?? "idle"
         let action = status["action"] ?? "silent"
         let actions = displayActions()
         let alert = NSAlert()
-        alert.messageText = status["headline"] ?? "Agent Doctor Pet"
-        var details = stateLabel(state, action)
-        if let session = status["session_id"], !session.isEmpty {
-            details += "\nSession: \(session)"
-        }
-        if let message = status["message"], !message.isEmpty {
-            details += "\n\n\(message)"
-        }
-        let guidance = guidanceText()
-        if !guidance.isEmpty {
-            details += "\n\nNext: \(guidance)"
-        }
-        alert.informativeText = details
+        alert.messageText = issueTitle()
+        alert.informativeText = detailText(state, action)
         alert.alertStyle = action == "intervene" ? .warning : .informational
         for actionId in actions {
             alert.addButton(withTitle: actionTitle(actionId))
@@ -948,6 +1270,7 @@ class PetView: NSView {
         bubbleOpen = false
         dismissedEventId = currentEventKey()
         needsDisplay = true
+        displayIfNeeded()
     }
 
     @objc func openStatusCard(_ sender: Any?) {
@@ -969,6 +1292,14 @@ class PetView: NSView {
     }
 
     func performAction(_ actionId: String) {
+        if actionId == "send_recovery" {
+            sendRecoveryToAgent(nil)
+            return
+        }
+        if actionId == "copy_recovery_prompt" {
+            copyRecoveryPrompt()
+            return
+        }
         if actionId == "open_card" {
             openStatusCard(nil)
             return
@@ -995,9 +1326,72 @@ class PetView: NSView {
         needsDisplay = true
     }
 
+    @objc func sendRecoveryToAgent(_ sender: Any?) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: pythonExecutable)
+        process.arguments = [
+            "-m",
+            "agent_doctor.cli",
+            "pet-action",
+            "send-recovery",
+            "--status-file",
+            statusPath
+        ]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            showNotice(title: "Suggestion Not Sent", message: error.localizedDescription)
+            return
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        let detail = actionDetail(text)
+        if process.terminationStatus == 0 {
+            bubbleOpen = false
+            dismissedEventId = currentEventKey()
+            showNotice(
+                title: "Suggestion Sent",
+                message: detail.isEmpty ? "The active agent received the recovery suggestion." : detail
+            )
+        } else {
+            showNotice(
+                title: "Suggestion Not Sent",
+                message: detail.isEmpty ? "Doctor Pet could not route this incident." : detail
+            )
+        }
+        needsDisplay = true
+    }
+
+    func copyRecoveryPrompt() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(recoveryPrompt(), forType: .string)
+        showNotice(
+            title: "Recovery Prompt Copied",
+            message: "Paste it into the active agent so it can correct the current response."
+        )
+    }
+
     func isRunnableCommand(_ command: String) -> Bool {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         return !trimmed.isEmpty && !trimmed.contains("<") && !trimmed.contains(">")
+    }
+
+    func actionDetail(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = trimmed.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let dict = obj as? [String: Any] else {
+            return short(trimmed.replacingOccurrences(of: "\n", with: " "), 360)
+        }
+        let detail = stringValue(dict, "detail", "")
+        if !detail.isEmpty {
+            return detail
+        }
+        return stringValue(dict, "mode", "")
     }
 
     func optionValue(_ optionId: String, _ key: String, _ fallback: String) -> String {
@@ -1014,6 +1408,15 @@ class PetView: NSView {
     func displayActions() -> [String] {
         var actions: [String] = []
         var seen = Set<String>()
+        let state = status["state"] ?? "idle"
+        if state == "concerned" || state == "intervening" {
+            if canSendRecovery() {
+                actions.append("send_recovery")
+                seen.insert("send_recovery")
+            }
+            actions.append("copy_recovery_prompt")
+            seen.insert("copy_recovery_prompt")
+        }
         let count = Int(status["option_count"] ?? "0") ?? 0
         for index in 0..<count {
             let optionId = status["option_\(index)_id"] ?? ""
@@ -1030,35 +1433,141 @@ class PetView: NSView {
         return actions
     }
 
+    func canSendRecovery() -> Bool {
+        if incidentExpired() {
+            return false
+        }
+        let platform = status["platform"] ?? "generic"
+        if platform != "openclaw" && platform != "hermes" {
+            return false
+        }
+        let state = status["state"] ?? "idle"
+        if state != "concerned" && state != "intervening" {
+            return false
+        }
+        let file = status["evidence_0_file"] ?? ""
+        return !file.isEmpty && file != "<manual>"
+    }
+
     func actionTitle(_ actionId: String) -> String {
+        if actionId == "send_recovery" {
+            return "Send Suggestion to Agent"
+        }
+        if actionId == "copy_recovery_prompt" {
+            return "Copy Recovery Prompt"
+        }
         if actionId == "open_card" {
             return "Open Status Card"
         }
         if actionId == "dismiss_for_now" {
             let state = status["state"] ?? "idle"
-            return state == "concerned" || state == "intervening" ? "Dismiss for Now" : "Close"
+            return state == "concerned" || state == "intervening" ? "Hide Alert" : "Close"
         }
         return optionValue(actionId, "label", "Run Action")
     }
 
-    func guidanceText() -> String {
-        for optionId in ["pause_and_diagnose", "review_evidence", "keep_watching"] {
-            let label = optionValue(optionId, "label", "")
-            let description = optionValue(optionId, "description", "")
-            if !label.isEmpty && !description.isEmpty {
-                return "\(label): \(description)"
+    func issueTitle() -> String {
+        let trigger = status["latest_trigger"] ?? ""
+        if trigger == "user_frustration_signal" {
+            return "User Frustration Detected"
+        }
+        if trigger == "completion_claim_without_nearby_verification" {
+            return "Completion Claim Needs Verification"
+        }
+        if trigger == "tool_failure_or_hidden_error" {
+            return "Tool Failure Needs Acknowledgement"
+        }
+        return status["headline"] ?? "Agent Doctor Pet"
+    }
+
+    func evidenceText() -> String {
+        let count = Int(status["evidence_count"] ?? "0") ?? 0
+        if count == 0 {
+            return "No transcript evidence was included in this status."
+        }
+        let role = status["evidence_0_role"] ?? ""
+        let quote = short(status["evidence_0_quote"] ?? "", 180)
+        let file = status["evidence_0_file"] ?? ""
+        let line = status["evidence_0_line"] ?? ""
+        var source = file.isEmpty || file == "<manual>" ? "Manual report" : file
+        if !line.isEmpty && line != "0" && !file.isEmpty && file != "<manual>" {
+            source = source.isEmpty ? "line \(line)" : "\(source):\(line)"
+        }
+        let speaker = role.isEmpty ? "Evidence" : role.prefix(1).uppercased() + role.dropFirst()
+        return "\(speaker) quote: \"\(quote)\"\nSource: \(source)"
+    }
+
+    func expectationText() -> String {
+        let recommendation = status["recommendation"] ?? ""
+        if !recommendation.isEmpty {
+            return recommendation
+        }
+        let trigger = status["latest_trigger"] ?? ""
+        if trigger == "user_frustration_signal" {
+            return "The active agent should stop the normal success path, acknowledge the concrete failure, and give one evidence-backed recovery step."
+        }
+        if trigger == "completion_claim_without_nearby_verification" {
+            return "The active agent should verify the claim before repeating success or saying the work is done."
+        }
+        if trigger == "tool_failure_or_hidden_error" {
+            return "The active agent should surface the tool failure and adjust the plan before claiming progress."
+        }
+        return status["message"] ?? "Review the concrete evidence before changing the current response."
+    }
+
+    func userActionText() -> String {
+        let state = status["state"] ?? "idle"
+        if state == "concerned" || state == "intervening" {
+            let quiet = "If you do nothing, the Pet will quiet this alert after \(status["expires_after_seconds"] ?? "120") seconds and keep watching."
+            if canSendRecovery() {
+                return "Send the suggestion to the active agent, copy the prompt manually, or hide this alert to ignore this incident for now. \(quiet)"
+            }
+            return "Copy the recovery prompt into the active agent, or hide this alert to ignore this incident for now. \(quiet)"
+        }
+        for actionId in displayActions() {
+            if actionId != "dismiss_for_now" && !optionValue(actionId, "command", "").isEmpty {
+                return "Use a repair/open action if you want Agent Doctor to stage reviewable follow-up work."
             }
         }
-        let count = Int(status["option_count"] ?? "0") ?? 0
-        for index in 0..<count {
-            let label = status["option_\(index)_label"] ?? ""
-            let description = status["option_\(index)_description"] ?? ""
-            let command = status["option_\(index)_command"] ?? ""
-            if !label.isEmpty && !description.isEmpty && !isRunnableCommand(command) {
-                return "\(label): \(description)"
-            }
+        if !(status["card_path"] ?? "").isEmpty {
+            return "Open the status card for details, or hide this alert after you have seen it."
         }
-        return ""
+        return "No extra input is needed in this popup. Use the issue and evidence above to correct the active agent response, then hide this alert."
+    }
+
+    func detailText(_ state: String, _ action: String) -> String {
+        var details = ""
+        if let emotion = status["emotion_message"], !emotion.isEmpty {
+            details += "\(emotion)\n\n"
+        }
+        details += "Status: \(stateLabel(state, action))"
+        if let session = status["session_id"], !session.isEmpty {
+            details += "\nSession: \(session)"
+        }
+        let diagnosis = status["diagnosis"] ?? ""
+        details += "\n\nDiagnosis:\n\(diagnosis.isEmpty ? (status["message"] ?? "") : diagnosis)"
+        details += "\n\nEvidence:\n\(evidenceText())"
+        details += "\n\nSuggested next step:\n\(expectationText())"
+        details += "\n\nYour choices:\n\(userActionText())"
+        return details
+    }
+
+    func recoveryPrompt() -> String {
+        let prompt = status["recovery_prompt"] ?? ""
+        if !prompt.isEmpty {
+            return prompt
+        }
+        return [
+            "Agent Doctor detected a live quality issue.",
+            "",
+            "Concrete evidence:",
+            evidenceText(),
+            "",
+            "Do this now:",
+            expectationText(),
+            "",
+            "Do not continue the normal success path until the failure is acknowledged and the next corrective step is clear."
+        ].joined(separator: "\n")
     }
 
     func currentEventKey() -> String {
@@ -1069,8 +1578,34 @@ class PetView: NSView {
         return "\(status["state"] ?? "")|\(status["session_id"] ?? "")|\(status["headline"] ?? "")"
     }
 
+    func observeCurrentEvent() {
+        let key = currentEventKey()
+        if activeEventId != key {
+            activeEventId = key
+            eventFirstSeenAt = Date()
+            if dismissedEventId != key {
+                bubbleOpen = false
+            }
+        }
+    }
+
+    func incidentExpired() -> Bool {
+        let state = status["state"] ?? "idle"
+        if state != "concerned" && state != "intervening" {
+            return false
+        }
+        let seconds = Double(status["expires_after_seconds"] ?? "120") ?? 120
+        if seconds <= 0 {
+            return false
+        }
+        return Date().timeIntervalSince(eventFirstSeenAt) >= seconds
+    }
+
     func shouldAutoShowBubble(_ state: String) -> Bool {
         if state != "concerned" && state != "intervening" {
+            return false
+        }
+        if incidentExpired() {
             return false
         }
         return currentEventKey() != dismissedEventId
@@ -1250,6 +1785,15 @@ class PetView: NSView {
     }
 
     func stateLabel(_ state: String, _ action: String) -> String {
+        if state != "idle" {
+            let phase = status["phase"] ?? ""
+            if phase == "advice_ready" {
+                return "Suggestion ready"
+            }
+            if phase == "diagnosing" {
+                return "Diagnosing"
+            }
+        }
         if state == "intervening" {
             return "Intervention needed"
         }
@@ -1284,13 +1828,16 @@ class PetView: NSView {
         tail.lineWidth = 2
         tail.stroke()
         text(stateLabel(state, status["action"] ?? "silent"), 28, 22, 204, 18, 12, accent, true, .left)
-        text(short(status["headline"] ?? "Doctor Pet", 54), 28, 46, 204, 32, 12, color("#111827"), true, .left)
-        text(short(status["message"] ?? "", 90), 28, 82, 204, 28, 11, color("#374151"), false, .left)
+        text(short(issueTitle(), 54), 28, 46, 204, 32, 12, color("#111827"), true, .left)
+        let bubbleText = (status["emotion_message"] ?? "").isEmpty ? evidenceText() : (status["emotion_message"] ?? "")
+        text(short(bubbleText, 90), 28, 82, 204, 28, 11, color("#374151"), false, .left)
         text("Click for details", 28, 116, 204, 18, 11, accent, true, .left)
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let state = status["state"] ?? "idle"
+        observeCurrentEvent()
+        let rawState = status["state"] ?? "idle"
+        let state = incidentExpired() ? "idle" : rawState
         let (_, accent, glow) = palette(state)
         let t = Date().timeIntervalSince(startedAt)
         let shadowPulse = 1.0 + (0.08 * pulse(t, 2.0))

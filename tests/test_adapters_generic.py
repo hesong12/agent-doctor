@@ -1,6 +1,6 @@
 """Tests for GenericAdapter — the always-available fallback.
 
-Generic supports inbox-file delivery and OS notifications. It does not
+Generic supports inbox-file delivery. It does not
 support sending into chat channels, reactions, system events, or
 inference. Capabilities reflect this honestly so downstream code
 branches correctly.

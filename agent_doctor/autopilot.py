@@ -111,6 +111,8 @@ def run_autopilot_once(
     min_severity: Severity = "medium",
     notify_command: str | None = None,
     inbox_dir: Path | None = None,
+    pet_out_dir: Path | None = None,
+    dispatch_adapter: bool = False,
     changed_only: bool = False,
 ) -> AutopilotResult:
     input_path = path or default_transcript_path(platform)
@@ -154,13 +156,13 @@ def run_autopilot_once(
                         delivered = False
                         delivery_errors.append(error)
                         append_delivery_error(out_dir / "delivery-errors.jsonl", event, error)
-                # Phase 3: also dispatch through host adapter for user-visible delivery
-                adapter_error = _dispatch_via_adapter(event, platform=platform)
-                if adapter_error:
-                    # Adapter-side errors don't block delivered status: legacy notify_command
-                    # is the gate. Adapter dispatch is best-effort additive.
-                    delivery_errors.append(adapter_error)
-                    append_delivery_error(out_dir / "delivery-errors.jsonl", event, adapter_error)
+                if dispatch_adapter:
+                    adapter_error = _dispatch_via_adapter(event, platform=platform)
+                    if adapter_error:
+                        # Adapter-side errors don't block delivered status: legacy notify_command
+                        # is the gate. Adapter dispatch is best-effort additive.
+                        delivery_errors.append(adapter_error)
+                        append_delivery_error(out_dir / "delivery-errors.jsonl", event, adapter_error)
                 if delivered:
                     state.record(event)
                 emitted.append(event)
@@ -185,6 +187,8 @@ def run_autopilot_once(
             parse_errors=parse_errors,
         )
         pet_paths = write_pet_artifacts(out_dir, pet_status)
+        if pet_out_dir is not None and pet_out_dir.expanduser() != out_dir:
+            write_pet_artifacts(pet_out_dir, pet_status)
         pet_state = pet_status.state
         pet_status_path = str(pet_paths["status"])
         pet_card_path = str(pet_paths["card"])

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal
@@ -20,6 +22,7 @@ from .redaction import redact_text, redact_value
 from .schema import Finding, Message, Role, Severity
 
 PetState = Literal["idle", "watching", "concerned", "intervening"]
+PetPhase = Literal["healthy", "comforting", "diagnosing", "advice_ready", "ignored"]
 
 _SEVERITY_RANK: dict[Severity, int] = {"low": 0, "medium": 1, "high": 2}
 _ACTION_RANK: dict[Action, int] = {"silent": 0, "notify": 1, "intervene": 2}
@@ -78,6 +81,13 @@ class PetStatus:
     latest_trigger: str | None = None
     card_path: str | None = None
     finding_ids: tuple[str, ...] = ()
+    platform: Platform = "generic"
+    phase: PetPhase = "healthy"
+    emotion_message: str = ""
+    diagnosis: str = ""
+    recommendation: str = ""
+    recovery_prompt: str = ""
+    expires_after_seconds: int = 120
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -100,6 +110,13 @@ class PetStatus:
             "latest_trigger": self.latest_trigger,
             "card_path": self.card_path,
             "finding_ids": list(self.finding_ids),
+            "platform": self.platform,
+            "phase": self.phase,
+            "emotion_message": redact_text(self.emotion_message),
+            "diagnosis": redact_text(self.diagnosis),
+            "recommendation": redact_text(self.recommendation),
+            "recovery_prompt": redact_text(self.recovery_prompt),
+            "expires_after_seconds": self.expires_after_seconds,
         }
 
 
@@ -161,12 +178,14 @@ def build_pet_status(
     sessions = len({message.session_id for message in ordered})
 
     if not ordered:
-        return _idle_status(parse_errors=parse_errors)
+        return _idle_status(platform=platform, parse_errors=parse_errors)
 
     event = _select_event(detected_events)
     if event is not None:
         return _status_from_event(
             event,
+            platform=platform,
+            context=ordered,
             messages=len(ordered),
             sessions=sessions,
             findings=len(detected),
@@ -178,6 +197,7 @@ def build_pet_status(
     if finding is not None:
         return _status_from_finding(
             finding,
+            platform=platform,
             messages=len(ordered),
             sessions=sessions,
             findings=len(detected),
@@ -200,6 +220,12 @@ def build_pet_status(
         findings=0,
         events=0,
         parse_errors=parse_errors,
+        platform=platform,
+        phase="healthy",
+        emotion_message="",
+        diagnosis="No active incident was detected in the current session window.",
+        recommendation="Keep Doctor Pet running while the user continues the conversation.",
+        recovery_prompt="",
     )
 
 
@@ -251,7 +277,7 @@ def write_pet_artifacts(out_dir: Path, status: PetStatus) -> dict[str, Path]:
     return {"status": status_path, "card": card_path}
 
 
-def _idle_status(*, parse_errors: int = 0) -> PetStatus:
+def _idle_status(*, platform: Platform = "generic", parse_errors: int = 0) -> PetStatus:
     return PetStatus(
         name="Agent Doctor Pet",
         persona="doctor",
@@ -268,12 +294,18 @@ def _idle_status(*, parse_errors: int = 0) -> PetStatus:
         findings=0,
         events=0,
         parse_errors=parse_errors,
+        platform=platform,
+        phase="healthy",
+        diagnosis="No active incident was detected.",
+        recommendation="Continue monitoring OpenClaw or Hermes session transcripts.",
     )
 
 
 def _status_from_event(
     event: AutopilotEvent,
     *,
+    platform: Platform,
+    context: list[Message],
     messages: int,
     sessions: int,
     findings: int,
@@ -288,6 +320,14 @@ def _status_from_event(
             role=_event_evidence_role(event),
             quote=event.evidence,
         ),
+    )
+    emotion_message = _emotion_message(event)
+    diagnosis = _incident_diagnosis(event, context)
+    recommendation = _incident_recommendation(event)
+    recovery_prompt = _incident_recovery_prompt(
+        event,
+        diagnosis=diagnosis,
+        recommendation=recommendation,
     )
     return PetStatus(
         name="Agent Doctor Pet",
@@ -309,12 +349,20 @@ def _status_from_event(
         latest_trigger=event.trigger,
         card_path=event.card_path,
         finding_ids=tuple(event.finding_ids),
+        platform=platform,
+        phase="advice_ready" if event.action == "intervene" else "diagnosing",
+        emotion_message=emotion_message,
+        diagnosis=diagnosis,
+        recommendation=recommendation,
+        recovery_prompt=recovery_prompt,
+        expires_after_seconds=120,
     )
 
 
 def _status_from_finding(
     finding: Finding,
     *,
+    platform: Platform,
     messages: int,
     sessions: int,
     findings: int,
@@ -345,6 +393,10 @@ def _status_from_finding(
         events=0,
         parse_errors=parse_errors,
         finding_ids=(finding.id,),
+        platform=platform,
+        phase="diagnosing",
+        diagnosis=f"{finding.title}: {finding.diagnosis}",
+        recommendation="Review the evidence before changing the current agent response.",
     )
 
 
@@ -399,11 +451,165 @@ def _event_message(event: AutopilotEvent) -> str:
     return event.summary
 
 
+def _emotion_message(event: AutopilotEvent) -> str:
+    if _looks_cjk(event.evidence):
+        if event.trigger == "user_frustration_signal":
+            return "我看到了，这次体验让你很不满意。我先帮你把刚才的问题查清楚。"
+        return "我看到了一个可能影响信任的问题。我先帮你核对上下文。"
+    if event.trigger == "user_frustration_signal":
+        return "I see this was frustrating. I am checking the recent session so the next response can recover trust."
+    return "I found a quality risk in the recent session. I am checking the evidence before suggesting a fix."
+
+
+def _incident_diagnosis(event: AutopilotEvent, context: list[Message]) -> str:
+    recent = _recent_session_messages(event, context)
+    chinese = _looks_cjk(event.evidence)
+    signals: list[str] = []
+
+    def add_signal(english: str, chinese_text: str) -> None:
+        signals.append(chinese_text if chinese else english)
+
+    prior_assistant = next((m for m in reversed(recent) if m.role == "assistant"), None)
+    if prior_assistant is not None and COMPLETION_WORDS.search(prior_assistant.content):
+        add_signal(
+            "the assistant appears to have claimed progress or completion",
+            "助手看起来已经声称有进展或完成了任务",
+        )
+    if any(m.role == "tool" and TOOL_FAILURE_WORDS.search(m.content) for m in recent):
+        add_signal(
+            "a nearby tool result contains failure language",
+            "附近的工具结果里出现了失败或错误信息",
+        )
+    user_messages = [m for m in recent if m.role == "user"]
+    if len(user_messages) >= 2:
+        add_signal(
+            "the user has had to correct or challenge the agent more than once",
+            "用户已经不止一次纠正或质疑当前 agent",
+        )
+    if event.trigger == "user_frustration_signal":
+        add_signal(
+            "the latest user message contains frustration or trust-break language",
+            "用户最新消息里出现了明显的不满或信任破裂表达",
+        )
+    if event.trigger == "completion_claim_without_nearby_verification":
+        add_signal(
+            "the assistant made a completion claim without nearby verification",
+            "助手在缺少附近验证证据的情况下声称任务完成",
+        )
+    if event.trigger == "tool_failure_or_hidden_error":
+        add_signal(
+            "a tool failure was not surfaced clearly",
+            "工具失败没有被清楚地告诉用户",
+        )
+    if not signals:
+        signals.append(event.summary)
+    if chinese:
+        return "我判断用户不满的主要原因是：" + "；".join(signals) + "。"
+    return "The likely reason for the user's dissatisfaction is that " + "; ".join(signals) + "."
+
+
+def _incident_recommendation(event: AutopilotEvent) -> str:
+    if _looks_cjk(event.evidence):
+        if event.trigger == "user_frustration_signal":
+            return (
+                "建议当前 agent 先承认这次没有满足用户预期，引用用户刚才的不满点，"
+                "然后给出一个具体的下一步修正动作。不要辩解，也不要写长篇道歉。"
+            )
+        return "建议当前 agent 先核对证据，再用简短、可验证的方式修正当前回复。"
+    if event.trigger == "user_frustration_signal":
+        return (
+            "The active agent should acknowledge the specific failure, cite the user-visible "
+            "evidence, and give one concrete next corrective step. It should not defend the "
+            "previous response or write a long apology."
+        )
+    if event.trigger == "completion_claim_without_nearby_verification":
+        return "The active agent should verify the claim before repeating success or saying the work is done."
+    if event.trigger == "tool_failure_or_hidden_error":
+        return "The active agent should surface the tool failure and adjust the plan before claiming progress."
+    return "The active agent should respond with evidence and one concrete next step."
+
+
+def _incident_recovery_prompt(
+    event: AutopilotEvent,
+    *,
+    diagnosis: str,
+    recommendation: str,
+) -> str:
+    if _looks_cjk(event.evidence):
+        return "\n".join(
+            [
+                "Agent Doctor 检测到当前会话出现质量/信任问题。",
+                "",
+                "用户原话:",
+                redact_text(event.evidence),
+                "",
+                "诊断:",
+                redact_text(diagnosis),
+                "",
+                "请现在这样修正:",
+                redact_text(recommendation),
+            ]
+        )
+    return "\n".join(
+        [
+            "Agent Doctor detected a live quality issue in this session.",
+            "",
+            "User-visible evidence:",
+            redact_text(event.evidence),
+            "",
+            "Diagnosis:",
+            redact_text(diagnosis),
+            "",
+            "Do this now:",
+            redact_text(recommendation),
+        ]
+    )
+
+
+def _recent_session_messages(event: AutopilotEvent, context: list[Message]) -> list[Message]:
+    matching = [message for message in context if message.session_id == event.session_id]
+    if not matching:
+        return []
+    event_index = next(
+        (
+            index
+            for index, message in enumerate(matching)
+            if message.file == event.message_file and message.line == event.message_line
+        ),
+        len(matching) - 1,
+    )
+    return matching[max(0, event_index - 8) : event_index + 1]
+
+
+def _looks_cjk(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+COMPLETION_WORDS = re.compile(
+    r"\b(done|completed|fixed|resolved|all set|works now|verified|passed)\b"
+    r"|完成了|搞定了|修好了|已经好了|已验证|驗證通過",
+    re.IGNORECASE,
+)
+
+TOOL_FAILURE_WORDS = re.compile(
+    r"\b(error|failed|failure|exception|traceback|timeout|denied)\b|失败|錯誤|错误|异常",
+    re.IGNORECASE,
+)
+
+
 def _event_options(event: AutopilotEvent) -> tuple[PetOption, ...]:
     if event.message_file == "<manual>":
-        stage_command = "agent-doctor scan --path <sessions> --out ./postmortem"
+        stage_command = ""
     else:
-        stage_command = f"agent-doctor scan --path {event.message_file} --out ./postmortem"
+        repair_dir = Path("~/.agent-doctor/repairs").expanduser() / _safe_session_slug(
+            event.session_id
+        )
+        stage_command = (
+            f"agent-doctor scan --path {shlex.quote(event.message_file)} "
+            f"--out {shlex.quote(str(repair_dir))} && "
+            f"agent-doctor apply --findings {shlex.quote(str(repair_dir))} "
+            f"--out {shlex.quote(str(repair_dir / 'staging'))} --min-severity medium"
+        )
     return (
         PetOption(
             id="pause_and_diagnose",
@@ -412,8 +618,8 @@ def _event_options(event: AutopilotEvent) -> tuple[PetOption, ...]:
         ),
         PetOption(
             id="stage_fix",
-            label="Stage fix",
-            description="Turn this incident into reviewable SOP, identity, or eval patches.",
+            label="Stage repair",
+            description="Create reviewable SOP, identity, memory, or eval patches for this incident.",
             command=stage_command,
         ),
         PetOption(
@@ -475,6 +681,11 @@ def _latest_session_id(messages: list[Message]) -> str:
         if message.session_id:
             return message.session_id
     return ""
+
+
+def _safe_session_slug(session_id: str) -> str:
+    slug = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in session_id)
+    return slug.strip("-") or "manual"
 
 
 def _write_private_text(path: Path, text: str) -> None:

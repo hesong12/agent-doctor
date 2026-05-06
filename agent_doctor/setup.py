@@ -8,10 +8,9 @@ from typing import Literal
 
 from .autopilot import Platform
 from .bootstrap import BootstrapResult, bootstrap, detect_hosts
-from .delivery import default_openclaw_notify_command
 from .ingest import host_home
 from .schema import Severity
-from .service import ServiceResult, install_sidecar_service
+from .service import ServiceResult, install_desktop_pet_service, install_sidecar_service
 
 SetupPlatform = Literal["openclaw", "hermes"]
 
@@ -22,7 +21,7 @@ class AutopilotSetupTarget:
     detected: bool
     transcript_path: Path
     out_dir: Path
-    inbox_dir: Path
+    inbox_dir: Path | None
     service: ServiceResult | None = None
     skipped_reason: str = ""
 
@@ -32,6 +31,8 @@ class AutopilotSetupResult:
     home: Path
     bootstrap: BootstrapResult | None
     targets: list[AutopilotSetupTarget] = field(default_factory=list)
+    pet_service: ServiceResult | None = None
+    desktop_pet: bool = True
     dry_run: bool = False
 
     def installed(self) -> list[AutopilotSetupTarget]:
@@ -49,11 +50,12 @@ def setup_autopilot(
     invalidate_cache: bool = True,
     force: bool = False,
     dry_run: bool = False,
-    interval: float = 15.0,
+    interval: float = 2.0,
     cooldown_seconds: int = 3600,
     min_severity: Severity = "high",
     notify_command: str | None = None,
     baseline_existing: bool = True,
+    desktop_pet: bool = True,
 ) -> AutopilotSetupResult:
     """Install skills and sidecar services for every detected local host.
 
@@ -67,7 +69,8 @@ def setup_autopilot(
     real_home = (home or host_home()).expanduser()
     selected = set(platforms or ["openclaw", "hermes"])
     out_base = (out_root or real_home / ".agent-doctor").expanduser()
-    inbox_base = (inbox_root or out_base / "inbox").expanduser()
+    inbox_base = inbox_root.expanduser() if inbox_root is not None else None
+    pet_dir = out_base / "pet"
 
     boot: BootstrapResult | None = None
     if bootstrap_hosts:
@@ -87,7 +90,7 @@ def setup_autopilot(
         is_detected = bool(target and target.detected)
         transcript_path = _default_transcript_path(real_home, platform)
         out_dir = out_base / platform
-        inbox_dir = inbox_base / platform
+        inbox_dir = inbox_base / platform if inbox_base is not None else None
 
         if not is_detected and not force:
             targets.append(
@@ -124,6 +127,7 @@ def setup_autopilot(
             min_severity=min_severity,
             notify_command=_notify_command_for_platform(platform, notify_command),
             inbox_dir=inbox_dir,
+            pet_out_dir=pet_dir,
             start=start,
             baseline_existing=baseline_existing,
         )
@@ -138,10 +142,19 @@ def setup_autopilot(
             )
         )
 
+    pet_service: ServiceResult | None = None
+    if desktop_pet and not dry_run and any(target.service is not None for target in targets):
+        pet_service = install_desktop_pet_service(
+            status_file=pet_dir / "pet-status.json",
+            start=start,
+        )
+
     return AutopilotSetupResult(
         home=real_home,
         bootstrap=boot,
         targets=targets,
+        pet_service=pet_service,
+        desktop_pet=desktop_pet,
         dry_run=dry_run,
     )
 
@@ -180,13 +193,21 @@ def render_autopilot_setup_result(result: AutopilotSetupResult) -> str:
             lines.append(f"  [dry-run] {target.platform:<8} would install service")
             lines.append(f"    transcripts: {target.transcript_path}")
             lines.append(f"    out: {target.out_dir}")
-            lines.append(f"    inbox: {target.inbox_dir}")
+            lines.append(f"    inbox: {target.inbox_dir or 'disabled'}")
         else:
             lines.append(f"  [skipped] {target.platform:<8} {target.skipped_reason}")
+    if result.dry_run and result.desktop_pet:
+        lines.append("  [dry-run] pet      would install desktop Doctor Pet service")
+    elif result.pet_service is not None:
+        started = "started" if result.pet_service.started else "written"
+        lines.append(f"  [{started}] pet      {result.pet_service.service_file}")
+        lines.append("    command: " + " ".join(result.pet_service.command))
+        for warning in result.pet_service.warnings:
+            lines.append(f"    warning: {warning}")
     lines.extend(
         [
             "",
-            "Boundary: setup only writes Agent Doctor skills, Agent Doctor state, and a user-level sidecar service.",
+            "Boundary: setup only writes Agent Doctor skills, Agent Doctor state, and user-level Agent Doctor services.",
             "It does not edit OpenClaw/Hermes runtime configuration.",
         ]
     )
@@ -212,6 +233,4 @@ def _service_platform(platform: SetupPlatform) -> Platform:
 def _notify_command_for_platform(platform: SetupPlatform, explicit: str | None) -> str | None:
     if explicit is not None:
         return explicit
-    if platform == "openclaw":
-        return default_openclaw_notify_command()
     return None

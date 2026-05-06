@@ -330,7 +330,7 @@ class OpenClawAdapter:
           - 'explicit:<name>' (named one-off session)
           - '<channel>[-<id>]' (real external channel: telegram, discord, etc.)
 
-        Local scopes resolve to channel='tui' (we only do inbox + OS notify).
+        Local scopes resolve to channel='tui' (we only do inbox fallback).
         External channels keep their channel slug for `openclaw message send`.
 
         Falls back to GenericAdapter's parser if structure is unexpected.

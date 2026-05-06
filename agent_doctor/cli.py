@@ -147,6 +147,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pet_display.set_defaults(func=_cmd_pet_display)
 
+    pet_action = subparsers.add_parser(
+        "pet-action",
+        help="Run a local backend action requested by the Doctor Pet frontend.",
+    )
+    pet_action_subs = pet_action.add_subparsers(dest="pet_action", required=True)
+    send_recovery = pet_action_subs.add_parser(
+        "send-recovery",
+        help="Send the current Pet recovery suggestion back through the host adapter.",
+    )
+    send_recovery.add_argument(
+        "--status-file",
+        type=Path,
+        required=True,
+        help="pet-status.json containing the incident to route.",
+    )
+    send_recovery.set_defaults(func=_cmd_pet_action_send_recovery)
+
     autopilot = subparsers.add_parser(
         "autopilot",
         help="Run the platform-agnostic sidecar trigger engine without host runtime hooks.",
@@ -176,14 +193,14 @@ def build_parser() -> argparse.ArgumentParser:
     autopilot.add_argument(
         "--interval",
         type=float,
-        default=15.0,
+        default=2.0,
         help="Polling interval in seconds when --watch is set.",
     )
     autopilot.add_argument(
         "--cooldown-seconds",
         type=int,
         default=3600,
-        help="Suppress repeated notifications for the same session/trigger.",
+        help="Suppress repeated events for the same session/trigger.",
     )
     autopilot.add_argument(
         "--min-severity",
@@ -199,6 +216,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--inbox-dir",
         type=Path,
         help="Optional directory for per-session advisory files that agents can read.",
+    )
+    autopilot.add_argument(
+        "--pet-out",
+        type=Path,
+        help="Optional shared Doctor Pet status directory. Defaults to the autopilot output directory.",
+    )
+    autopilot.add_argument(
+        "--dispatch-adapter",
+        action="store_true",
+        help="Legacy: also deliver events through host adapters. Default interaction is Doctor Pet only.",
     )
     autopilot.add_argument(
         "--changed-only",
@@ -230,12 +257,20 @@ def build_parser() -> argparse.ArgumentParser:
     setup_autopilot.add_argument(
         "--inbox-root",
         type=Path,
-        help="Root inbox directory. Defaults to <out-root>/inbox.",
+        help="Optional root inbox directory for legacy advisory files.",
     )
-    setup_autopilot.add_argument("--interval", type=float, default=15.0)
+    setup_autopilot.add_argument("--interval", type=float, default=2.0)
     setup_autopilot.add_argument("--cooldown-seconds", type=int, default=3600)
     setup_autopilot.add_argument("--min-severity", choices=["low", "medium", "high"], default="high")
-    setup_autopilot.add_argument("--notify-command")
+    setup_autopilot.add_argument(
+        "--notify-command",
+        help="Legacy explicit hook. By default setup uses Doctor Pet only and does not send system notifications.",
+    )
+    setup_autopilot.add_argument(
+        "--no-desktop-pet",
+        action="store_true",
+        help="Do not install/start the desktop Doctor Pet service.",
+    )
     setup_autopilot.add_argument(
         "--no-start",
         action="store_true",
@@ -280,7 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
     service_install.add_argument("--platform", choices=["openclaw", "hermes", "generic"], required=True)
     service_install.add_argument("--path", type=Path, help="Transcript path override; required for generic.")
     service_install.add_argument("--out", type=Path, required=True, help="Autopilot artifact directory.")
-    service_install.add_argument("--interval", type=float, default=15.0)
+    service_install.add_argument("--interval", type=float, default=2.0)
     service_install.add_argument("--cooldown-seconds", type=int, default=3600)
     service_install.add_argument("--min-severity", choices=["low", "medium", "high"], default="medium")
     service_install.add_argument("--notify-command")
@@ -698,6 +733,14 @@ def _cmd_pet_display(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_pet_action_send_recovery(args: argparse.Namespace) -> int:
+    from .pet_actions import send_recovery_from_status_file
+
+    result = send_recovery_from_status_file(args.status_file)
+    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+    return 0 if result.delivered else 1
+
+
 def _cmd_autopilot(args: argparse.Namespace) -> int:
     if args.platform == "generic" and args.path is None:
         raise ValueError("generic autopilot requires --path.")
@@ -714,6 +757,8 @@ def _cmd_autopilot(args: argparse.Namespace) -> int:
             min_severity=args.min_severity,
             notify_command=args.notify_command,
             inbox_dir=args.inbox_dir,
+            pet_out_dir=args.pet_out,
+            dispatch_adapter=args.dispatch_adapter,
             changed_only=changed_only,
         )
         print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
@@ -769,6 +814,7 @@ def _cmd_setup_autopilot(args: argparse.Namespace) -> int:
         min_severity=args.min_severity,
         notify_command=args.notify_command,
         baseline_existing=not args.no_baseline_existing,
+        desktop_pet=not args.no_desktop_pet,
     )
     print(render_autopilot_setup_result(result))
     return 0

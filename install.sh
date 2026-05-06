@@ -174,5 +174,5 @@ fi
 log ""
 log "✓ Agent Doctor is ready."
 log "  Try: agent-doctor doctor"
-log "  Autopilot: agent-doctor setup autopilot"
+log "  Desktop Doctor Pet + autopilot: agent-doctor setup autopilot"
 log "  Or just say to your AI agent: 'review my last session'."

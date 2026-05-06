@@ -28,7 +28,7 @@ def test_setup_autopilot_detects_hosts_bootstraps_and_installs_services(
     assert result.bootstrap is not None
     assert {host.target for host in result.bootstrap.installed()} >= {"openclaw", "hermes"}
     assert {target.platform for target in result.installed()} == {"openclaw", "hermes"}
-    assert len(calls) == 6  # bootout/bootstrap/kickstart for each launchd service
+    assert len(calls) == 9  # bootout/bootstrap/kickstart for each sidecar plus desktop pet
 
     for target in result.installed():
         assert target.service is not None
@@ -37,15 +37,21 @@ def test_setup_autopilot_detects_hosts_bootstraps_and_installs_services(
         assert args[:4] == [sys.executable, "-m", "agent_doctor.cli", "autopilot"]
         assert "--watch" in args
         assert "--changed-only" in args
-        assert "--inbox-dir" in args
-        if target.platform == "openclaw":
-            assert "--notify-command" in args
-            notify_command = args[args.index("--notify-command") + 1]
-            assert notify_command.startswith(sys.executable)
-            assert "notify openclaw-system-event" in notify_command
-        else:
-            assert "--notify-command" not in args
+        assert "--pet-out" in args
+        assert args[args.index("--pet-out") + 1] == str(tmp_path / ".agent-doctor" / "pet")
+        assert "--inbox-dir" not in args
+        assert "--notify-command" not in args
         assert target.service.started is True
+
+    assert result.pet_service is not None
+    pet_payload = plistlib.loads(result.pet_service.service_file.read_bytes())
+    assert pet_payload["KeepAlive"] is False
+    assert pet_payload["ProgramArguments"][:4] == [
+        sys.executable,
+        "-m",
+        "agent_doctor.cli",
+        "pet-display",
+    ]
 
 
 def test_setup_autopilot_skips_missing_hosts_without_force(tmp_path: Path, monkeypatch) -> None:
@@ -67,6 +73,7 @@ def test_setup_autopilot_dry_run_writes_nothing(tmp_path: Path, monkeypatch) -> 
 
     assert "[dry-run] openclaw" in text
     assert "would install service" in text
+    assert "pet      would install desktop Doctor Pet service" in text
     assert not (tmp_path / "Library" / "LaunchAgents").exists()
 
 

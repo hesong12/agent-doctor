@@ -12,12 +12,17 @@ from agent_doctor.pet import (
 )
 from agent_doctor.pet_display import (
     _command_is_runnable,
+    _dialog_detail_text,
     _display_actions,
+    _issue_title,
+    _recovery_prompt,
     _state_label,
+    _visible_snapshot,
     pet_asset_path,
     read_status_payload,
     snapshot_from_payload,
 )
+from agent_doctor.pet_actions import send_recovery_from_status_file
 from agent_doctor import pet_display
 
 
@@ -36,6 +41,11 @@ def test_pet_manual_frustration_summon_intervenes() -> None:
     assert status.severity == "high"
     assert status.session_id == "s-manual"
     assert status.latest_trigger == "user_frustration_signal"
+    assert status.phase == "advice_ready"
+    assert status.emotion_message
+    assert status.diagnosis
+    assert status.recommendation
+    assert status.recovery_prompt
     assert [option.id for option in status.options] == [
         "pause_and_diagnose",
         "stage_fix",
@@ -45,6 +55,28 @@ def test_pet_manual_frustration_summon_intervenes() -> None:
     text = render_pet_markdown(status)
     assert "Agent Doctor Pet" in text
     assert "Pause and diagnose" in text
+
+
+def test_pet_event_stage_repair_command_targets_agent_doctor_repairs(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s repair/1",
+                "role": "user",
+                "content": "你怎么这么笨？",
+            }
+        ],
+    )
+
+    status = pet_status_for_path(transcript)
+    stage = [option for option in status.options if option.id == "stage_fix"][0]
+
+    assert stage.label == "Stage repair"
+    assert "agent-doctor scan --path" in stage.command
+    assert ".agent-doctor/repairs/s-repair-1" in stage.command
+    assert "agent-doctor apply --findings" in stage.command
 
 
 def test_pet_path_status_writes_private_redacted_artifacts(tmp_path: Path) -> None:
@@ -151,6 +183,11 @@ def test_pet_display_cli_dry_run_reads_status_file(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["state"] == "intervening"
     assert payload["action"] == "intervene"
+    assert payload["phase"] == "advice_ready"
+    assert payload["emotion_message"]
+    assert payload["diagnosis"]
+    assert payload["recommendation"]
+    assert payload["recovery_prompt"]
 
 
 def test_pet_display_snapshot_exposes_user_facing_state_label(tmp_path: Path) -> None:
@@ -161,12 +198,18 @@ def test_pet_display_snapshot_exposes_user_facing_state_label(tmp_path: Path) ->
     assert snapshot.state == "intervening"
     assert snapshot.action == "intervene"
     assert snapshot.primary_label == "Stage repair"
+    assert snapshot.evidence[0].quote == "Why are you so dumb?"
+    assert _issue_title(snapshot) == "User frustration detected"
+    assert "Why are you so dumb?" in _dialog_detail_text(snapshot)
+    assert "Manual report" in _dialog_detail_text(snapshot)
+    assert "Copy the recovery prompt" in _dialog_detail_text(snapshot)
+    assert "Do this now" in _recovery_prompt(snapshot)
     assert [option.id for option in snapshot.options] == [
         "pause_and_diagnose",
         "stage_fix",
         "keep_watching",
     ]
-    assert _state_label(snapshot) == "Intervention needed"
+    assert _state_label(snapshot) == "Suggestion ready"
 
 
 def test_pet_display_hides_manual_stage_repair_without_command() -> None:
@@ -176,6 +219,10 @@ def test_pet_display_hides_manual_stage_repair_without_command() -> None:
     assert snapshot.primary_label == "Stage repair"
     assert snapshot.primary_command == ""
     assert "stage_fix" not in [action.id for action in _display_actions(snapshot)]
+    assert [action.id for action in _display_actions(snapshot)] == [
+        "copy_recovery_prompt",
+        "dismiss_for_now",
+    ]
 
 
 def test_pet_display_hides_open_card_when_card_path_is_absent() -> None:
@@ -218,10 +265,105 @@ def test_pet_display_shows_runnable_stage_repair_action() -> None:
 
     assert _command_is_runnable(snapshot.primary_command)
     assert [action.id for action in _display_actions(snapshot)] == [
+        "copy_recovery_prompt",
         "stage_fix",
         "open_card",
         "dismiss_for_now",
     ]
+
+
+def test_pet_display_shows_send_recovery_for_transcript_backed_openclaw(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s-send",
+                "role": "user",
+                "content": "Are you stupid?",
+            }
+        ],
+    )
+
+    status = pet_status_for_path(transcript, platform="openclaw")
+    snapshot = snapshot_from_payload(status.to_dict())
+
+    assert [action.id for action in _display_actions(snapshot)][:2] == [
+        "send_recovery",
+        "copy_recovery_prompt",
+    ]
+
+
+def test_pet_display_auto_recovers_alert_after_inactivity() -> None:
+    snapshot = snapshot_from_payload(
+        {
+            "platform": "openclaw",
+            "state": "intervening",
+            "action": "intervene",
+            "severity": "high",
+            "phase": "advice_ready",
+            "headline": "Doctor is intervening.",
+            "message": "Pause and diagnose.",
+            "session_id": "s-expire",
+            "latest_event_id": "event-expire",
+            "expires_after_seconds": 1,
+            "evidence": [{"file": "/tmp/session.jsonl", "line": 1, "role": "user", "quote": "bad"}],
+        }
+    )
+    interaction = {"dismissed_event": "", "seen_event": "", "seen_at": 0.0, "bubble": False}
+
+    visible = _visible_snapshot(snapshot, interaction, 10.0)
+    expired = _visible_snapshot(snapshot, interaction, 11.5)
+
+    assert visible.state == "intervening"
+    assert expired.state == "idle"
+    assert expired.phase == "healthy"
+
+
+def test_pet_action_send_recovery_rejects_manual_incident(tmp_path: Path) -> None:
+    status = pet_status_for_text("Are you stupid?", platform="openclaw", session_id="s-manual")
+    status_file = tmp_path / "pet-status.json"
+    status_file.write_text(json.dumps(status.to_dict(), ensure_ascii=False), encoding="utf-8")
+
+    result = send_recovery_from_status_file(status_file)
+
+    assert not result.delivered
+    assert result.mode == "manual"
+
+
+def test_pet_action_send_recovery_writes_hermes_inbox(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import agent_doctor.adapters.hermes as hermes_module
+
+    home = tmp_path / "home"
+    hermes_home = home / ".hermes"
+    hermes_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(hermes_module, "HERMES_HOME", hermes_home)
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s-hermes",
+                "role": "user",
+                "content": "Why are you so dumb?",
+            }
+        ],
+    )
+    status = pet_status_for_path(transcript, platform="hermes")
+    status_file = tmp_path / "pet-status.json"
+    status_file.write_text(json.dumps(status.to_dict(), ensure_ascii=False), encoding="utf-8")
+
+    result = send_recovery_from_status_file(status_file)
+
+    inbox = home / ".agent-doctor" / "hermes" / "inbox" / "s-hermes.md"
+    assert result.delivered
+    assert result.mode == "hermes_tui"
+    assert inbox.exists()
+    assert "Agent Doctor recovery suggestion" in inbox.read_text(encoding="utf-8")
 
 
 def test_appkit_display_source_has_context_menu_quit() -> None:
@@ -241,6 +383,16 @@ def test_appkit_display_source_has_context_menu_quit() -> None:
     assert "displayActions" in source
     assert "dismissedEventId" in source
     assert "isRunnableCommand" in source
+    assert "evidence_0_quote" in source
+    assert "Suggested next step" in source
+    assert "Copy Recovery Prompt" in source
+    assert "Send Suggestion to Agent" in source
+    assert "sendRecoveryToAgent" in source
+    assert "pythonExecutable" in source
+    assert "pet-action" in source
+    assert "expires_after_seconds" in source
+    assert "NSPasteboard.general.setString" in source
+    assert "Hide Alert" in source
     assert "Click for details" in source
     assert "Intervention needed" in source
 

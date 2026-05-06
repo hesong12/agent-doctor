@@ -14,7 +14,7 @@ Public API:
     Reaction         — inbound reaction on one of our messages
     SessionMetadata  — what we learn from a session JSONL header
 
-    GenericAdapter   — always-available file-inbox + OS-notification fallback
+    GenericAdapter   — always-available file-inbox fallback
 """
 
 from .base import (

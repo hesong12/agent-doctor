@@ -7,8 +7,8 @@ detects (or for generic JSONL inputs from other frameworks).
 
 All capability flags are False. Only `send_message` works, and only
 when `Target.inbox_path` is set — it writes the message to that
-path. OS-native notification (macOS osascript / Linux notify-send)
-is best-effort.
+path. It does not emit OS-native notifications; Doctor Pet is the
+default user-facing surface.
 
 ## When to use
 

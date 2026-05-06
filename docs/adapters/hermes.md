@@ -14,8 +14,8 @@ Doctor's Hermes adapter currently:
 Hermes does not yet expose `hermes message send` / reactions /
 system-event / infer commands in a stable form (or this maintainer
 does not yet have access to them). The adapter is shipped in this
-state so Hermes users get graceful degradation (file inbox + OS
-notification) rather than runtime errors.
+state so Hermes users get graceful degradation through local artifacts and
+Doctor Pet rather than runtime errors.
 
 ## How to extend
 

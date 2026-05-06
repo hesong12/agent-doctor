@@ -1,4 +1,4 @@
-"""GenericAdapter: file-inbox + OS-notification fallback for any host.
+"""GenericAdapter: file-inbox fallback for any host.
 
 This is the always-available adapter. It does not require OpenClaw,
 Hermes, or any specific binary. It is what downstream code falls back
@@ -10,11 +10,8 @@ for what's covered by `send_message` (inbox-file write).
 from __future__ import annotations
 
 import json
-import logging
 import os
-import platform
 import re
-import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -28,9 +25,6 @@ from .base import (
     SessionMetadata,
     Target,
 )
-
-_log = logging.getLogger(__name__)
-
 
 class GenericAdapter:
     """Generic / fallback adapter. No host-specific CLI required."""
@@ -49,7 +43,7 @@ class GenericAdapter:
         body: MessageBody,
         kind: MessageKind,
     ) -> str:
-        """Write the message to target.inbox_path. OS notification on best-effort.
+        """Write the message to target.inbox_path.
 
         Returns a synthetic message_id for tracking in messages.jsonl.
         """
@@ -65,7 +59,6 @@ class GenericAdapter:
             inbox.chmod(0o600)
         except OSError:
             pass
-        self._best_effort_os_notification(body)
         return f"generic:{uuid.uuid4().hex[:12]}:{int(time.time())}"
 
     def edit_message(self, target: Target, message_id: str, body: MessageBody) -> None:
@@ -143,43 +136,3 @@ class GenericAdapter:
         if cjk > latin and cjk > 20:
             return "zh"
         return "en"
-
-    @staticmethod
-    def _best_effort_os_notification(body: MessageBody) -> None:
-        """macOS osascript / Linux notify-send. Failures are silent —
-        capability flag is for in-channel delivery, not OS notification.
-
-        On macOS the title and message are passed via `on run argv` so
-        AppleScript treats them as data not code. Earlier f-string
-        interpolation allowed a malicious body containing AppleScript
-        escape sequences (e.g., `do shell script "..."`) to execute
-        arbitrary commands under the user's account. Do not regress.
-        """
-        title = body.header[:120]
-        message = body.body[:240]
-        if platform.system() == "Darwin":
-            script = (
-                "on run argv\n"
-                "  display notification (item 1 of argv) with title (item 2 of argv)\n"
-                "end run"
-            )
-            try:
-                subprocess.run(
-                    ["osascript", "-e", script, message, title],
-                    capture_output=True,
-                    timeout=5,
-                )
-            except (OSError, subprocess.SubprocessError) as exc:
-                _log.debug("OS notification failed: %s", exc)
-        elif platform.system() == "Linux":
-            try:
-                # title/message already passed as separate argv elements —
-                # notify-send does not interpret them as a shell or markup
-                # program, so this branch was already injection-safe.
-                subprocess.run(
-                    ["notify-send", title, message],
-                    capture_output=True,
-                    timeout=5,
-                )
-            except (OSError, subprocess.SubprocessError) as exc:
-                _log.debug("OS notification failed: %s", exc)

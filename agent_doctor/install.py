@@ -160,7 +160,11 @@ Desktop display:
 
 The desktop pet renders a packaged chibi doctor sprite when available and
 animates locally by state: idle breathing, watching scan, concerned diagnostic
-pulse, and intervening alert.
+pulse, and intervening alert. In autopilot setup it is the default user-facing
+entry point: click it for the status/action dialog, right-click it to diagnose,
+mute, open the card, stage a repair, or quit. For transcript-backed
+OpenClaw/Hermes incidents, the dialog can send the generated recovery suggestion
+back through the local host adapter; manual incidents remain copy-only.
 
 If Doctor Pet returns `action=intervene`, pause the normal success path, name
 the concrete failure, cite the evidence, and provide one corrective next step.
@@ -176,23 +180,21 @@ to remember to ask the agent for diagnosis.
 - Hermes: `agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes`
 - Long-running mode: add `--watch`
 - Zero-touch setup: `agent-doctor setup autopilot`
-- OpenClaw live delivery: `agent-doctor notify openclaw-system-event`
-- Service install: `agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw --inbox-dir ~/.agent-doctor/inbox/openclaw --start`
+- Service install: `agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw --start`
 
 The sidecar only reads existing transcript/log JSONL through Agent Doctor's
 ingestion layer and writes diagnosis cards/events under `--out`. It also
-refreshes `pet-status.json` and `pet-card.md` there on every pass, so Doctor
-Pet is always displayable even when idle. It does not modify OpenClaw, Hermes,
-or live agent configuration.
+refreshes host-local Pet status there and, after `setup autopilot`, shared
+desktop Pet status under `~/.agent-doctor/pet`. It does not send system
+notifications or host messages by default, and it does not modify OpenClaw,
+Hermes, or live agent configuration.
 
 When the user asks you to enable proactive diagnosis, prefer
 `agent-doctor setup autopilot`. It detects OpenClaw/Hermes, installs or
 refreshes Agent Doctor skills, baselines existing transcripts, writes the
-right launchd/systemd user services, and starts them with changed-file scanning.
-For OpenClaw, setup also installs a notify command that sends high-severity
-intervention cards through `openclaw system event --mode now`, so the active
-agent receives the recovery instruction without modifying OpenClaw runtime
-configuration.
+right launchd/systemd user services, installs the desktop Doctor Pet service,
+and starts them with changed-file scanning. Doctor Pet is the only default
+interactive surface; legacy notify hooks are explicit opt-ins.
 Do not ask the user to manually edit host configuration.
 
 ## Detection taxonomy (what this skill catches)
