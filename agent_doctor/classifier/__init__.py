@@ -8,6 +8,7 @@ This package extends the existing `agent_doctor.frustration` module with:
 Tier 1 (regex) lives in agent_doctor.frustration and is consumed here.
 """
 
+from .fused import fused_classify
 from .signal_fusion import (
     SignalScores,
     score_typing_shape,
@@ -29,4 +30,5 @@ __all__ = [
     "UserDict",
     "load_user_dict",
     "save_user_dict",
+    "fused_classify",
 ]

@@ -265,7 +265,7 @@ def detect_autopilot_events(
     for index, message in enumerate(ordered):
         session_findings = findings_by_session.get(message.session_id, [])
         if message.role == "user":
-            frustration = classify_user_frustration(message.content)
+            frustration = _classify_user_message(message, ordered, index, platform)
         else:
             frustration = FrustrationSignal(matched=False)
         if frustration.matched and frustration.severity in {"medium", "high"}:
@@ -495,6 +495,68 @@ def dispatch_event(
     except (NotImplementedError, RuntimeError) as exc:
         return f"adapter_error: {exc}"
     return None
+
+
+def _classify_user_message(
+    message: Message,
+    ordered: list[Message],
+    index: int,
+    platform: Platform,
+) -> FrustrationSignal:
+    """Phase 2 fused classification with recent-message context.
+
+    Falls back to Tier 1 only if the classifier package isn't importable
+    (defensive) or no adapter is detected for the platform.
+    """
+    try:
+        from .classifier.fused import fused_classify
+        from .classifier.user_dict import load_user_dict
+        from .adapters import GenericAdapter, HermesAdapter, OpenClawAdapter
+    except ImportError:
+        return classify_user_frustration(message.content)
+
+    # Build recent user messages for the same session
+    recent: list[str] = []
+    for prior in ordered[: index + 1]:
+        if prior.role == "user" and prior.session_id == message.session_id:
+            recent.append(prior.content)
+    recent = recent[-10:]  # last 10 user messages
+
+    # User dict
+    user_dict = None
+    try:
+        dict_path = Path("~/.agent-doctor").expanduser() / platform / "user-dict.json"
+        user_dict = load_user_dict(dict_path)
+    except Exception:
+        pass
+
+    # Adapter for Tier 2
+    adapter_classes = {
+        "openclaw": OpenClawAdapter,
+        "hermes": HermesAdapter,
+        "generic": GenericAdapter,
+    }
+    cls = adapter_classes.get(platform, GenericAdapter)
+    instance = None
+    try:
+        instance = cls.detect()
+    except Exception:
+        pass
+    if instance is None:
+        instance = GenericAdapter()  # has can_infer_text=False; Tier 2 will skip
+
+    cache_path = Path("~/.agent-doctor").expanduser() / platform / "tier2-cache.db"
+    try:
+        return fused_classify(
+            message.content,
+            recent_user_messages=recent,
+            user_dict=user_dict,
+            adapter=instance,
+            tier2_cache_path=cache_path,
+        )
+    except Exception:
+        # Defensive: if fused fails for any reason, fall back to Tier 1
+        return classify_user_frustration(message.content)
 
 
 def _dispatch_via_adapter(event: AutopilotEvent, *, platform: Platform) -> str | None:
