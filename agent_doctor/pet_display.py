@@ -960,8 +960,8 @@ def _draw_vector_pet(canvas: Any, snapshot: DisplaySnapshot, *, phase: float) ->
     canvas.create_text(91, 49 - bob, text="+", fill=snapshot.accent, font=("Helvetica", 14, "bold"))
 
     # Face screen.
-    canvas.create_rectangle(50, 72 - bob, 132, 119 - bob, fill="#4d9480", outline="#2c665f", width=3)
-    eye_color = "#aef5ee" if snapshot.state != "intervening" else "#ffffff"
+    canvas.create_rectangle(50, 72 - bob, 132, 119 - bob, fill="#f4fff7", outline="#375b71", width=3)
+    eye_color = "#348b88" if snapshot.state != "intervening" else "#ffffff"
     canvas.create_arc(70, 90 - bob, 86, 105 - bob, start=200, extent=140, style="arc", outline=eye_color, width=3)
     canvas.create_arc(100, 90 - bob, 116, 105 - bob, start=200, extent=140, style="arc", outline=eye_color, width=3)
 
@@ -1757,8 +1757,8 @@ class PetView: NSView {
         oval(120, 58 - lift, 42, 50, color("#7698f2"))
         roundRect(68, 40 - lift, 46, 18, 5, .white)
         text("+", 68, 38 - lift, 46, 22, 14, accent, true)
-        roundRect(50, 72 - lift, 82, 47, 13, color("#4d9480"), color("#2c665f"), 3)
-        let eye = state == "intervening" ? NSColor.white : color("#aef5ee")
+        roundRect(50, 72 - lift, 82, 47, 13, color("#f4fff7"), color("#375b71"), 3)
+        let eye = state == "intervening" ? NSColor.white : color("#348b88")
         line(70, 93 - lift, 80, 98 - lift, eye, 3)
         line(80, 98 - lift, 86, 93 - lift, eye, 3)
         line(100, 93 - lift, 110, 98 - lift, eye, 3)
