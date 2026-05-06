@@ -5,12 +5,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+from agent_doctor.autopilot import AutopilotEvent
 from agent_doctor.pet import (
+    build_pet_status,
     pet_status_for_path,
     pet_status_for_text,
     render_pet_markdown,
     write_pet_artifacts,
 )
+from agent_doctor.schema import Message
 from agent_doctor.pet_display import (
     _command_is_runnable,
     _dialog_detail_text,
@@ -60,6 +63,56 @@ def test_pet_manual_frustration_summon_intervenes() -> None:
     text = render_pet_markdown(status)
     assert "Agent Doctor" in text
     assert "Pause and diagnose" in text
+
+
+def test_pet_event_uses_user_session_language_for_tool_failure() -> None:
+    messages = [
+        Message(
+            file="/tmp/session.jsonl",
+            line=1,
+            session_id="s-zh-tool",
+            role="user",
+            content="为什么又失败了？",
+            source_format="openclaw",
+            raw_type="message",
+        ),
+        Message(
+            file="/tmp/session.jsonl",
+            line=2,
+            session_id="s-zh-tool",
+            role="tool",
+            content='{"contentItems":[{"text":"Action send failed: timeout"}]}',
+            source_format="openclaw",
+            raw_type="tool",
+        ),
+    ]
+    event = AutopilotEvent(
+        id="event-zh-tool",
+        platform="openclaw",
+        action="intervene",
+        trigger="tool_failure_or_hidden_error",
+        severity="high",
+        session_id="s-zh-tool",
+        message_file="/tmp/session.jsonl",
+        message_line=2,
+        summary="tool failure",
+        evidence='{"contentItems":[{"text":"Action send failed: timeout"}]}',
+        finding_ids=[],
+    )
+
+    status = build_pet_status(messages, [], platform="openclaw", events=[event])
+    snapshot = snapshot_from_payload(status.to_dict())
+
+    assert "我看到了" in status.emotion_message
+    assert "工具失败" in status.recommendation
+    assert "关键证据" in status.recovery_prompt
+    assert _issue_title(snapshot) == "工具失败需要处理"
+    assert [action.label for action in _display_actions(snapshot)] == [
+        "发送给 Agent",
+        "复制建议",
+        "忽略",
+        "退出",
+    ]
 
 
 def test_pet_event_stage_repair_command_targets_agent_doctor_repairs(tmp_path: Path) -> None:
@@ -209,7 +262,7 @@ def test_pet_display_snapshot_exposes_user_facing_state_label(tmp_path: Path) ->
     assert _issue_title(snapshot) == "User frustration detected"
     assert "Why are you so dumb?" in _dialog_detail_text(snapshot)
     assert "Manual report" in _dialog_detail_text(snapshot)
-    assert "Copy the recovery prompt" in _dialog_detail_text(snapshot)
+    assert "Copy lets you paste" in _dialog_detail_text(snapshot)
     assert "Do this now" in _recovery_prompt(snapshot)
     assert [option.id for option in snapshot.options] == [
         "pause_and_diagnose",
@@ -228,7 +281,6 @@ def test_pet_display_hides_manual_stage_repair_without_command() -> None:
     assert "stage_fix" not in [action.id for action in _display_actions(snapshot)]
     assert [action.id for action in _display_actions(snapshot)] == [
         "copy_recovery_prompt",
-        "diagnose_current",
         "dismiss_for_now",
         "quit_pet",
     ]
@@ -301,11 +353,8 @@ def test_pet_display_shows_runnable_stage_repair_action() -> None:
     assert _command_is_runnable(snapshot.primary_command)
     assert [action.id for action in _display_actions(snapshot)] == [
         "copy_recovery_prompt",
-        "diagnose_current",
-        "stage_fix",
         "dismiss_for_now",
         "quit_pet",
-        "open_card",
     ]
 
 
@@ -328,6 +377,12 @@ def test_pet_display_shows_send_recovery_for_transcript_backed_openclaw(tmp_path
     assert [action.id for action in _display_actions(snapshot)][:2] == [
         "send_recovery",
         "copy_recovery_prompt",
+    ]
+    assert [action.id for action in _display_actions(snapshot)] == [
+        "send_recovery",
+        "copy_recovery_prompt",
+        "dismiss_for_now",
+        "quit_pet",
     ]
 
 
@@ -499,8 +554,10 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "isRunnableCommand" in source
     assert "evidence_0_quote" in source
     assert "Suggested next step" in source
-    assert "Copy Prompt" in source
-    assert "Send Suggestion" in source
+    assert "Copy Suggestion" in source
+    assert "Send to Agent" in source
+    assert "复制建议" in source
+    assert "发送给 Agent" in source
     assert "Check Session" in source
     assert "Current Session Checked" in source
     assert "Quit" in source
@@ -511,7 +568,7 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "diagnose-current" in source
     assert "expires_after_seconds" in source
     assert "NSPasteboard.general.setString" in source
-    assert "Hide Alert" in source
+    assert "Ignore" in source
     assert "Intervention needed" in source
     assert "runningActionId" in source
     assert "NSApplication.shared.terminate(nil)" in source

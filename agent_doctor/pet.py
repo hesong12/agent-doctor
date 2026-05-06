@@ -327,13 +327,15 @@ def _status_from_event(
             quote=event.evidence,
         ),
     )
-    emotion_message = _emotion_message(event)
-    diagnosis = _incident_diagnosis(event, context)
-    recommendation = _incident_recommendation(event)
+    chinese = _event_uses_chinese(event, context)
+    emotion_message = _emotion_message(event, chinese=chinese)
+    diagnosis = _incident_diagnosis(event, context, chinese=chinese)
+    recommendation = _incident_recommendation(event, chinese=chinese)
     recovery_prompt = _incident_recovery_prompt(
         event,
         diagnosis=diagnosis,
         recommendation=recommendation,
+        chinese=chinese,
     )
     return PetStatus(
         name="Agent Doctor",
@@ -342,8 +344,8 @@ def _status_from_event(
         action=event.action,
         severity=event.severity,
         session_id=event.session_id,
-        headline=_event_headline(event),
-        message=_event_message(event),
+        headline=_event_headline(event, chinese=chinese),
+        message=_event_message(event, chinese=chinese),
         evidence=evidence,
         options=_event_options(event),
         messages=messages,
@@ -432,24 +434,34 @@ def _select_finding(findings: list[Finding]) -> Finding | None:
     )[1]
 
 
-def _event_headline(event: AutopilotEvent) -> str:
+def _event_headline(event: AutopilotEvent, *, chinese: bool = False) -> str:
+    if chinese:
+        if event.action == "intervene":
+            return "Agent Doctor 正在处理当前质量问题。"
+        return "Agent Doctor 发现了一个质量风险。"
     if event.action == "intervene":
         return "Agent Doctor is intervening in a live quality incident."
     return "Agent Doctor noticed a quality risk."
 
 
-def _event_message(event: AutopilotEvent) -> str:
+def _event_message(event: AutopilotEvent, *, chinese: bool = False) -> str:
     if event.trigger == "user_frustration_signal":
+        if chinese:
+            return "当前会话里出现了明显的不满或信任破裂信号，需要先暂停正常推进。"
         return (
             "User frustration or trust-break language is present. Pause the normal success path, "
             "name the concrete failure, cite evidence, and give one corrective next step."
         )
     if event.trigger == "completion_claim_without_nearby_verification":
+        if chinese:
+            return "当前回复可能在缺少验证证据的情况下声称已经完成。"
         return (
             "A completion claim appears without nearby verification evidence. "
             "Verify before repeating success."
         )
     if event.trigger == "tool_failure_or_hidden_error":
+        if chinese:
+            return "当前会话里有工具失败或错误信息没有被清楚处理。"
         return (
             "A tool failure appears hidden or unacknowledged. Surface the error "
             "before claiming progress."
@@ -457,19 +469,25 @@ def _event_message(event: AutopilotEvent) -> str:
     return event.summary
 
 
-def _emotion_message(event: AutopilotEvent) -> str:
-    if _looks_cjk(event.evidence):
+def _emotion_message(event: AutopilotEvent, *, chinese: bool = False) -> str:
+    if chinese:
         if event.trigger == "user_frustration_signal":
-            return "我看到了，这次体验让你很不满意。我先帮你把刚才的问题查清楚。"
+            return "我看到了，这次体验让你很不满意。我先帮你把具体问题查清楚。"
+        if event.trigger == "tool_failure_or_hidden_error":
+            return "我看到了，当前 session 里可能有工具失败没有被清楚处理。我先帮你整理证据和下一步。"
         return "我看到了一个可能影响信任的问题。我先帮你核对上下文。"
     if event.trigger == "user_frustration_signal":
         return "I see this was frustrating. I am checking the recent session so the next response can recover trust."
     return "I found a quality risk in the recent session. I am checking the evidence before suggesting a fix."
 
 
-def _incident_diagnosis(event: AutopilotEvent, context: list[Message]) -> str:
+def _incident_diagnosis(
+    event: AutopilotEvent,
+    context: list[Message],
+    *,
+    chinese: bool = False,
+) -> str:
     recent = _recent_session_messages(event, context)
-    chinese = _looks_cjk(event.evidence)
     signals: list[str] = []
 
     def add_signal(english: str, chinese_text: str) -> None:
@@ -514,13 +532,17 @@ def _incident_diagnosis(event: AutopilotEvent, context: list[Message]) -> str:
     return "The likely reason for the user's dissatisfaction is that " + "; ".join(signals) + "."
 
 
-def _incident_recommendation(event: AutopilotEvent) -> str:
-    if _looks_cjk(event.evidence):
+def _incident_recommendation(event: AutopilotEvent, *, chinese: bool = False) -> str:
+    if chinese:
         if event.trigger == "user_frustration_signal":
             return (
                 "建议当前 agent 先承认这次没有满足用户预期，引用用户刚才的不满点，"
                 "然后给出一个具体的下一步修正动作。不要辩解，也不要写长篇道歉。"
             )
+        if event.trigger == "tool_failure_or_hidden_error":
+            return "建议当前 agent 先说明工具失败的具体影响，再给出一个可验证的修正步骤。"
+        if event.trigger == "completion_claim_without_nearby_verification":
+            return "建议当前 agent 先补充验证证据，再判断是否可以继续声称任务已完成。"
         return "建议当前 agent 先核对证据，再用简短、可验证的方式修正当前回复。"
     if event.trigger == "user_frustration_signal":
         return (
@@ -540,13 +562,14 @@ def _incident_recovery_prompt(
     *,
     diagnosis: str,
     recommendation: str,
+    chinese: bool = False,
 ) -> str:
-    if _looks_cjk(event.evidence):
+    if chinese:
         return "\n".join(
             [
                 "Agent Doctor 检测到当前会话出现质量/信任问题。",
                 "",
-                "用户原话:",
+                "关键证据:",
                 redact_text(event.evidence),
                 "",
                 "诊断:",
@@ -585,6 +608,14 @@ def _recent_session_messages(event: AutopilotEvent, context: list[Message]) -> l
         len(matching) - 1,
     )
     return matching[max(0, event_index - 8) : event_index + 1]
+
+
+def _event_uses_chinese(event: AutopilotEvent, context: list[Message]) -> bool:
+    recent = _recent_session_messages(event, context)
+    user_text = "\n".join(message.content for message in recent if message.role == "user")
+    if user_text:
+        return _looks_cjk(user_text)
+    return _looks_cjk(event.evidence)
 
 
 def _looks_cjk(text: str) -> bool:

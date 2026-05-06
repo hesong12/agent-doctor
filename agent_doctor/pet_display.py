@@ -241,16 +241,36 @@ def _command_is_runnable(command: str) -> bool:
     return bool(stripped) and "<" not in stripped and ">" not in stripped
 
 
+def _snapshot_uses_chinese(snapshot: DisplaySnapshot) -> bool:
+    text = "\n".join(
+        (
+            snapshot.headline,
+            snapshot.message,
+            snapshot.emotion_message,
+            snapshot.diagnosis,
+            snapshot.recommendation,
+            " ".join(item.quote for item in snapshot.evidence),
+        )
+    )
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
 def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
     actions: list[DisplayAction] = []
     seen: set[str] = set()
+    chinese = _snapshot_uses_chinese(snapshot)
     if snapshot.state in ("concerned", "intervening"):
         if _can_send_recovery(snapshot):
-            actions.append(DisplayAction(id="send_recovery", label="Send suggestion to agent"))
+            label = "发送给 Agent" if chinese else "Send to Agent"
+            actions.append(DisplayAction(id="send_recovery", label=label))
             seen.add("send_recovery")
-        actions.append(DisplayAction(id="copy_recovery_prompt", label="Copy recovery prompt"))
+        copy_label = "复制建议" if chinese else "Copy Suggestion"
+        actions.append(DisplayAction(id="copy_recovery_prompt", label=copy_label))
         seen.add("copy_recovery_prompt")
-    actions.append(DisplayAction(id="diagnose_current", label="Check session"))
+        actions.append(DisplayAction(id="dismiss_for_now", label="忽略" if chinese else "Ignore"))
+        actions.append(DisplayAction(id="quit_pet", label="退出" if chinese else "Quit"))
+        return tuple(actions)
+    actions.append(DisplayAction(id="diagnose_current", label="检查会话" if chinese else "Check session"))
     seen.add("diagnose_current")
     for option in snapshot.options:
         if option.id == "start_autopilot":
@@ -259,9 +279,9 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
             continue
         actions.append(DisplayAction(id=option.id, label=option.label, command=option.command))
         seen.add(option.id)
-    close_label = "Hide alert" if snapshot.state in ("concerned", "intervening") else "Close"
+    close_label = "关闭" if chinese else "Close"
     actions.append(DisplayAction(id="dismiss_for_now", label=close_label))
-    actions.append(DisplayAction(id="quit_pet", label="Quit"))
+    actions.append(DisplayAction(id="quit_pet", label="退出" if chinese else "Quit"))
     if snapshot.card_path:
         actions.append(DisplayAction(id="open_card", label="Open status card"))
     return tuple(actions)
@@ -279,20 +299,24 @@ def _can_send_recovery(snapshot: DisplaySnapshot) -> bool:
 
 
 def _issue_title(snapshot: DisplaySnapshot) -> str:
+    chinese = _snapshot_uses_chinese(snapshot)
     if snapshot.latest_trigger == "user_frustration_signal":
-        return "User frustration detected"
+        return "检测到用户不满" if chinese else "User frustration detected"
     if snapshot.latest_trigger == "completion_claim_without_nearby_verification":
-        return "Completion claim needs verification"
+        return "完成声明需要验证" if chinese else "Completion claim needs verification"
     if snapshot.latest_trigger == "tool_failure_or_hidden_error":
-        return "Tool failure needs acknowledgement"
+        return "工具失败需要处理" if chinese else "Tool failure needs acknowledgement"
     if snapshot.headline:
         return snapshot.headline
     return _state_label(snapshot)
 
 
 def _evidence_text(snapshot: DisplaySnapshot) -> str:
+    chinese = _snapshot_uses_chinese(snapshot)
     if not snapshot.evidence:
-        return "No transcript evidence was included in this status."
+        return "当前状态没有包含 transcript 证据。" if chinese else "No transcript evidence was included in this status."
+    if snapshot.latest_trigger == "tool_failure_or_hidden_error":
+        return "工具输出里出现了失败或错误信号。" if chinese else "Tool output contains failure or error language."
     item = snapshot.evidence[0]
     source = _evidence_source_label(item)
     if item.line and item.file and item.file != "<manual>":
@@ -332,18 +356,21 @@ def _expectation_text(snapshot: DisplaySnapshot) -> str:
 
 
 def _user_action_text(snapshot: DisplaySnapshot) -> str:
+    chinese = _snapshot_uses_chinese(snapshot)
     if snapshot.state in ("concerned", "intervening"):
-        quiet = (
-            f"If you do nothing, Agent Doctor will quiet this alert after "
-            f"{snapshot.expires_after_seconds} seconds and keep watching."
-        )
+        if chinese:
+            quiet = f"如果你不操作，Agent Doctor 会在 {snapshot.expires_after_seconds} 秒后收起提醒并继续监控。"
+            if _can_send_recovery(snapshot):
+                return f"发送会把修正建议交给当前 agent；复制可手动粘贴；忽略会隐藏这次提醒。{quiet}"
+            return f"复制建议后可以手动粘贴给当前 agent；忽略会隐藏这次提醒。{quiet}"
+        quiet = f"If you do nothing, Agent Doctor will quiet this alert after {snapshot.expires_after_seconds} seconds and keep watching."
         if _can_send_recovery(snapshot):
             return (
-                "Send the suggestion to the active agent, copy the prompt manually, or hide "
+                "Send asks the active agent to recover, Copy lets you paste manually, or hide "
                 f"this alert to ignore this incident for now. {quiet}"
             )
         return (
-            "Copy the recovery prompt into the active agent, or hide this alert to ignore this "
+            "Copy lets you paste the suggestion manually, or hide this alert to ignore this "
             f"incident for now. {quiet}"
         )
     has_runnable_action = any(
@@ -1495,6 +1522,9 @@ class PetView: NSView {
             }
             actions.append("copy_recovery_prompt")
             seen.insert("copy_recovery_prompt")
+            actions.append("dismiss_for_now")
+            actions.append("quit_pet")
+            return actions
         }
         actions.append("diagnose_current")
         seen.insert("diagnose_current")
@@ -1549,27 +1579,31 @@ class PetView: NSView {
     }
 
     func actionTitle(_ actionId: String) -> String {
+        let chinese = useChinese()
         if actionId == runningActionId {
-            return "Working..."
+            return chinese ? "处理中..." : "Working..."
         }
         if actionId == "send_recovery" {
-            return "Send Suggestion"
+            return chinese ? "发送给 Agent" : "Send to Agent"
         }
         if actionId == "diagnose_current" {
-            return "Check Session"
+            return chinese ? "检查会话" : "Check Session"
         }
         if actionId == "copy_recovery_prompt" {
-            return "Copy Prompt"
+            return chinese ? "复制建议" : "Copy Suggestion"
         }
         if actionId == "open_card" {
-            return "Open Card"
+            return chinese ? "打开详情" : "Open Card"
         }
         if actionId == "dismiss_for_now" {
             let state = status["state"] ?? "idle"
-            return state == "concerned" || state == "intervening" ? "Hide Alert" : "Close"
+            if state == "concerned" || state == "intervening" {
+                return chinese ? "忽略" : "Ignore"
+            }
+            return chinese ? "关闭" : "Close"
         }
         if actionId == "quit_pet" {
-            return "Quit"
+            return chinese ? "退出" : "Quit"
         }
         return optionValue(actionId, "label", "Run Action")
     }
@@ -1591,16 +1625,37 @@ class PetView: NSView {
         return "Still running \(actionTitle(actionId))..."
     }
 
+    func containsCJK(_ value: String) -> Bool {
+        for scalar in value.unicodeScalars {
+            if scalar.value >= 0x4e00 && scalar.value <= 0x9fff {
+                return true
+            }
+        }
+        return false
+    }
+
+    func useChinese() -> Bool {
+        return containsCJK([
+            status["headline"] ?? "",
+            status["message"] ?? "",
+            status["emotion_message"] ?? "",
+            status["diagnosis"] ?? "",
+            status["recommendation"] ?? "",
+            status["evidence_0_quote"] ?? ""
+        ].joined(separator: "\n"))
+    }
+
     func issueTitle() -> String {
         let trigger = status["latest_trigger"] ?? ""
+        let chinese = useChinese()
         if trigger == "user_frustration_signal" {
-            return "User Frustration Detected"
+            return chinese ? "检测到用户不满" : "User Frustration Detected"
         }
         if trigger == "completion_claim_without_nearby_verification" {
-            return "Completion Claim Needs Verification"
+            return chinese ? "完成声明需要验证" : "Completion Claim Needs Verification"
         }
         if trigger == "tool_failure_or_hidden_error" {
-            return "Tool Failure Needs Acknowledgement"
+            return chinese ? "工具失败需要处理" : "Tool Failure Needs Acknowledgement"
         }
         return status["headline"] ?? "Agent Doctor"
     }
@@ -1650,8 +1705,12 @@ class PetView: NSView {
 
     func evidenceText() -> String {
         let count = Int(status["evidence_count"] ?? "0") ?? 0
+        let chinese = useChinese()
         if count == 0 {
-            return "No transcript evidence was included in this status."
+            return chinese ? "当前状态没有包含 transcript 证据。" : "No transcript evidence was included in this status."
+        }
+        if status["latest_trigger"] == "tool_failure_or_hidden_error" {
+            return chinese ? "工具输出里出现了失败或错误信号。" : "Tool output contains failure or error language."
         }
         let role = status["evidence_0_role"] ?? ""
         let quote = short(status["evidence_0_quote"] ?? "", 180)
@@ -1990,25 +2049,26 @@ class PetView: NSView {
     }
 
     func stateLabel(_ state: String, _ action: String) -> String {
+        let chinese = useChinese()
         if state != "idle" {
             let phase = status["phase"] ?? ""
             if phase == "advice_ready" {
-                return "Suggestion ready"
+                return chinese ? "建议已准备" : "Suggestion ready"
             }
             if phase == "diagnosing" {
-                return "Diagnosing"
+                return chinese ? "诊断中" : "Diagnosing"
             }
         }
         if state == "intervening" {
-            return "Intervention needed"
+            return chinese ? "需要处理" : "Intervention needed"
         }
         if state == "concerned" {
-            return "Needs review"
+            return chinese ? "需要查看" : "Needs review"
         }
         if state == "watching" {
-            return "Watching"
+            return chinese ? "监控中" : "Watching"
         }
-        return "Idle"
+        return chinese ? "健康" : "Idle"
     }
 
     func drawStateChip(_ state: String, _ action: String, _ accent: NSColor) {
@@ -2068,40 +2128,32 @@ class PetView: NSView {
             return
         }
         roundRect(18, 210, 324, 340, 22, NSColor.white.withAlphaComponent(0.96), color("#111827"), 1.5)
+        let chinese = useChinese()
         let titleY: CGFloat = 230
-        if state != "idle" {
-            roundRect(36, titleY - 2, 126, 24, 12, accent.withAlphaComponent(0.10), accent, 1)
-            text(stateLabel(state, status["action"] ?? "silent"), 48, titleY + 4, 102, 13, 9.5, accent, true, .left)
-            text(short(panelTitle(state), 74), 36, 262, 288, 38, 13.5, color("#111827"), true, .left)
-        } else {
-            text(short(panelTitle(state), 82), 36, 230, 288, 36, 13.5, color("#111827"), true, .left)
-        }
+        roundRect(36, titleY - 2, 126, 24, 12, accent.withAlphaComponent(0.10), accent, 1)
+        text(stateLabel(state, status["action"] ?? "silent"), 48, titleY + 4, 102, 13, 9.5, accent, true, .left)
+        text(short(panelTitle(state), 74), 36, 262, 288, 34, 13.5, color("#111827"), true, .left)
 
-        var y: CGFloat = state == "idle" ? 278 : 310
+        var y: CGFloat = 306
         let emotion = status["emotion_message"] ?? ""
         if !emotion.isEmpty {
-            text(short(emotion, 118), 36, y, 288, 34, 11, accent, true, .left)
-            y += 42
+            text(short(emotion, 128), 36, y, 288, 42, 11, accent, true, .left)
+            y += 50
         }
         let diagnosisText = panelDiagnosisText(state)
-        text("Diagnosis", 36, y, 288, 14, 10, color("#111827"), true, .left)
-        text(short(diagnosisText, state == "idle" ? 150 : 126), 36, y + 18, 288, 42, 10.5, color("#374151"), false, .left)
-        y += 68
-        if state != "idle" {
-            text("Evidence", 36, y, 288, 14, 10, color("#111827"), true, .left)
-            text(short(evidenceText(), 118), 36, y + 18, 288, 38, 10.5, color("#374151"), false, .left)
-            y += 62
-        }
-        text("Next step", 36, y, 288, 14, 10, color("#111827"), true, .left)
-        text(short(panelNextStepText(state), 132), 36, y + 18, 288, 42, 10.5, color("#374151"), false, .left)
+        text(chinese ? "诊断" : "Diagnosis", 36, y, 288, 14, 10, color("#111827"), true, .left)
+        text(short(diagnosisText, 118), 36, y + 16, 288, 40, 10.5, color("#374151"), false, .left)
+        y += 58
+        text(chinese ? "建议" : "Next step", 36, y, 288, 14, 10, color("#111827"), true, .left)
+        text(short(panelNextStepText(state), 116), 36, y + 16, 288, 34, 10.5, color("#374151"), false, .left)
 
         if !noticeText.isEmpty {
-            roundRect(34, 408, 292, 38, 12, accent.withAlphaComponent(0.10), accent.withAlphaComponent(0.28), 1)
-            text(short(noticeText, 118), 48, 417, 264, 20, 10.5, accent, true, .left)
+            roundRect(176, 228, 132, 24, 12, accent.withAlphaComponent(0.10), accent.withAlphaComponent(0.28), 1)
+            text(short(noticeText, 42), 186, 234, 112, 12, 9.5, accent, true, .left)
         }
 
         let actions = visibleActions()
-        let rowY: CGFloat = 452
+        let rowY: CGFloat = 488
         if actions.count == 1 {
             drawActionButton(actions[0], 36, rowY, 288, 30, true, accent)
         } else if actions.count == 2 {
