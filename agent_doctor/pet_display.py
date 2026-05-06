@@ -345,6 +345,12 @@ def _user_action_text(snapshot: DisplaySnapshot) -> str:
         action.command for action in _display_actions(snapshot) if action.id != "dismiss_for_now"
     )
     if has_runnable_action:
+        if any(action.id == "start_autopilot" for action in _display_actions(snapshot)):
+            return (
+                "Start monitoring to install or start the local OpenClaw/Hermes sidecars. "
+                "No extra input is needed; the Pet will wake automatically when it sees "
+                "frustration or quality incidents."
+            )
         return "Use a repair/open action if you want Agent Doctor to stage reviewable follow-up work."
     if snapshot.card_path:
         return "Open the status card for details, or hide this alert after you have seen it."
@@ -1182,6 +1188,8 @@ class PetView: NSView {
     var lastStatusReload = Date(timeIntervalSince1970: 0)
     var buttonFrames: [(String, NSRect)] = []
     var noticeText = ""
+    var runningActionId = ""
+    var activeProcesses: [Process] = []
     let petImage: NSImage? = assetPath.isEmpty ? nil : NSImage(contentsOfFile: assetPath)
 
     override var isOpaque: Bool { false }
@@ -1298,6 +1306,12 @@ class PetView: NSView {
     }
 
     func runOptionCommand(_ optionId: String) {
+        if !runningActionId.isEmpty {
+            bubbleOpen = true
+            noticeText = actionBusyText(runningActionId)
+            needsDisplay = true
+            return
+        }
         let command = optionValue(optionId, "command", "")
         if !isRunnableCommand(command) {
             bubbleOpen = true
@@ -1306,12 +1320,49 @@ class PetView: NSView {
             return
         }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-lc", command]
-        try? process.run()
-        noticeText = "\(actionTitle(optionId)) started."
+        if optionId == "start_autopilot" {
+            process.executableURL = URL(fileURLWithPath: pythonExecutable)
+            process.arguments = ["-m", "agent_doctor.cli", "setup", "autopilot"]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-lc", command]
+        }
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        process.terminationHandler = { [weak self, weak process] completed in
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let text = String(data: data, encoding: .utf8) ?? ""
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let process = process {
+                    self.activeProcesses.removeAll { $0 === process }
+                }
+                self.runningActionId = ""
+                if completed.terminationStatus == 0 {
+                    self.status = loadStatus()
+                    self.noticeText = self.actionFinishedText(optionId)
+                } else {
+                    self.noticeText = self.actionFailedText(optionId, text)
+                }
+                self.bubbleOpen = true
+                self.needsDisplay = true
+            }
+        }
+        runningActionId = optionId
+        noticeText = actionStartedText(optionId)
         bubbleOpen = true
         needsDisplay = true
+        do {
+            try process.run()
+            activeProcesses.append(process)
+        } catch {
+            noticeText = error.localizedDescription
+            runningActionId = ""
+            bubbleOpen = true
+            needsDisplay = true
+            return
+        }
     }
 
     @objc func sendRecoveryToAgent(_ sender: Any?) {
@@ -1448,6 +1499,9 @@ class PetView: NSView {
     }
 
     func actionTitle(_ actionId: String) -> String {
+        if actionId == runningActionId {
+            return actionId == "start_autopilot" ? "Starting..." : "Working..."
+        }
         if actionId == "send_recovery" {
             return "Send Suggestion to Agent"
         }
@@ -1461,7 +1515,39 @@ class PetView: NSView {
             let state = status["state"] ?? "idle"
             return state == "concerned" || state == "intervening" ? "Hide Alert" : "Close"
         }
+        if actionId == "start_autopilot" {
+            return "Start Monitoring"
+        }
         return optionValue(actionId, "label", "Run Action")
+    }
+
+    func actionStartedText(_ actionId: String) -> String {
+        if actionId == "start_autopilot" {
+            return "Starting live monitoring. Pet will watch local OpenClaw/Hermes transcripts."
+        }
+        return "\(actionTitle(actionId)) started."
+    }
+
+    func actionFinishedText(_ actionId: String) -> String {
+        if actionId == "start_autopilot" {
+            return "Live monitoring is on. Pet scans every few seconds and wakes on frustration."
+        }
+        return "\(actionTitle(actionId)) finished."
+    }
+
+    func actionFailedText(_ actionId: String, _ output: String) -> String {
+        let detail = short(output.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " "), 120)
+        if actionId == "start_autopilot" {
+            return detail.isEmpty ? "Live monitoring did not start. Open a terminal and run setup autopilot." : "Monitoring did not start: \(detail)"
+        }
+        return detail.isEmpty ? "\(actionTitle(actionId)) failed." : "\(actionTitle(actionId)) failed: \(detail)"
+    }
+
+    func actionBusyText(_ actionId: String) -> String {
+        if actionId == "start_autopilot" {
+            return "Still starting live monitoring..."
+        }
+        return "Still running \(actionTitle(actionId))..."
     }
 
     func issueTitle() -> String {
@@ -1524,6 +1610,9 @@ class PetView: NSView {
         }
         for actionId in displayActions() {
             if actionId != "dismiss_for_now" && !optionValue(actionId, "command", "").isEmpty {
+                if actionId == "start_autopilot" {
+                    return "Start monitoring to install or start the local OpenClaw/Hermes sidecars. No extra input is needed; the Pet will wake automatically when it sees frustration or quality incidents."
+                }
                 return "Use a repair/open action if you want Agent Doctor to stage reviewable follow-up work."
             }
         }
@@ -1826,12 +1915,13 @@ class PetView: NSView {
     }
 
     func drawActionButton(_ actionId: String, _ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ primary: Bool, _ accent: NSColor) {
-        let fill = primary ? color("#0b84ff") : NSColor.white.withAlphaComponent(0.92)
-        let stroke = primary ? color("#0b84ff") : color("#d1d5db")
+        let busy = actionId == runningActionId
+        let fill = busy ? accent : (primary ? color("#0b84ff") : NSColor.white.withAlphaComponent(0.92))
+        let stroke = busy ? accent : (primary ? color("#0b84ff") : color("#d1d5db"))
         let foreground = primary ? NSColor.white : color("#111827")
         let rect = r(x, y, w, h)
         roundRect(x, y, w, h, h / 2, fill, stroke, 1)
-        text(actionTitle(actionId), x + 8, y + 7, w - 16, h - 12, 10.5, foreground, primary)
+        text(actionTitle(actionId), x + 8, y + 7, w - 16, h - 12, 10.5, busy ? NSColor.white : foreground, primary || busy)
         buttonFrames.append((actionId, rect))
     }
 
@@ -1870,7 +1960,8 @@ class PetView: NSView {
         text(short(expectationText(), 132), 36, y + 18, 288, 42, 10.5, color("#374151"), false, .left)
 
         if !noticeText.isEmpty {
-            text(short(noticeText, 110), 36, 432, 288, 28, 10.5, accent, true, .left)
+            roundRect(34, 422, 292, 38, 12, accent.withAlphaComponent(0.10), accent.withAlphaComponent(0.28), 1)
+            text(short(noticeText, 118), 48, 431, 264, 20, 10.5, accent, true, .left)
         }
 
         let actions = visibleActions()

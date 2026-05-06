@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal
@@ -212,7 +213,7 @@ def build_pet_status(
         severity="low",
         session_id=_latest_session_id(ordered),
         headline="No active quality incident detected.",
-        message="The doctor is idle. Keep autopilot running to wake it when frustration or quality failures appear.",
+        message="Doctor Pet is monitoring local OpenClaw/Hermes transcripts for frustration or quality incidents.",
         evidence=(),
         options=_idle_options(),
         messages=len(ordered),
@@ -224,7 +225,10 @@ def build_pet_status(
         phase="healthy",
         emotion_message="",
         diagnosis="No active incident was detected in the current session window.",
-        recommendation="Keep Doctor Pet running while the user continues the conversation.",
+        recommendation=(
+            "Keep live monitoring on. Doctor Pet will wake automatically when it sees "
+            "user frustration or a quality incident."
+        ),
         recovery_prompt="",
     )
 
@@ -286,7 +290,7 @@ def _idle_status(*, platform: Platform = "generic", parse_errors: int = 0) -> Pe
         severity="low",
         session_id="",
         headline="No transcript messages scanned yet.",
-        message="Point the pet at a JSONL transcript or pass a current user message to ask for help.",
+        message="Start live monitoring to let Doctor Pet watch OpenClaw and Hermes transcripts.",
         evidence=(),
         options=_idle_options(),
         messages=0,
@@ -296,8 +300,11 @@ def _idle_status(*, platform: Platform = "generic", parse_errors: int = 0) -> Pe
         parse_errors=parse_errors,
         platform=platform,
         phase="healthy",
-        diagnosis="No active incident was detected.",
-        recommendation="Continue monitoring OpenClaw or Hermes session transcripts.",
+        diagnosis="No OpenClaw or Hermes transcript messages have been scanned in this Pet status yet.",
+        recommendation=(
+            "Turn on live monitoring. Doctor Pet will scan local OpenClaw/Hermes transcripts "
+            "every few seconds and wake when it sees user frustration or quality incidents."
+        ),
     )
 
 
@@ -660,6 +667,7 @@ def _event_evidence_role(event: AutopilotEvent) -> Role:
 
 
 def _idle_options() -> tuple[PetOption, ...]:
+    setup_command = f"{shlex.quote(sys.executable)} -m agent_doctor.cli setup autopilot"
     return (
         PetOption(
             id="scan_session",
@@ -669,9 +677,12 @@ def _idle_options() -> tuple[PetOption, ...]:
         ),
         PetOption(
             id="start_autopilot",
-            label="Start autopilot",
-            description="Run the local sidecar so the pet wakes automatically on quality incidents.",
-            command="agent-doctor setup autopilot",
+            label="Start monitoring",
+            description=(
+                "Install or start local OpenClaw/Hermes sidecars so the Pet wakes automatically "
+                "on user frustration or quality incidents."
+            ),
+            command=setup_command,
         ),
     )
 

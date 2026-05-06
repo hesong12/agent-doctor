@@ -60,7 +60,10 @@ contract: the pet is the default user-facing surface, while sidecars remain
 headless sensors. The display reads a packaged transparent PNG doctor sprite
 when available, falls back to code-drawn shapes, applies local state-specific
 effects, opens a click dialog for status/actions, and exposes a right-click menu
-for diagnose, stage repair, mute, card open, and quit. Transcript-backed
+for diagnose, stage repair, mute, card open, and quit. Idle Pet status includes
+Start Monitoring as the user-facing setup action: the display runs setup through
+the same Python interpreter, shows inline started/finished/failed feedback, and
+then keeps watching for OpenClaw/Hermes transcript updates. Transcript-backed
 OpenClaw/Hermes incidents can be routed back through a local Pet action; manual
 incidents stay copy-only because there is no session path to target.
 
