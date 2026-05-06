@@ -203,6 +203,22 @@ def run_autopilot_once(
     except ImportError:
         pass
 
+    # Phase 4 refining: redraft refining proposals using new user messages
+    try:
+        from .refining import redraft_pending
+        from .proposer import load_proposals
+        existing = load_proposals(out_dir / "proposals.jsonl")
+        if existing:
+            new_redrafts = redraft_pending(
+                existing,
+                messages,
+                adapter=adapter_instance if 'adapter_instance' in locals() else None,
+            )
+            if new_redrafts:
+                _replace_proposals_with_redrafts(out_dir / "proposals.jsonl", new_redrafts)
+    except ImportError:
+        pass
+
     return AutopilotResult(
         platform=platform,
         input_path=str(input_path.expanduser()),
@@ -642,6 +658,25 @@ def _persist_proposal_transitions(path: Path, transitions) -> None:
         if p.id in by_id:
             t = by_id[p.id]
             p = _dc_replace(p, state=t.new_state, resolved_at=time.time())
+        new_lines.append(json.dumps(p.to_dict(), ensure_ascii=False))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as h:
+            h.write("\n".join(new_lines) + ("\n" if new_lines else ""))
+    finally:
+        os.chmod(path, 0o600)
+
+
+def _replace_proposals_with_redrafts(path: Path, redrafts) -> None:
+    """Replace each redrafted proposal in proposals.jsonl by id."""
+    from .proposer import load_proposals
+
+    redraft_by_id = {p.id: p for p in redrafts}
+    proposals = load_proposals(path)
+    new_lines: list[str] = []
+    for p in proposals:
+        if p.id in redraft_by_id:
+            p = redraft_by_id[p.id]
         new_lines.append(json.dumps(p.to_dict(), ensure_ascii=False))
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
