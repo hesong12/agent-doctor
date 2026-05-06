@@ -266,6 +266,27 @@ def build_parser() -> argparse.ArgumentParser:
     openclaw_event.add_argument("--dry-run", action="store_true")
     openclaw_event.set_defaults(func=_cmd_notify_openclaw_system_event)
 
+    # Adapter subcommands ------------------------------------------------------
+    adapters = subparsers.add_parser(
+        "adapters",
+        help="Inspect host adapters and their capabilities.",
+    )
+    adapters_subs = adapters.add_subparsers(dest="adapters_cmd", required=True)
+
+    adapters_list = adapters_subs.add_parser(
+        "list",
+        help="List detected adapters with capability matrix.",
+    )
+    adapters_list.add_argument("--json", action="store_true", help="Output as JSON")
+    adapters_list.set_defaults(func=_cmd_adapters_list)
+
+    adapters_test = adapters_subs.add_parser(
+        "test",
+        help="Run contract checks on one adapter.",
+    )
+    adapters_test.add_argument("host", choices=["openclaw", "hermes", "generic"])
+    adapters_test.set_defaults(func=_cmd_adapters_test)
+
     install = subparsers.add_parser("install-skill", help="Generate a safe host-agent SOP file.")
     install.add_argument(
         "--target",
@@ -580,6 +601,73 @@ def _cmd_notify_openclaw_system_event(args: argparse.Namespace) -> int:
             ensure_ascii=False,
         )
     )
+    return 0
+
+
+def _cmd_adapters_list(args: argparse.Namespace) -> int:
+    """Print the capability matrix for every detected host on this machine."""
+    from .capabilities import detect_hosts
+
+    hosts = detect_hosts(use_cache=False)
+    payload = []
+    for adapter in hosts:
+        caps = adapter.capabilities()
+        payload.append(
+            {
+                "host_name": caps.host_name,
+                "detected_at": str(caps.detected_at),
+                "can_send_message": caps.can_send_message,
+                "can_edit_message": caps.can_edit_message,
+                "can_react": caps.can_react,
+                "can_list_reactions": caps.can_list_reactions,
+                "can_inject_system_event": caps.can_inject_system_event,
+                "can_infer_text": caps.can_infer_text,
+                "can_infer_embedding": caps.can_infer_embedding,
+                "default_inference_model": caps.default_inference_model,
+                "available_channels": list(caps.available_channels),
+                "skill_dir": str(caps.skill_dir) if caps.skill_dir else None,
+                "memory_writable": str(caps.memory_writable) if caps.memory_writable else None,
+                "identity_writable": str(caps.identity_writable) if caps.identity_writable else None,
+            }
+        )
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        for item in payload:
+            print(f"\n=== {item['host_name']} ===")
+            for k, v in item.items():
+                if k == "host_name":
+                    continue
+                print(f"  {k}: {v}")
+    return 0
+
+
+def _cmd_adapters_test(args: argparse.Namespace) -> int:
+    """Detect the named adapter; print its capability matrix; rc=0 on success.
+
+    rc=2: argparse already exits with rc=2 on choice mismatch (we don't reach here).
+    rc=3: host not detected on this machine.
+    """
+    from .adapters import GenericAdapter, HermesAdapter, OpenClawAdapter
+
+    by_name = {
+        "generic": GenericAdapter,
+        "hermes": HermesAdapter,
+        "openclaw": OpenClawAdapter,
+    }
+    cls = by_name[args.host]  # argparse's choices guarantees presence
+    instance = cls.detect()
+    if instance is None:
+        print(f"{args.host} not detected on this machine.", file=sys.stderr)
+        return 3
+    caps = instance.capabilities()
+    print(f"{caps.host_name} detected at {caps.detected_at}")
+    print(f"  can_send_message: {caps.can_send_message}")
+    print(f"  can_react:        {caps.can_react}")
+    print(f"  can_inject_system_event: {caps.can_inject_system_event}")
+    print(f"  can_infer_text:   {caps.can_infer_text}")
+    print(f"  available_channels: {list(caps.available_channels)}")
+    print(f"  skill_dir:        {caps.skill_dir}")
     return 0
 
 
