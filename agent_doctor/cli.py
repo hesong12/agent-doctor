@@ -439,6 +439,27 @@ def build_parser() -> argparse.ArgumentParser:
     patches_list.add_argument("--json", action="store_true")
     patches_list.set_defaults(func=_cmd_patches_list)
 
+    digest = subparsers.add_parser(
+        "digest",
+        help="Compute and (optionally) post a weekly digest.",
+    )
+    digest.add_argument(
+        "--now",
+        action="store_true",
+        help="Compute and print/post immediately (default for v1).",
+    )
+    digest.add_argument(
+        "--host",
+        default="openclaw",
+        choices=["openclaw", "hermes", "generic"],
+    )
+    digest.add_argument(
+        "--no-post",
+        action="store_true",
+        help="Print digest but don't post to a channel.",
+    )
+    digest.set_defaults(func=_cmd_digest)
+
     return parser
 
 
@@ -1000,6 +1021,57 @@ def _cmd_patches_list(args: argparse.Namespace) -> int:
     else:
         for e in entries:
             print(f"{e.get('id', '?')}  {e.get('target_file', '?')}  applied_at={e.get('applied_at', '?')}")
+    return 0
+
+
+def _cmd_digest(args: argparse.Namespace) -> int:
+    """Build and (optionally) post a weekly digest."""
+    from .digester import build_weekly_digest
+    from .speaker import render_digest
+
+    d = build_weekly_digest(args.host)
+    body = render_digest(
+        events=d.events,
+        proposed=d.proposed,
+        applied=d.applied,
+        measured_better=d.measured_better,
+        top_patterns=d.top_patterns,
+        language="en",  # digest is en-only for v1
+    )
+    print(body.render())
+
+    if args.no_post:
+        return 0
+
+    # Best-effort post via the host adapter (skip cleanly if unavailable)
+    try:
+        from .adapters import (
+            GenericAdapter,
+            HermesAdapter,
+            MessageKind,
+            OpenClawAdapter,
+            Target,
+        )
+    except ImportError:
+        return 0
+
+    adapter_classes = {
+        "openclaw": OpenClawAdapter,
+        "hermes": HermesAdapter,
+        "generic": GenericAdapter,
+    }
+    cls = adapter_classes[args.host]
+    instance = cls.detect()
+    if instance is None:
+        return 0  # host not detected; printed-only
+
+    inbox = Path("~/.agent-doctor").expanduser() / args.host / "inbox" / "weekly-digest.md"
+    target = Target(host=args.host, channel="inbox", recipient="", inbox_path=inbox)
+    try:
+        instance.send_message(target, body, MessageKind.digest)
+        print(f"\nposted to {inbox}")
+    except (NotImplementedError, RuntimeError) as exc:
+        print(f"\nnot posted: {exc}", file=sys.stderr)
     return 0
 
 
