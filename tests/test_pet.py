@@ -489,6 +489,9 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "drawPanel" in source
     assert "drawIdlePanel" in source
     assert "drawActionButton" in source
+    assert "reloadStatusFromFile" in source
+    assert "shouldKeepCurrentIncident" in source
+    assert "Date().addingTimeInterval(60)" in source
     assert "performButton" in source
     assert "displayActions" in source
     assert "displayActions().prefix(6)" in source

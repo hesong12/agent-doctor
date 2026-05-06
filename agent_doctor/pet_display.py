@@ -1235,6 +1235,8 @@ class PetView: NSView {
     @objc func muteForNow(_ sender: Any?) {
         bubbleOpen = false
         dismissedEventId = currentEventKey()
+        checkResultText = ""
+        checkResultUntil = Date(timeIntervalSince1970: 0)
         needsDisplay = true
         displayIfNeeded()
     }
@@ -1409,7 +1411,7 @@ class PetView: NSView {
                         ? (detail.isEmpty ? self.actionFinishedText(actionId) : detail)
                         : (detail.isEmpty ? self.actionFailedText(actionId, text) : detail)
                     self.checkResultText = resultText
-                    self.checkResultUntil = Date().addingTimeInterval(12)
+                    self.checkResultUntil = Date().addingTimeInterval(60)
                 }
                 if completed.terminationStatus == 0 {
                     self.status = loadStatus()
@@ -1749,7 +1751,7 @@ class PetView: NSView {
         if activeEventId != key {
             activeEventId = key
             eventFirstSeenAt = Date()
-            if dismissedEventId != key {
+            if dismissedEventId != key && !checkResultActive() {
                 bubbleOpen = false
             }
         }
@@ -1778,7 +1780,36 @@ class PetView: NSView {
     }
 
     func panelVisible(_ state: String) -> Bool {
+        if checkResultActive() {
+            return true
+        }
         return bubbleOpen || shouldAutoShowBubble(state)
+    }
+
+    func isIncidentStatus(_ payload: [String: String]) -> Bool {
+        let state = payload["state"] ?? "idle"
+        return state == "concerned" || state == "intervening"
+    }
+
+    func shouldKeepCurrentIncident(_ nextStatus: [String: String]) -> Bool {
+        if !isIncidentStatus(status) || isIncidentStatus(nextStatus) {
+            return false
+        }
+        if currentEventKey() == dismissedEventId {
+            return false
+        }
+        return !incidentExpired()
+    }
+
+    func reloadStatusFromFile(_ now: Date) {
+        let nextStatus = loadStatus()
+        if shouldKeepCurrentIncident(nextStatus) {
+            lastStatusReload = now
+            needsDisplay = true
+            return
+        }
+        status = nextStatus
+        lastStatusReload = now
     }
 
     func syncWindowSize(expanded: Bool) {
@@ -2152,8 +2183,7 @@ app.activate(ignoringOtherApps: true)
 Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { _ in
     let now = Date()
     if now.timeIntervalSince(view.lastStatusReload) >= max(0.2, pollSeconds) {
-        view.status = loadStatus()
-        view.lastStatusReload = now
+        view.reloadStatusFromFile(now)
     } else {
         view.needsDisplay = true
     }
