@@ -194,9 +194,9 @@ When the user asks you to enable proactive diagnosis, prefer
 refreshes Agent Doctor skills, baselines existing transcripts, writes the
 right launchd/systemd user services, installs the desktop Doctor Pet service,
 and starts them with changed-file scanning. Doctor Pet is the only default
-interactive surface; in idle state its Start Monitoring action turns on those
-sidecars and shows inline progress in the Pet panel. Legacy notify hooks are
-explicit opt-ins.
+interactive surface; healthy idle state has no setup/start action because
+sidecar installation is handled by setup, not by the Pet window. Legacy notify
+hooks are explicit opt-ins.
 Do not ask the user to manually edit host configuration.
 
 ## Detection taxonomy (what this skill catches)

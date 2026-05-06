@@ -251,6 +251,8 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
         actions.append(DisplayAction(id="copy_recovery_prompt", label="Copy recovery prompt"))
         seen.add("copy_recovery_prompt")
     for option in snapshot.options:
+        if option.id == "start_autopilot":
+            continue
         if option.id in seen or not _command_is_runnable(option.command):
             continue
         actions.append(DisplayAction(id=option.id, label=option.label, command=option.command))
@@ -345,12 +347,6 @@ def _user_action_text(snapshot: DisplaySnapshot) -> str:
         action.command for action in _display_actions(snapshot) if action.id != "dismiss_for_now"
     )
     if has_runnable_action:
-        if any(action.id == "start_autopilot" for action in _display_actions(snapshot)):
-            return (
-                "Start monitoring to install or start the local OpenClaw/Hermes sidecars. "
-                "No extra input is needed; the Pet will wake automatically when it sees "
-                "frustration or quality incidents."
-            )
         return "Use a repair/open action if you want Agent Doctor to stage reviewable follow-up work."
     if snapshot.card_path:
         return "Open the status card for details, or hide this alert after you have seen it."
@@ -1320,13 +1316,8 @@ class PetView: NSView {
             return
         }
         let process = Process()
-        if optionId == "start_autopilot" {
-            process.executableURL = URL(fileURLWithPath: pythonExecutable)
-            process.arguments = ["-m", "agent_doctor.cli", "setup", "autopilot"]
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = ["-lc", command]
-        }
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-lc", command]
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
@@ -1456,6 +1447,9 @@ class PetView: NSView {
         for index in 0..<count {
             let optionId = status["option_\(index)_id"] ?? ""
             let command = status["option_\(index)_command"] ?? ""
+            if optionId == "start_autopilot" {
+                continue
+            }
             if !optionId.isEmpty && !seen.contains(optionId) && isRunnableCommand(command) {
                 actions.append(optionId)
                 seen.insert(optionId)
@@ -1500,7 +1494,7 @@ class PetView: NSView {
 
     func actionTitle(_ actionId: String) -> String {
         if actionId == runningActionId {
-            return actionId == "start_autopilot" ? "Starting..." : "Working..."
+            return "Working..."
         }
         if actionId == "send_recovery" {
             return "Send Suggestion to Agent"
@@ -1515,38 +1509,23 @@ class PetView: NSView {
             let state = status["state"] ?? "idle"
             return state == "concerned" || state == "intervening" ? "Hide Alert" : "Close"
         }
-        if actionId == "start_autopilot" {
-            return "Start Monitoring"
-        }
         return optionValue(actionId, "label", "Run Action")
     }
 
     func actionStartedText(_ actionId: String) -> String {
-        if actionId == "start_autopilot" {
-            return "Starting live monitoring. Pet will watch local OpenClaw/Hermes transcripts."
-        }
         return "\(actionTitle(actionId)) started."
     }
 
     func actionFinishedText(_ actionId: String) -> String {
-        if actionId == "start_autopilot" {
-            return "Live monitoring is on. Pet scans every few seconds and wakes on frustration."
-        }
         return "\(actionTitle(actionId)) finished."
     }
 
     func actionFailedText(_ actionId: String, _ output: String) -> String {
         let detail = short(output.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " "), 120)
-        if actionId == "start_autopilot" {
-            return detail.isEmpty ? "Live monitoring did not start. Open a terminal and run setup autopilot." : "Monitoring did not start: \(detail)"
-        }
         return detail.isEmpty ? "\(actionTitle(actionId)) failed." : "\(actionTitle(actionId)) failed: \(detail)"
     }
 
     func actionBusyText(_ actionId: String) -> String {
-        if actionId == "start_autopilot" {
-            return "Still starting live monitoring..."
-        }
         return "Still running \(actionTitle(actionId))..."
     }
 
@@ -1610,9 +1589,6 @@ class PetView: NSView {
         }
         for actionId in displayActions() {
             if actionId != "dismiss_for_now" && !optionValue(actionId, "command", "").isEmpty {
-                if actionId == "start_autopilot" {
-                    return "Start monitoring to install or start the local OpenClaw/Hermes sidecars. No extra input is needed; the Pet will wake automatically when it sees frustration or quality incidents."
-                }
                 return "Use a repair/open action if you want Agent Doctor to stage reviewable follow-up work."
             }
         }

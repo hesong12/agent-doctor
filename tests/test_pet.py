@@ -127,11 +127,8 @@ def test_pet_idle_when_no_quality_signal() -> None:
     assert status.action == "silent"
     assert status.findings == 0
     assert status.events == 0
-    assert "live monitoring" in status.recommendation
-    start = [option for option in status.options if option.id == "start_autopilot"][0]
-    assert start.label == "Start monitoring"
-    assert "OpenClaw/Hermes sidecars" in start.description
-    assert "-m agent_doctor.cli setup autopilot" in start.command
+    assert status.options == ()
+    assert "Keep working normally" in status.recommendation
 
 
 def test_pet_cli_message_json_smoke() -> None:
@@ -228,6 +225,28 @@ def test_pet_display_hides_manual_stage_repair_without_command() -> None:
         "copy_recovery_prompt",
         "dismiss_for_now",
     ]
+
+
+def test_pet_display_suppresses_legacy_idle_start_monitoring_action() -> None:
+    snapshot = snapshot_from_payload(
+        {
+            "state": "idle",
+            "action": "silent",
+            "severity": "low",
+            "headline": "Doctor Pet is healthy.",
+            "message": "Watching supported local sessions.",
+            "options": [
+                {
+                    "id": "start_autopilot",
+                    "label": "Start monitoring",
+                    "description": "Legacy setup action.",
+                    "command": f"{sys.executable} -m agent_doctor.cli setup autopilot",
+                }
+            ],
+        }
+    )
+
+    assert [action.id for action in _display_actions(snapshot)] == ["dismiss_for_now"]
 
 
 def test_pet_display_hides_open_card_when_card_path_is_absent() -> None:
@@ -402,10 +421,10 @@ def test_appkit_display_source_has_context_menu_quit() -> None:
     assert "NSPasteboard.general.setString" in source
     assert "Hide Alert" in source
     assert "Intervention needed" in source
-    assert "Start Monitoring" in source
     assert "runningActionId" in source
-    assert "Starting live monitoring" in source
-    assert "Live monitoring is on" in source
+    assert "Start Monitoring" not in source
+    assert "Starting live monitoring" not in source
+    assert "setup\", \"autopilot" not in source
     assert "NSAlert()" not in source
     assert "runModal()" not in source
 
