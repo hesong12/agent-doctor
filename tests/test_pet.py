@@ -369,10 +369,13 @@ def test_pet_action_send_recovery_writes_hermes_inbox(
 def test_appkit_display_source_has_context_menu_quit() -> None:
     source = pet_display._appkit_source()
 
-    assert "windowWidth: CGFloat = 260" in source
-    assert "windowHeight: CGFloat = 310" in source
+    assert "compactWindowWidth: CGFloat = 260" in source
+    assert "expandedWindowHeight: CGFloat = 520" in source
     assert ".usesLineFragmentOrigin" in source
     assert "drawStateChip" in source
+    assert "drawPanel" in source
+    assert "drawActionButton" in source
+    assert "performButton" in source
     assert "rightMouseDown" in source
     assert "NSMenu" in source
     assert "Quit Doctor Pet" in source
@@ -393,8 +396,9 @@ def test_appkit_display_source_has_context_menu_quit() -> None:
     assert "expires_after_seconds" in source
     assert "NSPasteboard.general.setString" in source
     assert "Hide Alert" in source
-    assert "Click for details" in source
     assert "Intervention needed" in source
+    assert "NSAlert()" not in source
+    assert "runModal()" not in source
 
 
 def test_tk_display_canvas_is_large_enough_for_readable_pet_text() -> None:

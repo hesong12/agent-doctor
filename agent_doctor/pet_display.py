@@ -551,8 +551,7 @@ def display_pet(
 
     def finish_click(event: Any) -> None:
         if not interaction["moved"]:
-            interaction["bubble"] = True
-            open_status_dialog(active_snapshot())
+            interaction["bubble"] = not interaction["bubble"]
 
     def quit_pet() -> None:
         root.destroy()
@@ -824,6 +823,8 @@ def _draw_tk_bubble(canvas: Any, snapshot: DisplaySnapshot) -> None:
 
 
 def _draw_tk_state_chip(canvas: Any, snapshot: DisplaySnapshot) -> None:
+    if snapshot.state == "idle":
+        return
     label = _state_label(snapshot)
     canvas.create_rectangle(28, 264, 232, 296, fill="#ffffff", outline=snapshot.accent, width=2)
     canvas.create_oval(43, 276, 53, 286, fill=snapshot.accent, outline="")
@@ -1021,10 +1022,10 @@ let pollSeconds = CommandLine.arguments.count > 2 ? (Double(CommandLine.argument
 let topmost = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] == "1" : true
 let assetPath = CommandLine.arguments.count > 4 ? CommandLine.arguments[4] : ""
 let pythonExecutable = CommandLine.arguments.count > 5 ? CommandLine.arguments[5] : "/usr/bin/python3"
-let windowWidth: CGFloat = 260
-let windowHeight: CGFloat = 310
-let petCanvasXOffset: CGFloat = 35
-let petCanvasYOffset: CGFloat = 88
+let compactWindowWidth: CGFloat = 260
+let compactWindowHeight: CGFloat = 310
+let expandedWindowWidth: CGFloat = 360
+let expandedWindowHeight: CGFloat = 520
 
 func stringValue(_ dict: [String: Any], _ key: String, _ fallback: String) -> String {
     if let value = dict[key] as? String {
@@ -1179,6 +1180,8 @@ class PetView: NSView {
     var eventFirstSeenAt = Date()
     var startedAt = Date()
     var lastStatusReload = Date(timeIntervalSince1970: 0)
+    var buttonFrames: [(String, NSRect)] = []
+    var noticeText = ""
     let petImage: NSImage? = assetPath.isEmpty ? nil : NSImage(contentsOfFile: assetPath)
 
     override var isOpaque: Bool { false }
@@ -1203,9 +1206,13 @@ class PetView: NSView {
         if isDragging {
             return
         }
-        bubbleOpen = true
+        let point = convert(event.locationInWindow, from: nil)
+        if performButton(at: point) {
+            return
+        }
+        bubbleOpen = !bubbleOpen
+        noticeText = ""
         needsDisplay = true
-        showStatusDialog(nil)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -1239,31 +1246,9 @@ class PetView: NSView {
 
     @objc func showStatusDialog(_ sender: Any?) {
         observeCurrentEvent()
-        if incidentExpired() {
-            showNotice(
-                title: "Doctor Pet is Watching",
-                message: "The previous alert quieted after inactivity. A new frustration signal will wake the Pet again."
-            )
-            return
-        }
-        bubbleOpen = true
+        bubbleOpen = !bubbleOpen
+        noticeText = ""
         needsDisplay = true
-        let state = status["state"] ?? "idle"
-        let action = status["action"] ?? "silent"
-        let actions = displayActions()
-        let alert = NSAlert()
-        alert.messageText = issueTitle()
-        alert.informativeText = detailText(state, action)
-        alert.alertStyle = action == "intervene" ? .warning : .informational
-        for actionId in actions {
-            alert.addButton(withTitle: actionTitle(actionId))
-        }
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        let response = alert.runModal()
-        let selected = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
-        if selected >= 0 && selected < actions.count {
-            performAction(actions[selected])
-        }
     }
 
     @objc func muteForNow(_ sender: Any?) {
@@ -1279,6 +1264,7 @@ class PetView: NSView {
             NSWorkspace.shared.open(URL(fileURLWithPath: path))
         } else {
             bubbleOpen = true
+            noticeText = "No status card is available for this state."
             needsDisplay = true
         }
     }
@@ -1314,14 +1300,16 @@ class PetView: NSView {
     func runOptionCommand(_ optionId: String) {
         let command = optionValue(optionId, "command", "")
         if !isRunnableCommand(command) {
-            showStatusDialog(nil)
+            bubbleOpen = true
+            noticeText = "This action is not available for the current state."
+            needsDisplay = true
             return
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-lc", command]
         try? process.run()
-        showNotice(title: "\(actionTitle(optionId)) started", message: command)
+        noticeText = "\(actionTitle(optionId)) started."
         bubbleOpen = true
         needsDisplay = true
     }
@@ -1344,24 +1332,21 @@ class PetView: NSView {
             try process.run()
             process.waitUntilExit()
         } catch {
-            showNotice(title: "Suggestion Not Sent", message: error.localizedDescription)
+            bubbleOpen = true
+            noticeText = error.localizedDescription
+            needsDisplay = true
             return
         }
         let data = output.fileHandleForReading.readDataToEndOfFile()
         let text = String(data: data, encoding: .utf8) ?? ""
         let detail = actionDetail(text)
         if process.terminationStatus == 0 {
-            bubbleOpen = false
+            bubbleOpen = true
             dismissedEventId = currentEventKey()
-            showNotice(
-                title: "Suggestion Sent",
-                message: detail.isEmpty ? "The active agent received the recovery suggestion." : detail
-            )
+            noticeText = detail.isEmpty ? "Suggestion sent to the active agent." : detail
         } else {
-            showNotice(
-                title: "Suggestion Not Sent",
-                message: detail.isEmpty ? "Doctor Pet could not route this incident." : detail
-            )
+            bubbleOpen = true
+            noticeText = detail.isEmpty ? "Doctor Pet could not route this incident." : detail
         }
         needsDisplay = true
     }
@@ -1369,10 +1354,9 @@ class PetView: NSView {
     func copyRecoveryPrompt() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(recoveryPrompt(), forType: .string)
-        showNotice(
-            title: "Recovery Prompt Copied",
-            message: "Paste it into the active agent so it can correct the current response."
-        )
+        bubbleOpen = true
+        noticeText = "Recovery prompt copied."
+        needsDisplay = true
     }
 
     func isRunnableCommand(_ command: String) -> Bool {
@@ -1431,6 +1415,20 @@ class PetView: NSView {
         }
         actions.append("dismiss_for_now")
         return actions
+    }
+
+    func visibleActions() -> [String] {
+        return Array(displayActions().prefix(4))
+    }
+
+    func performButton(at point: NSPoint) -> Bool {
+        for (actionId, rect) in buttonFrames.reversed() {
+            if rect.contains(point) {
+                performAction(actionId)
+                return true
+            }
+        }
+        return false
     }
 
     func canSendRecovery() -> Bool {
@@ -1611,14 +1609,26 @@ class PetView: NSView {
         return currentEventKey() != dismissedEventId
     }
 
-    func showNotice(title: String, message: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        alert.runModal()
+    func panelVisible(_ state: String) -> Bool {
+        return bubbleOpen || shouldAutoShowBubble(state)
+    }
+
+    func syncWindowSize(expanded: Bool) {
+        guard let window = self.window else { return }
+        let width = expanded ? expandedWindowWidth : compactWindowWidth
+        let height = expanded ? expandedWindowHeight : compactWindowHeight
+        let frame = window.frame
+        if abs(frame.width - width) < 0.5 && abs(frame.height - height) < 0.5 {
+            return
+        }
+        let next = NSRect(
+            x: frame.maxX - width,
+            y: frame.maxY - height,
+            width: width,
+            height: height
+        )
+        window.setFrame(next, display: true)
+        self.frame = NSRect(x: 0, y: 0, width: width, height: height)
     }
 
     @objc func quitPet(_ sender: Any?) {
@@ -1807,31 +1817,79 @@ class PetView: NSView {
     }
 
     func drawStateChip(_ state: String, _ action: String, _ accent: NSColor) {
+        if state == "idle" {
+            return
+        }
         roundRect(28, 270, 204, 30, 15, NSColor.white.withAlphaComponent(0.96), accent, 2)
         oval(43, 281, 10, 10, accent, NSColor.clear, 0)
         text(stateLabel(state, action), 64, 276, 152, 18, 11, color("#111827"), true, .left)
     }
 
-    func drawBubble(_ state: String, _ accent: NSColor) {
-        guard bubbleOpen || shouldAutoShowBubble(state) else {
+    func drawActionButton(_ actionId: String, _ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ primary: Bool, _ accent: NSColor) {
+        let fill = primary ? color("#0b84ff") : NSColor.white.withAlphaComponent(0.92)
+        let stroke = primary ? color("#0b84ff") : color("#d1d5db")
+        let foreground = primary ? NSColor.white : color("#111827")
+        let rect = r(x, y, w, h)
+        roundRect(x, y, w, h, h / 2, fill, stroke, 1)
+        text(actionTitle(actionId), x + 8, y + 7, w - 16, h - 12, 10.5, foreground, primary)
+        buttonFrames.append((actionId, rect))
+    }
+
+    func drawPanel(_ state: String, _ accent: NSColor) {
+        buttonFrames.removeAll()
+        guard panelVisible(state) else {
             return
         }
-        roundRect(14, 10, 232, 132, 14, NSColor.white.withAlphaComponent(0.97), color("#111827"), 2)
-        let tail = NSBezierPath()
-        tail.move(to: NSPoint(x: 108, y: bounds.height - 142))
-        tail.line(to: NSPoint(x: 130, y: bounds.height - 160))
-        tail.line(to: NSPoint(x: 152, y: bounds.height - 142))
-        tail.close()
-        NSColor.white.withAlphaComponent(0.96).setFill()
-        tail.fill()
-        color("#111827").setStroke()
-        tail.lineWidth = 2
-        tail.stroke()
-        text(stateLabel(state, status["action"] ?? "silent"), 28, 22, 204, 18, 12, accent, true, .left)
-        text(short(issueTitle(), 54), 28, 46, 204, 32, 12, color("#111827"), true, .left)
-        let bubbleText = (status["emotion_message"] ?? "").isEmpty ? evidenceText() : (status["emotion_message"] ?? "")
-        text(short(bubbleText, 90), 28, 82, 204, 28, 11, color("#374151"), false, .left)
-        text("Click for details", 28, 116, 204, 18, 11, accent, true, .left)
+        roundRect(18, 210, 324, 292, 22, NSColor.white.withAlphaComponent(0.96), color("#111827"), 1.5)
+        let titleY: CGFloat = 230
+        if state != "idle" {
+            roundRect(36, titleY - 2, 126, 24, 12, accent.withAlphaComponent(0.10), accent, 1)
+            text(stateLabel(state, status["action"] ?? "silent"), 48, titleY + 4, 102, 13, 9.5, accent, true, .left)
+            text(short(issueTitle(), 74), 36, 262, 288, 38, 13.5, color("#111827"), true, .left)
+        } else {
+            text(short(issueTitle(), 82), 36, 230, 288, 36, 13.5, color("#111827"), true, .left)
+        }
+
+        var y: CGFloat = state == "idle" ? 278 : 310
+        let emotion = status["emotion_message"] ?? ""
+        if !emotion.isEmpty {
+            text(short(emotion, 118), 36, y, 288, 34, 11, accent, true, .left)
+            y += 42
+        }
+        let diagnosis = status["diagnosis"] ?? ""
+        let diagnosisText = diagnosis.isEmpty ? (status["message"] ?? "") : diagnosis
+        text("Diagnosis", 36, y, 288, 14, 10, color("#111827"), true, .left)
+        text(short(diagnosisText, state == "idle" ? 150 : 126), 36, y + 18, 288, 42, 10.5, color("#374151"), false, .left)
+        y += 68
+        if state != "idle" {
+            text("Evidence", 36, y, 288, 14, 10, color("#111827"), true, .left)
+            text(short(evidenceText(), 118), 36, y + 18, 288, 38, 10.5, color("#374151"), false, .left)
+            y += 62
+        }
+        text("Next step", 36, y, 288, 14, 10, color("#111827"), true, .left)
+        text(short(expectationText(), 132), 36, y + 18, 288, 42, 10.5, color("#374151"), false, .left)
+
+        if !noticeText.isEmpty {
+            text(short(noticeText, 110), 36, 432, 288, 28, 10.5, accent, true, .left)
+        }
+
+        let actions = visibleActions()
+        let rowY: CGFloat = 468
+        if actions.count == 1 {
+            drawActionButton(actions[0], 36, rowY, 288, 30, true, accent)
+        } else if actions.count == 2 {
+            drawActionButton(actions[0], 36, rowY, 138, 30, true, accent)
+            drawActionButton(actions[1], 186, rowY, 138, 30, false, accent)
+        } else {
+            let firstRow = Array(actions.prefix(2))
+            let secondRow = Array(actions.dropFirst(2).prefix(2))
+            for (index, actionId) in firstRow.enumerated() {
+                drawActionButton(actionId, index == 0 ? 36 : 186, rowY - 18, 138, 28, index == 0, accent)
+            }
+            for (index, actionId) in secondRow.enumerated() {
+                drawActionButton(actionId, index == 0 ? 36 : 186, rowY + 16, 138, 28, false, accent)
+            }
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1841,18 +1899,24 @@ class PetView: NSView {
         let (_, accent, glow) = palette(state)
         let t = Date().timeIntervalSince(startedAt)
         let shadowPulse = 1.0 + (0.08 * pulse(t, 2.0))
+        let expanded = panelVisible(state)
+        syncWindowSize(expanded: expanded)
 
         NSGraphicsContext.saveGraphicsState()
         let transform = NSAffineTransform()
-        transform.translateX(by: petCanvasXOffset, yBy: -petCanvasYOffset)
+        let petXOffset = ((bounds.width - compactWindowWidth) / 2.0) + 35
+        let petYOffset: CGFloat = expanded ? 0 : 88
+        transform.translateX(by: petXOffset, yBy: -petYOffset)
         transform.concat()
         drawEffects(state, t, accent, glow)
         oval(57 - (3 * shadowPulse), 180, 76 + (6 * shadowPulse), 16, color("#111827").withAlphaComponent(0.22), NSColor.clear, 0)
         drawSprite(state, t)
         drawOverlays(state, t, accent, glow)
         NSGraphicsContext.restoreGraphicsState()
-        drawStateChip(state, status["action"] ?? "silent", accent)
-        drawBubble(state, accent)
+        if state != "idle" && !expanded {
+            drawStateChip(state, status["action"] ?? "silent", accent)
+        }
+        drawPanel(state, accent)
     }
 }
 
@@ -1861,10 +1925,10 @@ app.setActivationPolicy(.accessory)
 
 let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
 let startFrame = NSRect(
-    x: screenFrame.maxX - windowWidth - 80,
-    y: screenFrame.maxY - windowHeight - 80,
-    width: windowWidth,
-    height: windowHeight
+    x: screenFrame.maxX - compactWindowWidth - 80,
+    y: screenFrame.maxY - compactWindowHeight - 80,
+    width: compactWindowWidth,
+    height: compactWindowHeight
 )
 
 let window = NSWindow(
@@ -1884,9 +1948,10 @@ if topmost {
     window.level = .floating
 }
 
-let view = PetView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight))
+let view = PetView(frame: NSRect(x: 0, y: 0, width: compactWindowWidth, height: compactWindowHeight))
 view.wantsLayer = true
 view.layer?.backgroundColor = NSColor.clear.cgColor
+view.autoresizingMask = [.width, .height]
 window.contentView = view
 window.makeKeyAndOrderFront(nil)
 app.activate(ignoringOtherApps: true)
