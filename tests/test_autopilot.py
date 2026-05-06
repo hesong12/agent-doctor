@@ -494,3 +494,42 @@ def test_dispatch_event_returns_error_string_on_adapter_failure(tmp_path: Path) 
     assert err is not None
     assert "adapter_error" in err
     assert "boom" in err
+
+
+def test_run_autopilot_once_calls_dispatch_event_via_adapter(tmp_path: Path, monkeypatch) -> None:
+    """When an event fires, run_autopilot_once should call adapter.send_message
+    via dispatch_event (in addition to any --notify-command)."""
+    from agent_doctor.adapters import GenericAdapter
+
+    # Simulate frustration message
+    transcript = tmp_path / "session.jsonl"
+    state = tmp_path / "doctor" / "state.sqlite3"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s-dispatch",
+                "role": "user",
+                "content": "你太蠢了，又错了",
+            }
+        ],
+    )
+
+    # Run autopilot pointing at our generic adapter (no notify command)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        state_path=state,
+    )
+
+    assert len(result.events) == 1
+
+    # Inbox file should have been written by GenericAdapter via dispatch_event
+    expected_inbox = tmp_path / ".agent-doctor" / "generic" / "inbox" / "s-dispatch.md"
+    assert expected_inbox.exists()
+    text = expected_inbox.read_text(encoding="utf-8")
+    assert "🩺" in text
+    assert "你太蠢了" in text

@@ -151,6 +151,13 @@ def run_autopilot_once(
                         delivered = False
                         delivery_errors.append(error)
                         append_delivery_error(out_dir / "delivery-errors.jsonl", event, error)
+                # Phase 3: also dispatch through host adapter for user-visible delivery
+                adapter_error = _dispatch_via_adapter(event, platform=platform)
+                if adapter_error:
+                    # Adapter-side errors don't block delivered status: legacy notify_command
+                    # is the gate. Adapter dispatch is best-effort additive.
+                    delivery_errors.append(adapter_error)
+                    append_delivery_error(out_dir / "delivery-errors.jsonl", event, adapter_error)
                 if delivered:
                     state.record(event)
                 emitted.append(event)
@@ -450,6 +457,43 @@ def dispatch_event(
         adapter.send_message(target, body, kind)
     except (NotImplementedError, RuntimeError) as exc:
         return f"adapter_error: {exc}"
+    return None
+
+
+def _dispatch_via_adapter(event: AutopilotEvent, *, platform: Platform) -> str | None:
+    """Try to deliver the event through the host adapter's send_message.
+
+    Best-effort: returns an error string on failure (logged to
+    delivery-errors.jsonl) but never raises. Phase 3 of the redesign
+    introduces this; the legacy --notify-command path is unchanged.
+    """
+    try:
+        from .adapters import GenericAdapter, HermesAdapter, MessageKind, OpenClawAdapter
+        from .channel_router import resolve
+        from .speaker import render_intervene
+    except ImportError as exc:
+        return f"adapter_dispatch_import_failed: {exc}"
+
+    adapter_classes = {
+        "openclaw": OpenClawAdapter,
+        "hermes": HermesAdapter,
+        "generic": GenericAdapter,
+    }
+    cls = adapter_classes.get(platform, GenericAdapter)
+    instance = cls.detect()
+    if instance is None:
+        instance = GenericAdapter()  # always-available fallback
+
+    try:
+        target, language = resolve(Path(event.message_file), instance)
+    except Exception as exc:
+        return f"channel_router_failed: {exc}"
+
+    body = render_intervene(event, language=language)
+    try:
+        instance.send_message(target, body, MessageKind.intervene)
+    except (NotImplementedError, RuntimeError) as exc:
+        return f"adapter_dispatch_failed: {exc}"
     return None
 
 
