@@ -268,7 +268,6 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
         actions.append(DisplayAction(id="copy_recovery_prompt", label=copy_label))
         seen.add("copy_recovery_prompt")
         actions.append(DisplayAction(id="dismiss_for_now", label="忽略" if chinese else "Ignore"))
-        actions.append(DisplayAction(id="quit_pet", label="退出" if chinese else "Quit"))
         return tuple(actions)
     actions.append(DisplayAction(id="diagnose_current", label="检查会话" if chinese else "Check session"))
     seen.add("diagnose_current")
@@ -1224,6 +1223,10 @@ class PetView: NSView {
     var noticeText = ""
     var checkResultText = ""
     var checkResultUntil = Date(timeIntervalSince1970: 0)
+    var deliveryResultText = ""
+    var deliveryResultSucceeded = false
+    var deliveryResultUntil = Date(timeIntervalSince1970: 0)
+    var deliveryEventId = ""
     var runningActionId = ""
     var activeProcesses: [Process] = []
     let petImage: NSImage? = assetPath.isEmpty ? nil : NSImage(contentsOfFile: assetPath)
@@ -1261,9 +1264,14 @@ class PetView: NSView {
 
     @objc func muteForNow(_ sender: Any?) {
         bubbleOpen = false
-        dismissedEventId = currentEventKey()
+        if deliveryResultActive() && !deliveryEventId.isEmpty {
+            dismissedEventId = deliveryEventId
+        } else {
+            dismissedEventId = currentEventKey()
+        }
         checkResultText = ""
         checkResultUntil = Date(timeIntervalSince1970: 0)
+        clearDeliveryResult()
         needsDisplay = true
         displayIfNeeded()
     }
@@ -1381,7 +1389,7 @@ class PetView: NSView {
             process.waitUntilExit()
         } catch {
             bubbleOpen = true
-            noticeText = error.localizedDescription
+            setDeliveryResult(false, error.localizedDescription)
             needsDisplay = true
             return
         }
@@ -1389,12 +1397,10 @@ class PetView: NSView {
         let text = String(data: data, encoding: .utf8) ?? ""
         let detail = actionDetail(text)
         if process.terminationStatus == 0 {
-            bubbleOpen = true
             dismissedEventId = currentEventKey()
-            noticeText = detail.isEmpty ? "Suggestion sent to the active agent." : detail
+            setDeliveryResult(true, deliverySuccessText(detail))
         } else {
-            bubbleOpen = true
-            noticeText = detail.isEmpty ? "Agent Doctor could not route this incident." : detail
+            setDeliveryResult(false, deliveryFailureText(detail))
         }
         needsDisplay = true
     }
@@ -1473,7 +1479,7 @@ class PetView: NSView {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(recoveryPrompt(), forType: .string)
         bubbleOpen = true
-        noticeText = "Recovery prompt copied."
+        noticeText = useChinese() ? "建议已复制。" : "Suggestion copied."
         needsDisplay = true
     }
 
@@ -1500,6 +1506,54 @@ class PetView: NSView {
         return stringValue(dict, "mode", "")
     }
 
+    func hostProductName() -> String {
+        let platform = status["platform"] ?? ""
+        if platform == "openclaw" {
+            return "OpenClaw"
+        }
+        if platform == "hermes" {
+            return "Hermes"
+        }
+        return "OpenClaw/Hermes"
+    }
+
+    func deliverySuccessText(_ detail: String) -> String {
+        let app = hostProductName()
+        let technical = short(detail.trimmingCharacters(in: .whitespacesAndNewlines), 100)
+        if useChinese() {
+            let base = "已把恢复建议发送给当前 \(app) Agent。请回到会话，查看它是否已经停止当前错误路径并开始修复。"
+            return technical.isEmpty ? base : "\(base)\n\(technical)"
+        }
+        let base = "Sent the recovery suggestion to the active \(app) agent. Return to the session and check whether it stops the failing path and starts recovering."
+        return technical.isEmpty ? base : "\(base)\n\(technical)"
+    }
+
+    func deliveryFailureText(_ detail: String) -> String {
+        let technical = short(detail.trimmingCharacters(in: .whitespacesAndNewlines), 120)
+        if useChinese() {
+            let base = "Agent Doctor 还没有把建议送到当前 Agent。你可以先复制建议，手动粘贴到 OpenClaw/Hermes 会话里。"
+            return technical.isEmpty ? base : "\(base)\n\(technical)"
+        }
+        let base = "Agent Doctor has not sent the suggestion to the active agent. Copy the suggestion and paste it into the OpenClaw/Hermes session manually."
+        return technical.isEmpty ? base : "\(base)\n\(technical)"
+    }
+
+    func setDeliveryResult(_ succeeded: Bool, _ text: String) {
+        deliveryResultSucceeded = succeeded
+        deliveryResultText = text
+        deliveryResultUntil = Date().addingTimeInterval(90)
+        deliveryEventId = currentEventKey()
+        noticeText = ""
+        bubbleOpen = true
+    }
+
+    func clearDeliveryResult() {
+        deliveryResultText = ""
+        deliveryResultSucceeded = false
+        deliveryResultUntil = Date(timeIntervalSince1970: 0)
+        deliveryEventId = ""
+    }
+
     func optionValue(_ optionId: String, _ key: String, _ fallback: String) -> String {
         let count = Int(status["option_count"] ?? "0") ?? 0
         for index in 0..<count {
@@ -1514,6 +1568,13 @@ class PetView: NSView {
     func displayActions() -> [String] {
         var actions: [String] = []
         var seen = Set<String>()
+        if deliveryResultActive() {
+            if !deliveryResultSucceeded {
+                actions.append("copy_recovery_prompt")
+            }
+            actions.append("dismiss_for_now")
+            return actions
+        }
         let state = status["state"] ?? "idle"
         if state == "concerned" || state == "intervening" {
             if canSendRecovery() {
@@ -1523,7 +1584,6 @@ class PetView: NSView {
             actions.append("copy_recovery_prompt")
             seen.insert("copy_recovery_prompt")
             actions.append("dismiss_for_now")
-            actions.append("quit_pet")
             return actions
         }
         actions.append("diagnose_current")
@@ -1596,6 +1656,9 @@ class PetView: NSView {
             return chinese ? "打开详情" : "Open Card"
         }
         if actionId == "dismiss_for_now" {
+            if deliveryResultActive() {
+                return chinese ? "知道了" : "Done"
+            }
             let state = status["state"] ?? "idle"
             if state == "concerned" || state == "intervening" {
                 return chinese ? "忽略" : "Ignore"
@@ -1662,6 +1725,28 @@ class PetView: NSView {
 
     func checkResultActive() -> Bool {
         return !checkResultText.isEmpty && Date() <= checkResultUntil
+    }
+
+    func deliveryResultActive() -> Bool {
+        return !deliveryResultText.isEmpty && Date() <= deliveryResultUntil
+    }
+
+    func deliveryPanelTitle() -> String {
+        if deliveryResultSucceeded {
+            return useChinese() ? "已发送给当前 Agent" : "Sent to active agent"
+        }
+        return useChinese() ? "发送失败" : "Could not send"
+    }
+
+    func deliveryPanelHelper() -> String {
+        if deliveryResultSucceeded {
+            return useChinese()
+                ? "现在回到 OpenClaw/Hermes，确认当前 Agent 是否按建议恢复。Agent Doctor 会继续监控新的用户反馈。"
+                : "Return to OpenClaw/Hermes and confirm the agent recovers. Agent Doctor will keep watching for new feedback."
+        }
+        return useChinese()
+            ? "自动发送没有成功。复制建议后手动粘贴给当前 Agent，或者忽略这次提醒。"
+            : "Automatic delivery did not complete. Copy the suggestion and paste it to the active agent, or ignore this alert."
     }
 
     func panelTitle(_ state: String) -> String {
@@ -1810,7 +1895,11 @@ class PetView: NSView {
         if activeEventId != key {
             activeEventId = key
             eventFirstSeenAt = Date()
-            if dismissedEventId != key && !checkResultActive() {
+            let state = status["state"] ?? "idle"
+            if (state == "concerned" || state == "intervening") && key != dismissedEventId {
+                clearDeliveryResult()
+            }
+            if dismissedEventId != key && !checkResultActive() && !deliveryResultActive() {
                 bubbleOpen = false
             }
         }
@@ -1840,6 +1929,9 @@ class PetView: NSView {
 
     func panelVisible(_ state: String) -> Bool {
         if checkResultActive() {
+            return true
+        }
+        if deliveryResultActive() {
             return true
         }
         return bubbleOpen || shouldAutoShowBubble(state)
@@ -2118,9 +2210,37 @@ class PetView: NSView {
         }
     }
 
+    func drawDeliveryResultPanel(_ state: String, _ accent: NSColor) {
+        let chinese = useChinese()
+        let statusColor = deliveryResultSucceeded ? color("#16a34a") : color("#dc2626")
+        let softFill = deliveryResultSucceeded ? color("#dcfce7") : color("#fee2e2")
+        roundRect(18, 210, 324, 340, 22, NSColor.white.withAlphaComponent(0.96), color("#111827"), 1.5)
+        roundRect(36, 230, 138, 24, 12, softFill.withAlphaComponent(0.72), statusColor, 1)
+        text(deliveryResultSucceeded ? (chinese ? "已发送" : "Sent") : (chinese ? "需要手动处理" : "Needs manual send"), 48, 236, 114, 13, 9.5, statusColor, true, .left)
+        text(short(deliveryPanelTitle(), 72), 36, 268, 288, 34, 13.5, color("#111827"), true, .left)
+
+        text(chinese ? "发生了什么" : "What happened", 36, 316, 288, 14, 10, color("#111827"), true, .left)
+        text(short(deliveryResultText, 190), 36, 334, 288, 82, 10.5, color("#374151"), false, .left)
+        text(chinese ? "下一步" : "Next step", 36, 430, 288, 14, 10, color("#111827"), true, .left)
+        text(short(deliveryPanelHelper(), 130), 36, 448, 288, 38, 10.5, color("#374151"), false, .left)
+
+        let actions = visibleActions()
+        let rowY: CGFloat = 504
+        if actions.count == 1 {
+            drawActionButton(actions[0], 36, rowY, 288, 30, true, accent)
+        } else if actions.count == 2 {
+            drawActionButton(actions[0], 36, rowY, 138, 30, true, accent)
+            drawActionButton(actions[1], 186, rowY, 138, 30, false, accent)
+        }
+    }
+
     func drawPanel(_ state: String, _ accent: NSColor) {
         buttonFrames.removeAll()
         guard panelVisible(state) else {
+            return
+        }
+        if deliveryResultActive() {
+            drawDeliveryResultPanel(state, accent)
             return
         }
         if state == "idle" {

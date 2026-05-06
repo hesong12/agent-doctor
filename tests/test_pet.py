@@ -111,7 +111,6 @@ def test_pet_event_uses_user_session_language_for_tool_failure() -> None:
         "发送给 Agent",
         "复制建议",
         "忽略",
-        "退出",
     ]
 
 
@@ -282,7 +281,6 @@ def test_pet_display_hides_manual_stage_repair_without_command() -> None:
     assert [action.id for action in _display_actions(snapshot)] == [
         "copy_recovery_prompt",
         "dismiss_for_now",
-        "quit_pet",
     ]
 
 
@@ -354,7 +352,6 @@ def test_pet_display_shows_runnable_stage_repair_action() -> None:
     assert [action.id for action in _display_actions(snapshot)] == [
         "copy_recovery_prompt",
         "dismiss_for_now",
-        "quit_pet",
     ]
 
 
@@ -382,7 +379,6 @@ def test_pet_display_shows_send_recovery_for_transcript_backed_openclaw(tmp_path
         "send_recovery",
         "copy_recovery_prompt",
         "dismiss_for_now",
-        "quit_pet",
     ]
 
 
@@ -547,9 +543,15 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "reloadStatusFromFile" in source
     assert "shouldKeepCurrentIncident" in source
     assert "Date().addingTimeInterval(60)" in source
+    assert "Date().addingTimeInterval(90)" in source
     assert "performButton" in source
     assert "displayActions" in source
     assert "displayActions().prefix(6)" in source
+    assert "deliveryResultActive" in source
+    assert "deliveryEventId" in source
+    assert "drawDeliveryResultPanel" in source
+    assert "Sent to active agent" in source
+    assert "已发送给当前 Agent" in source
     assert "dismissedEventId" in source
     assert "isRunnableCommand" in source
     assert "evidence_0_quote" in source
