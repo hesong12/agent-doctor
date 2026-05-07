@@ -4,7 +4,7 @@ Three deterministic, no-LLM signals that complement the regex tier:
 
 1. Typing-shape: punctuation density, ALL-CAPS bursts, length spike/collapse.
 2. Trajectory: escalation pattern across last N user messages.
-3. Repeat-theme: same word/concept said N times in M turns.
+3. Repeat-theme: same word/concept repeated across turns.
 
 Each signal returns a 0-3 score added to the regex score for the final decision.
 """
@@ -82,19 +82,85 @@ def score_trajectory(messages: list[str], window: int = 5) -> int:
 # --- repeat-theme ------------------------------------------------------------
 
 
-_TOKENIZE = re.compile(r"[A-Za-z]{3,}|[一-鿿]")
+_EN_TOKENIZE = re.compile(r"[A-Za-z]{3,}")
+_CJK_RUN = re.compile(r"[一-鿿]{2,}")
+
+_EN_STOPWORDS = {
+    "the",
+    "and",
+    "are",
+    "you",
+    "this",
+    "that",
+    "with",
+    "for",
+    "from",
+    "what",
+    "why",
+    "how",
+    "can",
+    "could",
+    "would",
+    "should",
+}
+
+_CJK_STOPWORDS = {
+    "一个",
+    "一些",
+    "这个",
+    "那个",
+    "我们",
+    "你们",
+    "他们",
+    "它们",
+    "可以",
+    "需要",
+    "就是",
+    "不是",
+    "这个",
+    "事情",
+    "东西",
+    "本身",
+    "目前",
+    "更加",
+    "一下",
+    "了吗",
+    "哪里",
+    "什么",
+    "怎么",
+    "为什么",
+}
 
 
 def score_repeat_themes(messages: list[str], min_repeats: int = 3) -> int:
-    """+1 if a content word repeats >= min_repeats times across recent messages.
+    """+1 if a content token appears in >= min_repeats distinct user turns.
 
-    Tokens: English alpha-words length 3+, OR any single CJK character.
+    Repeat-theme is a trajectory signal, not a density signal. Counting raw
+    occurrences inside one long Chinese question makes normal inquiry look like
+    frustration, so each message contributes a token at most once and CJK text is
+    represented by short phrases rather than single common characters.
     """
-    counts: dict[str, int] = {}
-    for m in messages[-10:]:  # window of 10
-        for token in _TOKENIZE.findall(m.lower()):
-            counts[token] = counts.get(token, 0) + 1
-    return 1 if counts and max(counts.values()) >= min_repeats else 0
+    message_counts: dict[str, int] = {}
+    for message in messages[-10:]:
+        for token in _content_tokens(message):
+            message_counts[token] = message_counts.get(token, 0) + 1
+    return 1 if message_counts and max(message_counts.values()) >= min_repeats else 0
+
+
+def _content_tokens(message: str) -> set[str]:
+    tokens: set[str] = set()
+    for token in _EN_TOKENIZE.findall(message.lower()):
+        if token not in _EN_STOPWORDS:
+            tokens.add(token)
+    for run in _CJK_RUN.findall(message):
+        if run in _CJK_STOPWORDS:
+            continue
+        for size in (2, 3):
+            for index in range(0, len(run) - size + 1):
+                token = run[index : index + size]
+                if token not in _CJK_STOPWORDS:
+                    tokens.add(token)
+    return tokens
 
 
 # --- fusion -----------------------------------------------------------------

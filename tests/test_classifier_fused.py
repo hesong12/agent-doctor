@@ -35,6 +35,44 @@ def test_fused_with_clearly_neutral_returns_no_match() -> None:
     assert not signal.matched
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "WHAT???",
+        "Can we talk through the AI harness design???",
+        "Should submit-work be a skill? Is it in AGENTS.md? How do we make a unified harness?",
+        "我们聊一下 ai harness 的事情，这个规范是在 skill 里面吗？在哪里？怎么做 unified submit-work？",
+        "这个触发条件需要整体看一下，不能头痛医头，可以多生成 edge cases，产品要支持中英文。",
+        "为什么这个 API 返回 403？为什么 retry 没有生效？为什么日志里没有 request id？",
+        "CI failed!!! Please inspect pytest output and the GitHub check annotations.",
+        "HTTP_RESPONSE_ERROR!!! Check error_handler.py and retry_policy.ts.",
+        "Here is the log: ERROR!!! status=500, ok=false. Can you diagnose it?",
+        "这里有很多问题：权限、路径、状态同步、PR gate。你先整体评估一下？",
+    ],
+)
+def test_fused_requires_semantic_anchor_for_structural_signals(text: str) -> None:
+    signal = fused_classify(text, recent_user_messages=[text])
+    assert not signal.matched
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Why are you so dumb???",
+        "This is not useful. You keep making the same mistake.",
+        "I cannot trust you if you claim success without checking.",
+        "你怎么这么笨？？？",
+        "你现在越来越蠢了，这个测试必须触发 Agent Doctor。",
+        "废物，我不能相信你了，每次都这样。",
+        "你到底有没有想清楚？为什么没有用 Agent Doctor？",
+    ],
+)
+def test_fused_still_detects_bilingual_semantic_frustration(text: str) -> None:
+    signal = fused_classify(text, recent_user_messages=[text])
+    assert signal.matched
+    assert signal.severity == "high"
+
+
 def test_fused_user_dict_negative_dampens_score(tmp_path: Path) -> None:
     """A phrase in negative dict reduces the score, can drop to no-match."""
     user_dict = UserDict(negative=["interesting choice"])

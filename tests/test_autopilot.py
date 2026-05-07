@@ -68,6 +68,42 @@ def test_autopilot_detects_negative_feedback_and_writes_card(tmp_path: Path) -> 
     assert "user_frustration_signal" in (tmp_path / "doctor" / "events.jsonl").read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "我们聊一下ai harness的事情，scripts/submit-work.sh 这个东西是我们之前搞的repo scoped的规范，这个是放在了你的skill里面了吗？还是在哪里？这种类似的规范本身是有体现在我们目前的ai harness的设计和实现中吗？我们有什么办法可以做到一个unified submit-work的harness，这样可以更加的规范和确定性一些？",
+        "Can you inspect the trigger conditions??? We need English and Chinese support plus edge-case regression coverage.",
+        "CI is failing!!! Please inspect the traceback, error output, and GitHub check annotations.",
+        "为什么这个 OpenClaw trajectory 有 prompt.submitted？为什么 session JSONL 也有 mirror？这两个都要扫吗？",
+    ],
+)
+def test_autopilot_does_not_intervene_on_normal_high_density_questions(
+    tmp_path: Path,
+    content: str,
+) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "neutral",
+                "role": "user",
+                "content": content,
+            }
+        ],
+    )
+
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        cooldown_seconds=3600,
+    )
+
+    assert result.events == []
+    assert result.pet_state == "idle"
+
+
 def test_autopilot_ignores_agent_doctor_recovery_prompts(tmp_path: Path) -> None:
     transcript = tmp_path / "session.jsonl"
     _write_jsonl(
