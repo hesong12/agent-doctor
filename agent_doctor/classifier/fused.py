@@ -103,6 +103,10 @@ def fused_classify(
         except Exception as exc:
             rationale_parts.append(f"tier2_error={exc}")
 
+    # v1 desktop intervention is intentionally precision-first: structural
+    # signals can boost an anchored complaint, but they do not create a live
+    # incident by themselves. This preserves the neutral-message false-positive
+    # fix for turns like "ok", "好了", and "继续" after noisy context.
     if not has_semantic_anchor:
         return FrustrationSignal(matched=False)
 

@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import re
 from dataclasses import dataclass
+from typing import Callable
 
 from .redaction import redact_text
 from .schema import Message
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -15,6 +20,7 @@ class ComfortCopy:
     headline: str
     message: str
     mood: str
+    source: str = "fallback"
 
 
 def comfort_copy_for_event(
@@ -24,21 +30,187 @@ def comfort_copy_for_event(
     evidence: str,
     recent: list[Message],
     chinese: bool,
+    generator: Callable[[str], str] | None = None,
 ) -> ComfortCopy:
     """Build short scene-aware comfort text without changing detector behavior.
 
-    This is intentionally lightweight: it uses the current transcript slice and
-    deterministic variation keyed by the event context. If a future host-LLM
-    path is reliable, it can replace this function behind the same return type.
+    A host model is the product path: the copy must be written from the
+    current scene, not pulled from canned phrases. The deterministic branch is
+    only a degradation path for local auth/network/model failures.
     """
 
     quote = _latest_user_quote(recent) or _clean(evidence)
     assistant = _latest_assistant_quote(recent)
+    if generator is not None:
+        generated = _generated_copy(
+            generator=generator,
+            trigger=trigger,
+            severity=severity,
+            evidence=evidence,
+            recent=recent,
+            quote=quote,
+            assistant=assistant,
+            chinese=chinese,
+        )
+        if generated is not None:
+            return generated
     theme = _theme(trigger, quote + "\n" + assistant, chinese=chinese)
     variant = _variant(trigger, severity, quote, assistant, size=4)
     if chinese:
         return _zh_copy(theme, quote, assistant, variant)
     return _en_copy(theme, quote, assistant, variant)
+
+
+def _generated_copy(
+    *,
+    generator: Callable[[str], str],
+    trigger: str,
+    severity: str,
+    evidence: str,
+    recent: list[Message],
+    quote: str,
+    assistant: str,
+    chinese: bool,
+) -> ComfortCopy | None:
+    prompt = _comfort_prompt(
+        trigger=trigger,
+        severity=severity,
+        evidence=evidence,
+        recent=recent,
+        quote=quote,
+        assistant=assistant,
+        chinese=chinese,
+    )
+    try:
+        raw = generator(prompt)
+    except Exception as exc:  # pragma: no cover - exercised through callers
+        _log.info("comfort generation failed; using fallback copy: %s", exc)
+        return None
+    payload = _parse_json_object(raw)
+    if payload is None:
+        _log.info("comfort generation returned non-JSON output; using fallback copy")
+        return None
+    headline = _clean(str(payload.get("headline") or ""))
+    message = _clean(str(payload.get("message") or ""))
+    mood = _clean(str(payload.get("mood") or "")) or _theme(
+        trigger,
+        quote + "\n" + assistant,
+        chinese=chinese,
+    )
+    if not headline or not message:
+        return None
+    if _looks_generic(message, quote=quote, assistant=assistant):
+        _log.info("comfort generation was too generic; using fallback copy")
+        return None
+    return ComfortCopy(
+        headline=_clip_quote(headline, 36 if chinese else 48),
+        message=_clip_quote(message, 180 if chinese else 240),
+        mood=mood,
+        source="model",
+    )
+
+
+def _comfort_prompt(
+    *,
+    trigger: str,
+    severity: str,
+    evidence: str,
+    recent: list[Message],
+    quote: str,
+    assistant: str,
+    chinese: bool,
+) -> str:
+    language = "Chinese" if chinese else "English"
+    compact_recent = [
+        {
+            "role": message.role,
+            "text": _clip_quote(message.content, 360),
+        }
+        for message in recent[-8:]
+        if message.role in {"user", "assistant", "tool"}
+    ]
+    scene = {
+        "trigger": trigger,
+        "severity": severity,
+        "evidence": _clip_quote(evidence, 500),
+        "latest_user_quote": _clip_quote(quote, 240),
+        "latest_assistant_quote": _clip_quote(assistant, 240),
+        "recent_messages": compact_recent,
+    }
+    return (
+        "You write the tiny Agent Doctor pet's comfort copy after it detects "
+        "that the user is upset with an AI agent.\n"
+        f"Write in {language}. Use the actual scene below. Do not use generic therapy, "
+        "do not diagnose, do not tell the user to take actions, do not mention templates, "
+        "and do not defend the agent. Be warm, specific, a little playful, and concise. "
+        "The message must clearly react to the latest user quote and the immediate agent/tool context. "
+        "Return only minified JSON with keys headline, message, mood. "
+        "headline <= 18 Chinese chars or <= 8 English words. message <= 2 sentences.\n"
+        f"Scene JSON: {json.dumps(scene, ensure_ascii=False, separators=(',', ':'))}"
+    )
+
+
+def _parse_json_object(raw: str) -> dict[str, object] | None:
+    text = raw.strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+        text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        payload = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _looks_generic(message: str, *, quote: str, assistant: str) -> bool:
+    anchors = _anchor_terms(quote) + _anchor_terms(assistant)
+    if not anchors:
+        return False
+    lowered = message.casefold()
+    return not any(anchor.casefold() in lowered for anchor in anchors)
+
+
+def _anchor_terms(text: str) -> list[str]:
+    cleaned = _clean(text)
+    if not cleaned:
+        return []
+    chinese_terms = []
+    for term in re.findall(r"[\u4e00-\u9fff]{2,}", cleaned):
+        if len(term) <= 4:
+            chinese_terms.append(term)
+            continue
+        chinese_terms.extend(term[index : index + 2] for index in range(0, len(term) - 1))
+    english_terms = [
+        token
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", cleaned)
+        if token.casefold()
+        not in {
+            "that",
+            "this",
+            "with",
+            "what",
+            "have",
+            "your",
+            "youre",
+            "just",
+            "from",
+            "they",
+            "were",
+            "been",
+            "will",
+            "would",
+            "could",
+            "should",
+            "agent",
+        }
+    ]
+    return chinese_terms[:40] + english_terms[:12]
 
 
 def _zh_copy(theme: str, quote: str, assistant: str, variant: int) -> ComfortCopy:

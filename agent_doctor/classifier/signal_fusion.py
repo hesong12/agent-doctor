@@ -106,6 +106,25 @@ _EN_STOPWORDS = {
 
 _CJK_CHAR_STOPWORDS = set("你我他她它的是了吗嗎么麼什怎不在这這那有和就都也还還很个個一二三吧啊呢哦呀")
 
+_CJK_REPEAT_CHARS = {"笨", "蠢", "傻", "错", "錯", "烂", "爛", "糟"}
+
+_CJK_REPEAT_PHRASES = {
+    "不对",
+    "不對",
+    "错误",
+    "錯誤",
+    "失败",
+    "失敗",
+    "状态",
+    "狀態",
+    "同步",
+    "笨",
+    "蠢",
+    "傻",
+    "错",
+    "錯",
+}
+
 _CJK_STOPWORDS = {
     "一个",
     "一些",
@@ -158,13 +177,13 @@ def _content_tokens(message: str) -> set[str]:
         if run in _CJK_STOPWORDS:
             continue
         for char in run:
-            if char not in _CJK_CHAR_STOPWORDS:
+            if char in _CJK_REPEAT_CHARS and char not in _CJK_CHAR_STOPWORDS:
                 tokens.add(char)
-        for size in (2, 3):
-            for index in range(0, len(run) - size + 1):
-                token = run[index : index + size]
-                if token not in _CJK_STOPWORDS:
-                    tokens.add(token)
+        if 2 <= len(run) <= 4 and run not in _CJK_STOPWORDS:
+            tokens.add(run)
+        for phrase in _CJK_REPEAT_PHRASES:
+            if phrase in run and phrase not in _CJK_STOPWORDS:
+                tokens.add(phrase)
     return tokens
 
 

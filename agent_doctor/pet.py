@@ -7,14 +7,16 @@ host, menu-bar app, or future desktop widget can render consistently.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Callable, Iterable, Literal
 
+from .adapters import OpenClawAdapter
 from .autopilot import Action, AutopilotEvent, Platform, detect_autopilot_events
 from .comfort import comfort_copy_for_event
 from .detectors import detect_findings
@@ -27,6 +29,8 @@ PetPhase = Literal["healthy", "comforting", "diagnosing", "advice_ready", "ignor
 
 _SEVERITY_RANK: dict[Severity, int] = {"low": 0, "medium": 1, "high": 2}
 _ACTION_RANK: dict[Action, int] = {"silent": 0, "notify": 1, "intervene": 2}
+_DEFAULT_OPENCLAW_COMFORT_MODEL = "google/gemini-2.5-flash"
+_COMFORT_CACHE: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -85,6 +89,7 @@ class PetStatus:
     platform: Platform = "generic"
     phase: PetPhase = "healthy"
     emotion_message: str = ""
+    comfort_source: str = ""
     diagnosis: str = ""
     recommendation: str = ""
     recovery_prompt: str = ""
@@ -116,6 +121,7 @@ class PetStatus:
             "platform": self.platform,
             "phase": self.phase,
             "emotion_message": redact_text(self.emotion_message),
+            "comfort_source": self.comfort_source,
             "diagnosis": redact_text(self.diagnosis),
             "recommendation": redact_text(self.recommendation),
             "recovery_prompt": redact_text(self.recovery_prompt),
@@ -339,6 +345,7 @@ def _status_from_event(
         evidence=event.evidence,
         recent=_recent_session_messages(event, context),
         chinese=chinese,
+        generator=_comfort_generator(platform=platform, event=event, context=context),
     )
     return PetStatus(
         name="Agent Doctor",
@@ -363,6 +370,7 @@ def _status_from_event(
         platform=platform,
         phase="comforting",
         emotion_message=comfort.message,
+        comfort_source=comfort.source,
         diagnosis=comfort.headline,
         recommendation=(
             "不用操作，先缓一下；Agent Doctor 会继续安静看着。"
@@ -373,6 +381,56 @@ def _status_from_event(
         intervention_payload={},
         expires_after_seconds=120,
     )
+
+
+def _comfort_generator(
+    *,
+    platform: Platform,
+    event: AutopilotEvent,
+    context: list[Message],
+) -> Callable[[str], str] | None:
+    if platform != "openclaw":
+        return None
+    try:
+        adapter = OpenClawAdapter.detect()
+        if adapter is None or not adapter.capabilities().can_infer_text:
+            return None
+    except Exception:
+        return None
+
+    cache_key = _comfort_cache_key(event, context)
+    model = os.environ.get("AGENT_DOCTOR_COMFORT_MODEL", _DEFAULT_OPENCLAW_COMFORT_MODEL)
+
+    def generate(prompt: str) -> str:
+        cached = _COMFORT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        text = adapter.infer_text(prompt, model=model)
+        _COMFORT_CACHE[cache_key] = text
+        return text
+
+    return generate
+
+
+def _comfort_cache_key(event: AutopilotEvent, context: list[Message]) -> str:
+    recent = _recent_session_messages(event, context)
+    payload = {
+        "event_id": event.id,
+        "trigger": event.trigger,
+        "severity": event.severity,
+        "evidence": event.evidence,
+        "recent": [
+            {
+                "role": message.role,
+                "line": message.line,
+                "content": message.content,
+            }
+            for message in recent[-8:]
+        ],
+        "model": os.environ.get("AGENT_DOCTOR_COMFORT_MODEL", _DEFAULT_OPENCLAW_COMFORT_MODEL),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _status_from_finding(

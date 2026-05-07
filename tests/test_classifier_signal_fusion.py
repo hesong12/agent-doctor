@@ -97,3 +97,13 @@ def test_repeat_theme_counts_meaningful_single_cjk_tokens() -> None:
     messages = ["你很笨", "还是笨", "笨"]
 
     assert score_repeat_themes(messages) == 1
+
+
+def test_repeat_theme_does_not_fire_on_repeated_technical_cjk_nouns() -> None:
+    messages = [
+        "代码运行路径需要看一下",
+        "代码运行日志在哪里",
+        "代码运行环境是 Python 3.12",
+    ]
+
+    assert score_repeat_themes(messages) == 0

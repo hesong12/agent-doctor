@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from agent_doctor.delivery import (
+    _openclaw_subprocess_env,
     default_openclaw_notify_command,
     notify_openclaw_system_event,
     render_openclaw_system_event_text,
@@ -137,6 +138,54 @@ def test_notify_openclaw_system_event_uses_host_home_for_openclaw_cli(
     assert captured["env"]["AGENT_DOCTOR_HOST_HOME"] == str(tmp_path)  # type: ignore[index]
     assert captured["env"]["AGENT_DOCTOR_EVENT_ID"] == "evt-1"  # type: ignore[index]
     assert "/opt/homebrew/bin" in captured["env"]["PATH"]  # type: ignore[index]
+
+
+def test_openclaw_subprocess_env_loads_host_provider_keys_for_launchd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    dotenv = tmp_path / ".openclaw" / ".env"
+    dotenv.parent.mkdir()
+    dotenv.write_text(
+        "\n".join(
+            [
+                "GEMINI_API_KEY=gemini-from-dotenv",
+                "OPENROUTER_API_KEY='router-from-dotenv'",
+                "UNRELATED_SECRET=do-not-load",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    env = _openclaw_subprocess_env(
+        {
+            "AGENT_DOCTOR_HOST_HOME": str(tmp_path),
+            "PATH": "/usr/bin:/bin",
+        }
+    )
+
+    assert env["HOME"] == str(tmp_path)
+    assert env["GEMINI_API_KEY"] == "gemini-from-dotenv"
+    assert env["OPENROUTER_API_KEY"] == "router-from-dotenv"
+    assert "UNRELATED_SECRET" not in env
+
+
+def test_openclaw_subprocess_env_keeps_existing_provider_keys(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    dotenv = tmp_path / ".openclaw" / ".env"
+    dotenv.parent.mkdir()
+    dotenv.write_text("GEMINI_API_KEY=dotenv-value\n", encoding="utf-8")
+
+    env = _openclaw_subprocess_env(
+        {
+            "AGENT_DOCTOR_HOST_HOME": str(tmp_path),
+            "GEMINI_API_KEY": "existing-value",
+        }
+    )
+
+    assert env["GEMINI_API_KEY"] == "existing-value"
 
 
 def test_notify_openclaw_system_event_derives_host_home_from_sandbox_home(

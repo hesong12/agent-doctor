@@ -305,6 +305,16 @@ def test_inject_system_event_raises_on_nonzero_rc(monkeypatch) -> None:
         OpenClawAdapter().inject_system_event("hi")
 
 
+def test_send_agent_turn_raises_on_empty_success_output(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent_doctor.adapters.openclaw.subprocess.run",
+        lambda cmd, **kw: _completed(stdout=""),
+    )
+    monkeypatch.setattr("agent_doctor.adapters.openclaw._resolve_openclaw_or_none", lambda: "/fake/openclaw")
+
+    with pytest.raises(RuntimeError, match="no output"):
+        OpenClawAdapter().send_agent_turn("s1", "hi")
+
 def test_send_agent_turn_raises_on_failed_status(monkeypatch) -> None:
     monkeypatch.setattr(
         "agent_doctor.adapters.openclaw.subprocess.run",

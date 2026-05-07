@@ -23,6 +23,17 @@ class OpenClawSystemEventResult:
 
 
 HOST_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+OPENCLAW_PROVIDER_ENV_KEYS = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "VOYAGE_API_KEY",
+    }
+)
 
 
 def default_openclaw_notify_command() -> str:
@@ -152,7 +163,37 @@ def _openclaw_subprocess_env(values: Mapping[str, str]) -> dict[str, str]:
     host_home = values.get("AGENT_DOCTOR_HOST_HOME") or _host_home_from_env(env)
     env["HOME"] = host_home
     env["AGENT_DOCTOR_HOST_HOME"] = host_home
+    env.update(_load_openclaw_provider_env(Path(host_home), existing=env))
     return env
+
+
+def _load_openclaw_provider_env(
+    host_home: Path,
+    *,
+    existing: Mapping[str, str],
+) -> dict[str, str]:
+    dotenv = host_home / ".openclaw" / ".env"
+    try:
+        lines = dotenv.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    loaded: dict[str, str] = {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        if key not in OPENCLAW_PROVIDER_ENV_KEYS or existing.get(key):
+            continue
+        loaded[key] = _dotenv_value(value.strip())
+    return loaded
+
+
+def _dotenv_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def _host_home_from_env(env: Mapping[str, str]) -> str:

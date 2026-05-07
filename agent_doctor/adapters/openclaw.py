@@ -276,11 +276,13 @@ class OpenClawAdapter:
                 f"openclaw agent session delivery failed: rc={result.returncode} "
                 f"stderr={result.stderr.strip()!r}"
             )
+        if not result.stdout.strip():
+            raise RuntimeError("openclaw agent returned no output")
         try:
-            payload = json.loads(result.stdout or "{}")
+            payload = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
             raise RuntimeError("openclaw agent returned non-JSON output") from exc
-        status = str(payload.get("status") or "ok").casefold()
+        status = str(payload.get("status") or "failed").casefold()
         if status not in {"ok", "completed", "success"}:
             detail = payload.get("summary") or payload.get("error") or result.stdout
             raise RuntimeError(f"openclaw agent session delivery did not complete: {detail}")

@@ -616,12 +616,19 @@ def display_pet(
         interaction["dismissed_event"] = _snapshot_event_key(snapshot)
 
         def worker() -> None:
-            subprocess.run(command, text=True, capture_output=True, check=False)
-            payload = read_status_payload(status_path)
+            result = subprocess.run(command, text=True, capture_output=True, check=False)
+            payload = read_status_payload(status_path) if result.returncode == 0 else None
+            detail = _pet_action_detail(result.stdout, result.stderr)
 
             def finish() -> None:
-                status_cache["snapshot"] = snapshot_from_payload(payload)
-                status_cache["read_at"] = time.monotonic()
+                if result.returncode != 0:
+                    interaction["bubble"] = True
+                    interaction["dismissed_event"] = ""
+                    show_message("Dismiss not saved", detail or "Agent Doctor could not persist this dismissal.")
+                    return
+                if payload is not None:
+                    status_cache["snapshot"] = snapshot_from_payload(payload)
+                    status_cache["read_at"] = time.monotonic()
 
             root.after(0, finish)
 

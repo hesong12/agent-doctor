@@ -67,7 +67,8 @@ def test_pet_manual_frustration_summon_intervenes() -> None:
     assert "Dismiss" in text
 
 
-def test_pet_event_uses_user_session_language_for_tool_failure() -> None:
+def test_pet_event_uses_user_session_language_for_tool_failure(monkeypatch) -> None:
+    monkeypatch.setattr("agent_doctor.pet.OpenClawAdapter.detect", lambda: None)
     messages = [
         Message(
             file="/tmp/session.jsonl",
@@ -177,7 +178,7 @@ def test_pet_event_options_are_emotion_value_only(tmp_path: Path) -> None:
     assert all(not option.command for option in status.options)
 
 
-def test_pet_comfort_copy_uses_recent_scene_context(tmp_path: Path) -> None:
+def test_pet_comfort_copy_uses_recent_scene_context(tmp_path: Path, monkeypatch) -> None:
     transcript = tmp_path / "session.jsonl"
     _write_jsonl(
         transcript,
@@ -195,12 +196,136 @@ def test_pet_comfort_copy_uses_recent_scene_context(tmp_path: Path) -> None:
         ],
     )
 
+    monkeypatch.setattr("agent_doctor.pet.OpenClawAdapter.detect", lambda: None)
+
     status = pet_status_for_path(transcript, platform="openclaw")
 
     assert status.phase == "comforting"
     assert "I fixed it" in status.emotion_message
+    assert status.comfort_source == "fallback"
     assert status.recovery_prompt == ""
     assert status.intervention_payload == {}
+
+
+def test_pet_comfort_copy_uses_openclaw_model_generation(monkeypatch) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    class FakeCapabilities:
+        can_infer_text = True
+
+    class FakeOpenClaw:
+        @classmethod
+        def detect(cls):
+            return cls()
+
+        def capabilities(self):
+            return FakeCapabilities()
+
+        def infer_text(self, prompt: str, *, model: str | None = None) -> str:
+            calls.append((prompt, model))
+            return json.dumps(
+                {
+                    "headline": "它答偏了",
+                    "message": "你刚才说“不是我要的”，这不是闹脾气，是它把问题做歪了。小医生先把方向盘抱住。",
+                    "mood": "offtrack",
+                },
+                ensure_ascii=False,
+            )
+
+    monkeypatch.setattr(pet_module, "OpenClawAdapter", FakeOpenClaw)
+    monkeypatch.delenv("AGENT_DOCTOR_COMFORT_MODEL", raising=False)
+    pet_module._COMFORT_CACHE.clear()
+    messages = [
+        Message(
+            file="/tmp/session.jsonl",
+            line=1,
+            session_id="s-model",
+            role="assistant",
+            content="I fixed the billing setup instead.",
+            source_format="openclaw",
+            raw_type="message",
+        ),
+        Message(
+            file="/tmp/session.jsonl",
+            line=2,
+            session_id="s-model",
+            role="user",
+            content="不是我要的，你怎么又搞偏了？",
+            source_format="openclaw",
+            raw_type="message",
+        ),
+    ]
+    event = AutopilotEvent(
+        id="evt-model",
+        platform="openclaw",
+        action="intervene",
+        trigger="user_frustration_signal",
+        severity="high",
+        session_id="s-model",
+        message_file="/tmp/session.jsonl",
+        message_line=2,
+        summary="frustration",
+        evidence="不是我要的，你怎么又搞偏了？",
+        finding_ids=[],
+    )
+
+    first = build_pet_status(messages, [], platform="openclaw", events=[event])
+    second = build_pet_status(messages, [], platform="openclaw", events=[event])
+
+    assert first.comfort_source == "model"
+    assert "方向盘" in first.emotion_message
+    assert second.emotion_message == first.emotion_message
+    assert len(calls) == 1
+    assert calls[0][1] == "google/gemini-2.5-flash"
+    assert "不是我要的" in calls[0][0]
+
+
+def test_pet_comfort_copy_rejects_generic_model_output(monkeypatch) -> None:
+    class FakeCapabilities:
+        can_infer_text = True
+
+    class FakeOpenClaw:
+        @classmethod
+        def detect(cls):
+            return cls()
+
+        def capabilities(self):
+            return FakeCapabilities()
+
+        def infer_text(self, prompt: str, *, model: str | None = None) -> str:
+            return '{"headline":"我在这里","message":"我看到你现在很难受，我会陪你一下。","mood":"frustration"}'
+
+    monkeypatch.setattr(pet_module, "OpenClawAdapter", FakeOpenClaw)
+    pet_module._COMFORT_CACHE.clear()
+    messages = [
+        Message(
+            file="/tmp/session.jsonl",
+            line=1,
+            session_id="s-generic",
+            role="user",
+            content="OnoeX contact form 还是没发出去，你到底在干嘛？",
+            source_format="openclaw",
+            raw_type="message",
+        ),
+    ]
+    event = AutopilotEvent(
+        id="evt-generic",
+        platform="openclaw",
+        action="intervene",
+        trigger="user_frustration_signal",
+        severity="high",
+        session_id="s-generic",
+        message_file="/tmp/session.jsonl",
+        message_line=1,
+        summary="frustration",
+        evidence="OnoeX contact form 还是没发出去，你到底在干嘛？",
+        finding_ids=[],
+    )
+
+    status = build_pet_status(messages, [], platform="openclaw", events=[event])
+
+    assert status.comfort_source == "fallback"
+    assert "OnoeX contact form" in status.emotion_message
 
 
 def test_pet_path_status_writes_private_redacted_artifacts(tmp_path: Path) -> None:
