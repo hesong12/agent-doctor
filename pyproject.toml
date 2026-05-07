@@ -27,7 +27,7 @@ agent-doctor = "agent_doctor.cli:main"
 include = ["agent_doctor*"]
 
 [tool.setuptools.package-data]
-agent_doctor = ["assets/*.png"]
+agent_doctor = ["assets/*.png", "assets/*.swift"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
