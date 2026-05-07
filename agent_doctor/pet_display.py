@@ -266,14 +266,9 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
     seen: set[str] = set()
     chinese = _snapshot_uses_chinese(snapshot)
     if snapshot.state in ("concerned", "intervening"):
-        if _can_send_recovery(snapshot):
-            label = "发送给 Agent" if chinese else "Send to Agent"
-            actions.append(DisplayAction(id="send_recovery", label=label))
-            seen.add("send_recovery")
-        copy_label = "复制建议" if chinese else "Copy Suggestion"
-        actions.append(DisplayAction(id="copy_recovery_prompt", label=copy_label))
-        seen.add("copy_recovery_prompt")
-        actions.append(DisplayAction(id="dismiss_for_now", label="忽略" if chinese else "Ignore"))
+        label = "告诉当前 Agent" if chinese else "Tell Current Agent"
+        actions.append(DisplayAction(id="tell_current_agent", label=label))
+        actions.append(DisplayAction(id="dismiss_for_now", label="忽略" if chinese else "Dismiss"))
         return tuple(actions)
     actions.append(DisplayAction(id="diagnose_current", label="检查会话" if chinese else "Check session"))
     seen.add("diagnose_current")
@@ -293,7 +288,7 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
 
 
 def _can_send_recovery(snapshot: DisplaySnapshot) -> bool:
-    if snapshot.platform not in {"openclaw", "hermes"}:
+    if snapshot.platform != "openclaw":
         return False
     if snapshot.state not in {"concerned", "intervening"}:
         return False
@@ -365,18 +360,11 @@ def _user_action_text(snapshot: DisplaySnapshot) -> str:
     if snapshot.state in ("concerned", "intervening"):
         if chinese:
             quiet = f"如果你不操作，Agent Doctor 会在 {snapshot.expires_after_seconds} 秒后收起提醒并继续监控。"
-            if _can_send_recovery(snapshot):
-                return f"发送会把修正建议交给当前 agent；复制可手动粘贴；忽略会隐藏这次提醒。{quiet}"
-            return f"复制建议后可以手动粘贴给当前 agent；忽略会隐藏这次提醒。{quiet}"
+            return f"告诉当前 Agent 会尝试把结构化修正建议注入当前 OpenClaw session；忽略会隐藏这次提醒。{quiet}"
         quiet = f"If you do nothing, Agent Doctor will quiet this alert after {snapshot.expires_after_seconds} seconds and keep watching."
-        if _can_send_recovery(snapshot):
-            return (
-                "Send asks the active agent to recover, Copy lets you paste manually, or hide "
-                f"this alert to ignore this incident for now. {quiet}"
-            )
         return (
-            "Copy lets you paste the suggestion manually, or hide this alert to ignore this "
-            f"incident for now. {quiet}"
+            "Tell Current Agent tries to inject the structured recovery payload into the active "
+            f"OpenClaw session; Dismiss hides this incident. {quiet}"
         )
     has_runnable_action = any(
         action.command for action in _display_actions(snapshot) if action.id != "dismiss_for_now"
@@ -668,11 +656,8 @@ def display_pet(
             show_message(f"{action.label} started", action.command)
 
     def perform_dialog_action(action: DisplayAction, snapshot: DisplaySnapshot, popup: Any) -> None:
-        if action.id == "send_recovery":
+        if action.id == "tell_current_agent":
             send_recovery_to_agent(snapshot, popup)
-            return
-        if action.id == "copy_recovery_prompt":
-            copy_recovery_prompt(snapshot)
             return
         if action.id == "open_card":
             open_status_card(snapshot)
@@ -1294,16 +1279,12 @@ class PetView: NSView {
     }
 
     func performAction(_ actionId: String) {
-        if actionId == "send_recovery" {
+        if actionId == "tell_current_agent" {
             sendRecoveryToAgent(nil)
             return
         }
         if actionId == "diagnose_current" {
             diagnoseCurrentSession()
-            return
-        }
-        if actionId == "copy_recovery_prompt" {
-            copyRecoveryPrompt()
             return
         }
         if actionId == "open_card" {
@@ -1517,10 +1498,7 @@ class PetView: NSView {
         if platform == "openclaw" {
             return "OpenClaw"
         }
-        if platform == "hermes" {
-            return "Hermes"
-        }
-        return "OpenClaw/Hermes"
+        return "OpenClaw"
     }
 
     func deliverySuccessText(_ detail: String) -> String {
@@ -1537,10 +1515,10 @@ class PetView: NSView {
     func deliveryFailureText(_ detail: String) -> String {
         let technical = short(detail.trimmingCharacters(in: .whitespacesAndNewlines), 120)
         if useChinese() {
-            let base = "Agent Doctor 还没有把建议送到当前 Agent。你可以先复制建议，手动粘贴到 OpenClaw/Hermes 会话里。"
+            let base = "Agent Doctor 还没有把建议送到当前 Agent。OpenClaw 路由不可用或 system event 发送失败。"
             return technical.isEmpty ? base : "\(base)\n\(technical)"
         }
-        let base = "Agent Doctor has not sent the suggestion to the active agent. Copy the suggestion and paste it into the OpenClaw/Hermes session manually."
+        let base = "Agent Doctor has not sent the suggestion to the active agent. OpenClaw routing is unavailable or system-event delivery failed."
         return technical.isEmpty ? base : "\(base)\n\(technical)"
     }
 
@@ -1575,20 +1553,13 @@ class PetView: NSView {
         var actions: [String] = []
         var seen = Set<String>()
         if deliveryResultActive() {
-            if !deliveryResultSucceeded {
-                actions.append("copy_recovery_prompt")
-            }
             actions.append("dismiss_for_now")
             return actions
         }
         let state = status["state"] ?? "idle"
         if state == "concerned" || state == "intervening" {
-            if canSendRecovery() {
-                actions.append("send_recovery")
-                seen.insert("send_recovery")
-            }
-            actions.append("copy_recovery_prompt")
-            seen.insert("copy_recovery_prompt")
+            actions.append("tell_current_agent")
+            seen.insert("tell_current_agent")
             actions.append("dismiss_for_now")
             return actions
         }
@@ -1633,7 +1604,7 @@ class PetView: NSView {
             return false
         }
         let platform = status["platform"] ?? "generic"
-        if platform != "openclaw" && platform != "hermes" {
+        if platform != "openclaw" {
             return false
         }
         let state = status["state"] ?? "idle"
@@ -1649,14 +1620,11 @@ class PetView: NSView {
         if actionId == runningActionId {
             return chinese ? "处理中..." : "Working..."
         }
-        if actionId == "send_recovery" {
-            return chinese ? "发送给 Agent" : "Send to Agent"
+        if actionId == "tell_current_agent" {
+            return chinese ? "告诉当前 Agent" : "Tell Current Agent"
         }
         if actionId == "diagnose_current" {
             return chinese ? "检查会话" : "Check Session"
-        }
-        if actionId == "copy_recovery_prompt" {
-            return chinese ? "复制建议" : "Copy Suggestion"
         }
         if actionId == "open_card" {
             return chinese ? "打开详情" : "Open Card"
@@ -1667,7 +1635,7 @@ class PetView: NSView {
             }
             let state = status["state"] ?? "idle"
             if state == "concerned" || state == "intervening" {
-                return chinese ? "忽略" : "Ignore"
+                return chinese ? "忽略" : "Dismiss"
             }
             return chinese ? "关闭" : "Close"
         }
@@ -1747,8 +1715,8 @@ class PetView: NSView {
     func deliveryPanelHelper() -> String {
         if deliveryResultSucceeded {
             return useChinese()
-                ? "现在回到 OpenClaw/Hermes，确认当前 Agent 是否按建议恢复。Agent Doctor 会继续监控新的用户反馈。"
-                : "Return to OpenClaw/Hermes and confirm the agent recovers. Agent Doctor will keep watching for new feedback."
+                ? "现在回到 OpenClaw，确认当前 Agent 是否按建议恢复。Agent Doctor 会继续监控新的用户反馈。"
+                : "Return to OpenClaw and confirm the agent recovers. Agent Doctor will keep watching for new feedback."
         }
         return useChinese()
             ? "自动发送没有成功。复制建议后手动粘贴给当前 Agent，或者忽略这次提醒。"
@@ -1779,7 +1747,7 @@ class PetView: NSView {
             if !recommendation.isEmpty {
                 return recommendation
             }
-            return "Keep working normally. Agent Doctor is still watching supported OpenClaw/Hermes sessions."
+            return "Keep working normally. Agent Doctor is still watching supported OpenClaw sessions."
         }
         return expectationText()
     }
@@ -1844,7 +1812,7 @@ class PetView: NSView {
         }
         for actionId in displayActions() {
             if actionId == "diagnose_current" {
-                return "Click Check Session to refresh the current OpenClaw/Hermes session diagnosis, or Quit to stop Agent Doctor."
+                return "Click Check Session to refresh the current OpenClaw session diagnosis, or Quit to stop Agent Doctor."
             }
         }
         if !(status["card_path"] ?? "").isEmpty {

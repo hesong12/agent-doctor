@@ -43,8 +43,13 @@ def fused_classify(
     if tier1.rationale:
         rationale_parts.append(f"tier1={tier1.rationale}")
 
-    # Signal fusion (always)
-    fusion = fuse_signals(text=text, recent_user_messages=recent_user_messages or [])
+    # Signal fusion (always), but do not let purely contextual fusion
+    # turn neutral acknowledgements ("ok", "好了", "继续") into incidents.
+    if tier1.score == 0 and _is_neutral_acknowledgement(text):
+        recent_for_fusion: list[str] = [text]
+    else:
+        recent_for_fusion = recent_user_messages or []
+    fusion = fuse_signals(text=text, recent_user_messages=recent_for_fusion)
     if fusion.total > 0:
         score += fusion.total
         if fusion.typing_shape:
@@ -110,3 +115,20 @@ def _score_to_severity(score: int) -> Severity:
     if score == 1:
         return "low"
     return "none"  # type: ignore[return-value]
+
+
+def _is_neutral_acknowledgement(text: str) -> bool:
+    normalized = text.strip().casefold().strip(".!?。！？…~～ ")
+    return normalized in {
+        "ok",
+        "okay",
+        "k",
+        "继续",
+        "繼續",
+        "好了",
+        "好",
+        "行",
+        "可以",
+        "go on",
+        "continue",
+    }

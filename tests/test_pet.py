@@ -56,14 +56,16 @@ def test_pet_manual_frustration_summon_intervenes() -> None:
     assert status.recommendation
     assert status.recovery_prompt
     assert [option.id for option in status.options] == [
-        "pause_and_diagnose",
-        "stage_fix",
-        "keep_watching",
+        "tell_current_agent",
+        "dismiss",
     ]
+    assert status.intervention_payload["type"] == "agent_doctor_intervention"
+    assert "root_cause" in status.intervention_payload
+    assert "required_next_response_behavior" in status.intervention_payload
 
     text = render_pet_markdown(status)
     assert "Agent Doctor" in text
-    assert "Pause and diagnose" in text
+    assert "Tell Current Agent" in text
 
 
 def test_pet_event_uses_user_session_language_for_tool_failure() -> None:
@@ -109,13 +111,12 @@ def test_pet_event_uses_user_session_language_for_tool_failure() -> None:
     assert "关键证据" in status.recovery_prompt
     assert _issue_title(snapshot) == "工具失败需要处理"
     assert [action.label for action in _display_actions(snapshot)] == [
-        "发送给 Agent",
-        "复制建议",
+        "告诉当前 Agent",
         "忽略",
     ]
 
 
-def test_pet_event_stage_repair_command_targets_agent_doctor_repairs(tmp_path: Path) -> None:
+def test_pet_event_options_are_only_tell_current_agent_and_dismiss(tmp_path: Path) -> None:
     transcript = tmp_path / "session.jsonl"
     _write_jsonl(
         transcript,
@@ -129,12 +130,9 @@ def test_pet_event_stage_repair_command_targets_agent_doctor_repairs(tmp_path: P
     )
 
     status = pet_status_for_path(transcript)
-    stage = [option for option in status.options if option.id == "stage_fix"][0]
 
-    assert stage.label == "Stage repair"
-    assert "agent-doctor scan --path" in stage.command
-    assert ".agent-doctor/repairs/s-repair-1" in stage.command
-    assert "agent-doctor apply --findings" in stage.command
+    assert [option.id for option in status.options] == ["tell_current_agent", "dismiss"]
+    assert all(not option.command for option in status.options)
 
 
 def test_pet_path_status_writes_private_redacted_artifacts(tmp_path: Path) -> None:
@@ -214,6 +212,25 @@ def test_pet_idle_when_no_quality_signal() -> None:
     assert status.options == ()
     assert "Keep working normally" in status.recommendation
 
+
+def test_pet_neutral_current_messages_do_not_become_high_from_context_only_fusion(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {"session_id": "s-neutral", "role": "user", "content": "This is confusing???"},
+            {"session_id": "s-neutral", "role": "user", "content": "This keeps being confusing???"},
+            {"session_id": "s-neutral", "role": "user", "content": "ok"},
+            {"session_id": "s-neutral", "role": "user", "content": "好了"},
+            {"session_id": "s-neutral", "role": "user", "content": "继续"},
+        ],
+    )
+
+    status = pet_status_for_path(transcript)
+
+    assert status.state != "intervening"
+    assert status.action != "intervene"
+    assert status.severity != "high"
 
 def test_pet_cli_message_json_smoke() -> None:
     result = subprocess.run(
@@ -299,30 +316,27 @@ def test_pet_display_snapshot_exposes_user_facing_state_label(tmp_path: Path) ->
 
     assert snapshot.state == "intervening"
     assert snapshot.action == "intervene"
-    assert snapshot.primary_label == "Stage repair"
+    assert snapshot.primary_label == "Tell Current Agent"
     assert snapshot.evidence[0].quote == "Why are you so dumb?"
     assert _issue_title(snapshot) == "User frustration detected"
     assert "Why are you so dumb?" in _dialog_detail_text(snapshot)
     assert "Manual report" in _dialog_detail_text(snapshot)
-    assert "Copy lets you paste" in _dialog_detail_text(snapshot)
-    assert "Do this now" in _recovery_prompt(snapshot)
+    assert "Tell Current Agent tries" in _dialog_detail_text(snapshot)
+    assert "required_next_response_behavior" in _recovery_prompt(snapshot)
     assert [option.id for option in snapshot.options] == [
-        "pause_and_diagnose",
-        "stage_fix",
-        "keep_watching",
+        "tell_current_agent",
+        "dismiss",
     ]
     assert _state_label(snapshot) == "Suggestion ready"
 
 
-def test_pet_display_hides_manual_stage_repair_without_command() -> None:
+def test_pet_display_actionable_manual_incident_has_only_tell_and_dismiss() -> None:
     status = pet_status_for_text("Why are you so dumb?", session_id="s-manual")
     snapshot = snapshot_from_payload(status.to_dict())
 
-    assert snapshot.primary_label == "Stage repair"
-    assert snapshot.primary_command == ""
-    assert "stage_fix" not in [action.id for action in _display_actions(snapshot)]
+    assert snapshot.primary_label == "Tell Current Agent"
     assert [action.id for action in _display_actions(snapshot)] == [
-        "copy_recovery_prompt",
+        "tell_current_agent",
         "dismiss_for_now",
     ]
 
@@ -370,7 +384,7 @@ def test_pet_display_hides_open_card_when_card_path_is_absent() -> None:
     assert "open_card" not in [action.id for action in _display_actions(snapshot)]
 
 
-def test_pet_display_shows_runnable_stage_repair_action() -> None:
+def test_pet_display_ignores_legacy_stage_repair_for_actionable_incident() -> None:
     snapshot = snapshot_from_payload(
         {
             "state": "intervening",
@@ -393,7 +407,7 @@ def test_pet_display_shows_runnable_stage_repair_action() -> None:
 
     assert _command_is_runnable(snapshot.primary_command)
     assert [action.id for action in _display_actions(snapshot)] == [
-        "copy_recovery_prompt",
+        "tell_current_agent",
         "dismiss_for_now",
     ]
 
@@ -414,13 +428,8 @@ def test_pet_display_shows_send_recovery_for_transcript_backed_openclaw(tmp_path
     status = pet_status_for_path(transcript, platform="openclaw")
     snapshot = snapshot_from_payload(status.to_dict())
 
-    assert [action.id for action in _display_actions(snapshot)][:2] == [
-        "send_recovery",
-        "copy_recovery_prompt",
-    ]
     assert [action.id for action in _display_actions(snapshot)] == [
-        "send_recovery",
-        "copy_recovery_prompt",
+        "tell_current_agent",
         "dismiss_for_now",
     ]
 
@@ -538,17 +547,10 @@ def test_pet_action_diagnose_current_uses_latest_openclaw_session(
     assert snapshot_to_dict(snapshot_from_payload(payload))["recovery_prompt"] == ""
 
 
-def test_pet_action_send_recovery_writes_hermes_inbox(
+def test_pet_action_tell_current_agent_rejects_hermes_v1(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    import agent_doctor.adapters.hermes as hermes_module
-
-    home = tmp_path / "home"
-    hermes_home = home / ".hermes"
-    hermes_home.mkdir(parents=True)
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(hermes_module, "HERMES_HOME", hermes_home)
     transcript = tmp_path / "session.jsonl"
     _write_jsonl(
         transcript,
@@ -566,11 +568,96 @@ def test_pet_action_send_recovery_writes_hermes_inbox(
 
     result = send_recovery_from_status_file(status_file)
 
-    inbox = home / ".agent-doctor" / "hermes" / "inbox" / "s-hermes.md"
+    assert not result.delivered
+    assert result.mode == "unsupported"
+    assert "OpenClaw-only" in result.detail
+
+
+def test_pet_action_tell_current_agent_injects_openclaw_system_event(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from agent_doctor.adapters.base import HostCapabilities, SessionMetadata
+    import agent_doctor.adapters as adapters_module
+
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [{"session_id": "s-open", "role": "user", "content": "Why are you so dumb?"}],
+    )
+    captured: dict[str, str] = {}
+
+    class FakeOpenClaw:
+        @classmethod
+        def detect(cls):
+            return cls()
+
+        def capabilities(self):
+            return HostCapabilities(
+                host_name="openclaw",
+                detected_at=tmp_path,
+                can_inject_system_event=True,
+            )
+
+        def session_metadata(self, jsonl_path: Path):
+            return SessionMetadata("s-open", "en", "tui", "local")
+
+        def inject_system_event(self, text: str, *, mode: str = "now") -> None:
+            captured["text"] = text
+            captured["mode"] = mode
+
+    monkeypatch.setattr(adapters_module, "OpenClawAdapter", FakeOpenClaw)
+    status = pet_status_for_path(transcript, platform="openclaw")
+    status_file = tmp_path / "pet-status.json"
+    status_file.write_text(json.dumps(status.to_dict(), ensure_ascii=False), encoding="utf-8")
+
+    result = send_recovery_from_status_file(status_file)
+
     assert result.delivered
-    assert result.mode == "hermes_tui"
-    assert inbox.exists()
-    assert "Agent Doctor recovery suggestion" in inbox.read_text(encoding="utf-8")
+    assert result.mode == "openclaw_system_event"
+    assert captured["mode"] == "now"
+    assert "agent_doctor_intervention" in captured["text"]
+    assert "required_next_response_behavior" in captured["text"]
+
+
+def test_pet_action_tell_current_agent_reports_visible_openclaw_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from agent_doctor.adapters.base import HostCapabilities, SessionMetadata
+    import agent_doctor.adapters as adapters_module
+
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [{"session_id": "s-open", "role": "user", "content": "Why are you so dumb?"}],
+    )
+
+    class FakeOpenClaw:
+        @classmethod
+        def detect(cls):
+            return cls()
+
+        def capabilities(self):
+            return HostCapabilities(
+                host_name="openclaw",
+                detected_at=tmp_path,
+                can_inject_system_event=False,
+            )
+
+        def session_metadata(self, jsonl_path: Path):
+            return SessionMetadata("s-open", "en", "tui", "local")
+
+    monkeypatch.setattr(adapters_module, "OpenClawAdapter", FakeOpenClaw)
+    status = pet_status_for_path(transcript, platform="openclaw")
+    status_file = tmp_path / "pet-status.json"
+    status_file.write_text(json.dumps(status.to_dict(), ensure_ascii=False), encoding="utf-8")
+
+    result = send_recovery_from_status_file(status_file)
+
+    assert not result.delivered
+    assert result.mode == "openclaw_not_routable"
+    assert "not routable" in result.detail
 
 
 def test_appkit_display_source_uses_single_click_panel() -> None:
@@ -601,10 +688,8 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "isRunnableCommand" in source
     assert "evidence_0_quote" in source
     assert "Suggested next step" in source
-    assert "Copy Suggestion" in source
-    assert "Send to Agent" in source
-    assert "复制建议" in source
-    assert "发送给 Agent" in source
+    assert "Tell Current Agent" in source
+    assert "告诉当前 Agent" in source
     assert "Check Session" in source
     assert "Current Session Checked" in source
     assert "Quit" in source
@@ -615,7 +700,7 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "diagnose-current" in source
     assert "expires_after_seconds" in source
     assert "NSPasteboard.general.setString" in source
-    assert "Ignore" in source
+    assert "Dismiss" in source
     assert "Intervention needed" in source
     assert "runningActionId" in source
     assert "NSApplication.shared.terminate(nil)" in source

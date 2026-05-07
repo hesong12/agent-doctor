@@ -25,11 +25,11 @@ class PetActionResult:
 def send_recovery_from_status_file(status_file: Path) -> PetActionResult:
     payload = _read_status(status_file)
     platform = str(payload.get("platform") or "generic")
-    if platform not in {"openclaw", "hermes"}:
+    if platform != "openclaw":
         return PetActionResult(
             delivered=False,
             mode="unsupported",
-            detail=f"Agent Doctor recovery delivery only supports OpenClaw/Hermes, got {platform}.",
+            detail=f"Tell Current Agent is v1 OpenClaw-only; got {platform}.",
         )
 
     source = _first_evidence_file(payload)
@@ -50,9 +50,7 @@ def send_recovery_from_status_file(status_file: Path) -> PetActionResult:
             detail="No recovery prompt was available for this incident.",
         )
 
-    if platform == "openclaw":
-        return _send_openclaw_recovery(Path(source).expanduser(), prompt, payload)
-    return _send_hermes_recovery(Path(source).expanduser(), prompt, payload)
+    return _send_openclaw_recovery(Path(source).expanduser(), prompt, payload)
 
 
 def diagnose_current_from_status_file(status_file: Path) -> PetActionResult:
@@ -181,7 +179,7 @@ def _send_openclaw_recovery(
     prompt: str,
     payload: dict[str, Any],
 ) -> PetActionResult:
-    from .adapters import MessageKind, OpenClawAdapter
+    from .adapters import OpenClawAdapter
     from .channel_router import resolve
 
     adapter = OpenClawAdapter.detect()
@@ -189,62 +187,37 @@ def _send_openclaw_recovery(
         return PetActionResult(
             delivered=False,
             mode="openclaw_missing",
-            detail="OpenClaw was not detected on this machine.",
+            detail="OpenClaw was not detected; Agent Doctor could not route Tell Current Agent.",
         )
 
-    target, _language = resolve(transcript_path, adapter)
-    caps = adapter.capabilities()
-    if target.kind() == "tui" and caps.can_inject_system_event:
-        adapter.inject_system_event(prompt, mode="now")
-        return PetActionResult(
-            delivered=True,
-            mode="openclaw_system_event",
-            detail="Sent recovery suggestion to the active OpenClaw TUI session.",
-        )
-
-    body = _message_body(prompt, payload)
-    message_id = adapter.send_message(target, body, MessageKind.intervene)
-    return PetActionResult(
-        delivered=True,
-        mode=f"openclaw_{target.kind()}",
-        detail=f"Sent recovery suggestion through OpenClaw adapter ({message_id}).",
-    )
-
-
-def _send_hermes_recovery(
-    transcript_path: Path,
-    prompt: str,
-    payload: dict[str, Any],
-) -> PetActionResult:
-    from .adapters import HermesAdapter, MessageKind
-    from .channel_router import resolve
-
-    adapter = HermesAdapter.detect()
-    if adapter is None:
+    try:
+        target, _language = resolve(transcript_path, adapter)
+        caps = adapter.capabilities()
+    except Exception as exc:
         return PetActionResult(
             delivered=False,
-            mode="hermes_missing",
-            detail="Hermes was not detected on this machine.",
+            mode="openclaw_route_failed",
+            detail=f"Could not resolve the current OpenClaw session: {exc}",
         )
-    target, _language = resolve(transcript_path, adapter)
-    message_id = adapter.send_message(target, _message_body(prompt, payload), MessageKind.intervene)
+
+    if target.kind() != "tui" or not caps.can_inject_system_event:
+        return PetActionResult(
+            delivered=False,
+            mode="openclaw_not_routable",
+            detail="The incident is not routable to an active OpenClaw system-event session.",
+        )
+
+    try:
+        adapter.inject_system_event(prompt, mode="now")
+    except RuntimeError as exc:
+        return PetActionResult(
+            delivered=False,
+            mode="openclaw_system_event_failed",
+            detail=f"OpenClaw system-event delivery failed: {exc}",
+        )
+
     return PetActionResult(
         delivered=True,
-        mode=f"hermes_{target.kind()}",
-        detail=f"Wrote recovery suggestion for Hermes ({message_id}).",
-    )
-
-
-def _message_body(prompt: str, payload: dict[str, Any]):
-    from .adapters import MessageBody
-
-    session_id = str(payload.get("session_id") or "current session")
-    card_path = str(payload.get("card_path") or "")
-    footer = f"Session: {session_id}"
-    if card_path:
-        footer += f"\nCard: {card_path}"
-    return MessageBody(
-        header="Agent Doctor recovery suggestion",
-        body=prompt,
-        footer=footer,
+        mode="openclaw_system_event",
+        detail="Tell Current Agent injected the structured intervention into the active OpenClaw system event stream.",
     )

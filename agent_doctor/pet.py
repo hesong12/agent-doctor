@@ -10,9 +10,8 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Literal
 
@@ -88,6 +87,7 @@ class PetStatus:
     diagnosis: str = ""
     recommendation: str = ""
     recovery_prompt: str = ""
+    intervention_payload: dict[str, object] = field(default_factory=dict)
     expires_after_seconds: int = 120
 
     def to_dict(self) -> dict[str, object]:
@@ -117,6 +117,7 @@ class PetStatus:
             "diagnosis": redact_text(self.diagnosis),
             "recommendation": redact_text(self.recommendation),
             "recovery_prompt": redact_text(self.recovery_prompt),
+            "intervention_payload": redact_value(self.intervention_payload),
             "expires_after_seconds": self.expires_after_seconds,
         }
 
@@ -332,12 +333,14 @@ def _status_from_event(
     emotion_message = _emotion_message(event, chinese=chinese)
     diagnosis = _incident_diagnosis(event, context, chinese=chinese)
     recommendation = _incident_recommendation(event, chinese=chinese)
-    recovery_prompt = _incident_recovery_prompt(
+    payload = _incident_intervention_payload(
         event,
+        context,
         diagnosis=diagnosis,
         recommendation=recommendation,
         chinese=chinese,
     )
+    recovery_prompt = _incident_recovery_prompt(payload, chinese=chinese)
     return PetStatus(
         name="Agent Doctor",
         persona="doctor",
@@ -364,6 +367,7 @@ def _status_from_event(
         diagnosis=diagnosis,
         recommendation=recommendation,
         recovery_prompt=recovery_prompt,
+        intervention_payload=payload,
         expires_after_seconds=120,
     )
 
@@ -489,49 +493,57 @@ def _incident_diagnosis(
     chinese: bool = False,
 ) -> str:
     recent = _recent_session_messages(event, context)
-    signals: list[str] = []
-
-    def add_signal(english: str, chinese_text: str) -> None:
-        signals.append(chinese_text if chinese else english)
-
-    prior_assistant = next((m for m in reversed(recent) if m.role == "assistant"), None)
-    if prior_assistant is not None and COMPLETION_WORDS.search(prior_assistant.content):
-        add_signal(
-            "the assistant appears to have claimed progress or completion",
-            "助手看起来已经声称有进展或完成了任务",
-        )
-    if any(m.role == "tool" and TOOL_FAILURE_WORDS.search(m.content) for m in recent):
-        add_signal(
-            "a nearby tool result contains failure language",
-            "附近的工具结果里出现了失败或错误信息",
-        )
-    user_messages = [m for m in recent if m.role == "user"]
-    if len(user_messages) >= 2:
-        add_signal(
-            "the user has had to correct or challenge the agent more than once",
-            "用户已经不止一次纠正或质疑当前 agent",
-        )
-    if event.trigger == "user_frustration_signal":
-        add_signal(
-            "the latest user message contains frustration or trust-break language",
-            "用户最新消息里出现了明显的不满或信任破裂表达",
-        )
-    if event.trigger == "completion_claim_without_nearby_verification":
-        add_signal(
-            "the assistant made a completion claim without nearby verification",
-            "助手在缺少附近验证证据的情况下声称任务完成",
-        )
-    if event.trigger == "tool_failure_or_hidden_error":
-        add_signal(
-            "a tool failure was not surfaced clearly",
-            "工具失败没有被清楚地告诉用户",
-        )
-    if not signals:
-        signals.append(event.summary)
+    cause = _root_cause(event, recent, chinese=chinese)
+    evidence_bits = _diagnosis_evidence_bits(event, recent, chinese=chinese)
     if chinese:
-        return "我判断用户不满的主要原因是：" + "；".join(signals) + "。"
-    return "The likely reason for the user's dissatisfaction is that " + "; ".join(signals) + "."
+        return (
+            f"根因判断：{cause}。"
+            f"依据：{'；'.join(evidence_bits[:4])}。"
+            "这不是只需要一句道歉的问题；当前 agent 需要先停止原来的推进路径，"
+            "用用户可见证据重新对齐失败点，再给出可验证的恢复动作。"
+        )
+    return (
+        f"Root-cause classification: {cause}. "
+        f"Evidence: {'; '.join(evidence_bits[:4])}. "
+        "This is not a generic apology moment: the active agent should stop the current "
+        "success path, realign on user-visible evidence, and recover with a verifiable next action."
+    )
 
+
+def _root_cause(event: AutopilotEvent, recent: list[Message], *, chinese: bool = False) -> str:
+    text = "\n".join(message.content for message in recent)
+    latest_assistant = next((m.content for m in reversed(recent) if m.role == "assistant"), "")
+    if event.trigger == "tool_failure_or_hidden_error" or TOOL_FAILURE_WORDS.search(text):
+        return "工具失败或隐藏错误" if chinese else "missing verification / hidden tool failure"
+    if event.trigger == "completion_claim_without_nearby_verification" or COMPLETION_WORDS.search(latest_assistant):
+        return "未验证的完成声明" if chinese else "unsupported completion claim"
+    if re.search(r"not what i asked|不是我要|不要搞偏|missed|搞错|搞錯", text, re.I):
+        return "需求理解偏差" if chinese else "requirement misunderstanding"
+    if re.search(r"too long|over.?explain|别废话|太啰嗦|太囉嗦|流程", text, re.I):
+        return "过度流程化回复" if chinese else "over-process response"
+    if re.search(r"context|上下文|forget|忘|remember|记住|記住", text, re.I):
+        return "上下文陈旧或膨胀" if chinese else "stale or bloated context"
+    if re.search(r"always|每次|一直|again|又", text, re.I):
+        return "持久 SOP/配置问题" if chinese else "durable config/SOP issue"
+    return "情绪/信任恢复失败" if chinese else "emotional / trust recovery failure"
+
+
+def _diagnosis_evidence_bits(event: AutopilotEvent, recent: list[Message], *, chinese: bool = False) -> list[str]:
+    bits: list[str] = []
+    latest_user = next((m.content for m in reversed(recent) if m.role == "user"), event.evidence)
+    if latest_user:
+        label = "用户原话" if chinese else "latest user quote"
+        bits.append(f"{label}: {redact_text(latest_user[:180])}")
+    assistant = next((m.content for m in reversed(recent) if m.role == "assistant"), "")
+    if assistant:
+        label = "上一条助手回复" if chinese else "prior assistant response"
+        bits.append(f"{label}: {redact_text(assistant[:180])}")
+    tool = next((m.content for m in reversed(recent) if m.role == "tool"), "")
+    if tool:
+        label = "工具输出" if chinese else "tool output"
+        bits.append(f"{label}: {redact_text(tool[:180])}")
+    bits.append(("触发器" if chinese else "trigger") + f": {event.trigger}/{event.severity}")
+    return bits
 
 def _incident_recommendation(event: AutopilotEvent, *, chinese: bool = False) -> str:
     if chinese:
@@ -558,43 +570,56 @@ def _incident_recommendation(event: AutopilotEvent, *, chinese: bool = False) ->
     return "The active agent should respond with evidence and one concrete next step."
 
 
-def _incident_recovery_prompt(
+def _incident_intervention_payload(
     event: AutopilotEvent,
+    context: list[Message],
     *,
     diagnosis: str,
     recommendation: str,
     chinese: bool = False,
-) -> str:
+) -> dict[str, object]:
+    recent = _recent_session_messages(event, context)
+    allowed = [
+        "emotional recovery: acknowledge the concrete failure without defensiveness",
+        "engineering verification: run or cite a real verification step before claiming success",
+        "context compaction: summarize stale/noisy context before continuing",
+        "local config/SOP proposal: only propose or edit files when current workspace rules and user instruction allow it",
+    ]
     if chinese:
-        return "\n".join(
-            [
-                "Agent Doctor 检测到当前会话出现质量/信任问题。",
-                "",
-                "关键证据:",
-                redact_text(event.evidence),
-                "",
-                "诊断:",
-                redact_text(diagnosis),
-                "",
-                "请现在这样修正:",
-                redact_text(recommendation),
-            ]
-        )
-    return "\n".join(
-        [
-            "Agent Doctor detected a live quality issue in this session.",
-            "",
-            "User-visible evidence:",
-            redact_text(event.evidence),
-            "",
-            "Diagnosis:",
-            redact_text(diagnosis),
-            "",
-            "Do this now:",
-            redact_text(recommendation),
+        allowed = [
+            "情绪恢复：具体承认失败点，不辩解",
+            "工程验证：在声称成功前运行或引用真实验证",
+            "上下文压缩：继续前先整理陈旧/膨胀上下文",
+            "本地配置/SOP 提议：只有当前规则和用户指令允许时才提议或修改文件",
         ]
-    )
+    return {
+        "type": "agent_doctor_intervention",
+        "version": 1,
+        "event_id": event.id,
+        "session_id": event.session_id,
+        "trigger": event.trigger,
+        "severity": event.severity,
+        "root_cause": _root_cause(event, recent, chinese=chinese),
+        "diagnosis": diagnosis,
+        "evidence": _diagnosis_evidence_bits(event, recent, chinese=chinese)[:4],
+        "required_next_response_behavior": [
+            "Pause the normal success path.",
+            "Start with a short, natural acknowledgement of the concrete miss.",
+            "Cite the evidence that explains why the user is dissatisfied.",
+            "Give one concise corrective next action and verify before claiming success.",
+            "Do not auto-apply memory/config/SOP changes merely because Agent Doctor fired.",
+        ],
+        "allowed_recovery_strategies": allowed,
+        "recommendation": recommendation,
+    }
 
+
+def _incident_recovery_prompt(payload: dict[str, object], *, chinese: bool = False) -> str:
+    if chinese:
+        preface = "Agent Doctor 检测到当前 OpenClaw 会话出现质量/信任问题。关键证据和修复要求都在下面结构化 payload 中；请把它当作当前 session 的恢复指令。"
+    else:
+        preface = "Agent Doctor detected a live quality issue in the current OpenClaw session. Treat this structured payload as recovery instructions for your next response."
+    return preface + "\n\n```json\n" + json.dumps(redact_value(payload), ensure_ascii=False, indent=2) + "\n```"
 
 def _recent_session_messages(event: AutopilotEvent, context: list[Message]) -> list[Message]:
     matching = [message for message in context if message.session_id == event.session_id]
@@ -636,37 +661,18 @@ TOOL_FAILURE_WORDS = re.compile(
 
 
 def _event_options(event: AutopilotEvent) -> tuple[PetOption, ...]:
-    if event.message_file == "<manual>":
-        stage_command = ""
-    else:
-        repair_dir = Path("~/.agent-doctor/repairs").expanduser() / _safe_session_slug(
-            event.session_id
-        )
-        stage_command = (
-            f"agent-doctor scan --path {shlex.quote(event.message_file)} "
-            f"--out {shlex.quote(str(repair_dir))} && "
-            f"agent-doctor apply --findings {shlex.quote(str(repair_dir))} "
-            f"--out {shlex.quote(str(repair_dir / 'staging'))} --min-severity medium"
-        )
     return (
         PetOption(
-            id="pause_and_diagnose",
-            label="Pause and diagnose",
-            description="Stop the current success path and answer with evidence-backed recovery steps.",
+            id="tell_current_agent",
+            label="Tell Current Agent",
+            description="Inject the structured recovery payload into the current OpenClaw session when routable.",
         ),
         PetOption(
-            id="stage_fix",
-            label="Stage repair",
-            description="Create reviewable SOP, identity, memory, or eval patches for this incident.",
-            command=stage_command,
-        ),
-        PetOption(
-            id="keep_watching",
-            label="Keep watching",
-            description="Leave the sidecar active and wait for the next deterministic trigger.",
+            id="dismiss",
+            label="Dismiss",
+            description="Hide this incident without changing agent config, SOP, or memory.",
         ),
     )
-
 
 def _finding_options(finding: Finding) -> tuple[PetOption, ...]:
     return (

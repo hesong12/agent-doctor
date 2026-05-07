@@ -204,58 +204,10 @@ def run_autopilot_once(
     except OSError as exc:
         delivery_errors.append(f"pet_status_write_failed: {exc}")
 
-    # Phase 4: drafting proposals from this scan's findings ----------------
-    proposals_path = out_dir / "proposals.jsonl"
-    try:
-        from .proposer import draft_proposals_for_session, save_proposals
-        for session_id in {f.session_id for f in findings}:
-            new_proposals = draft_proposals_for_session(
-                findings=findings, session_id=session_id,
-            )
-            if new_proposals:
-                save_proposals(proposals_path, new_proposals)
-    except ImportError:
-        pass  # proposer not available; legacy path still works
-
-    # Phase 4: poll pending proposals for ✅/❌/💬 reactions ---------------
-    try:
-        from .proposer import load_proposals
-        from .reaction_watcher import poll_pending_proposals
-        from .adapters import GenericAdapter, OpenClawAdapter, HermesAdapter
-        existing = load_proposals(proposals_path)
-        if existing:
-            adapter_classes = {
-                "openclaw": OpenClawAdapter,
-                "hermes": HermesAdapter,
-                "generic": GenericAdapter,
-            }
-            adapter_cls = adapter_classes.get(platform, GenericAdapter)
-            adapter_instance = adapter_cls.detect() or GenericAdapter()
-            transitions = poll_pending_proposals(
-                existing,
-                adapter=adapter_instance,
-                applier=lambda p: _apply_and_log(p, adapter_instance, out_dir),
-            )
-            if transitions:
-                _persist_proposal_transitions(proposals_path, transitions)
-    except ImportError:
-        pass
-
-    # Phase 4 refining: redraft refining proposals using new user messages
-    try:
-        from .refining import redraft_pending
-        from .proposer import load_proposals
-        existing = load_proposals(out_dir / "proposals.jsonl")
-        if existing:
-            new_redrafts = redraft_pending(
-                existing,
-                messages,
-                adapter=adapter_instance if 'adapter_instance' in locals() else None,
-            )
-            if new_redrafts:
-                _replace_proposals_with_redrafts(out_dir / "proposals.jsonl", new_redrafts)
-    except ImportError:
-        pass
+    # v1 boundary: the desktop Doctor/pet can tell the current OpenClaw agent
+    # how to recover, but Agent Doctor must not auto-apply config/SOP/memory or
+    # run reaction-approval loops from autopilot. Durable changes remain
+    # reviewable via explicit scan/apply flows.
 
     return AutopilotResult(
         platform=platform,
