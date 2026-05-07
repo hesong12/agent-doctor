@@ -189,6 +189,129 @@ def test_changed_only_does_not_rescan_historical_tool_failure_on_append(tmp_path
     assert result.pet_state == "idle"
 
 
+def test_openclaw_changed_only_detects_new_trajectory_prompt_submitted(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    canonical = sessions / "session.jsonl"
+    trajectory = sessions / "session.trajectory.jsonl"
+    _write_jsonl(
+        canonical,
+        [{"session_id": "s-live", "role": "assistant", "content": "Waiting."}],
+    )
+    _write_jsonl(
+        trajectory,
+        [
+            {
+                "traceSchema": "openclaw-trajectory",
+                "type": "session.started",
+                "sessionId": "s-live",
+                "data": {"status": "running"},
+            }
+        ],
+    )
+
+    from agent_doctor.autopilot import baseline_autopilot_state
+
+    baseline_autopilot_state(
+        platform="openclaw",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+    )
+    with trajectory.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "traceSchema": "openclaw-trajectory",
+                    "type": "prompt.submitted",
+                    "sessionId": "s-live",
+                    "data": {
+                        "prompt": (
+                            "Sender (untrusted metadata):\n"
+                            "```json\n{\"label\":\"openclaw-tui\"}\n```\n\n"
+                            "[Wed 2026-05-06 20:59 PDT] "
+                            "你它妈的不能自己用眼睛看你做的是什么鬼吗？页面底下那么多空白你是要干什么？"
+                        )
+                    },
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+
+    result = run_autopilot_once(
+        platform="openclaw",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+        changed_only=True,
+        cooldown_seconds=0,
+    )
+
+    assert len(result.events) == 1
+    event = result.events[0]
+    assert event.trigger == "user_frustration_signal"
+    assert event.session_id == "s-live"
+    assert event.message_file.endswith("session.trajectory.jsonl")
+    assert event.message_line == 2
+    assert event.severity == "high"
+    assert event.action == "intervene"
+    assert result.pet_state == "intervening"
+
+
+def test_openclaw_changed_only_detects_current_reaction_failure_prompt(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    trajectory = sessions / "session.trajectory.jsonl"
+    _write_jsonl(
+        trajectory,
+        [
+            {
+                "traceSchema": "openclaw-trajectory",
+                "type": "session.started",
+                "sessionId": "s-reaction-failure",
+                "data": {"status": "running"},
+            }
+        ],
+    )
+
+    from agent_doctor.autopilot import baseline_autopilot_state
+
+    baseline_autopilot_state(
+        platform="openclaw",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+    )
+    with trajectory.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "traceSchema": "openclaw-trajectory",
+                    "type": "prompt.submitted",
+                    "sessionId": "s-reaction-failure",
+                    "data": {
+                        "prompt": (
+                            "[Wed 2026-05-06 21:12 PDT] "
+                            "而且为什么我刚才那么骂你，agent doctor完全没有任何的反应？"
+                        )
+                    },
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+
+    result = run_autopilot_once(
+        platform="openclaw",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+        changed_only=True,
+        cooldown_seconds=0,
+    )
+
+    assert len(result.events) == 1
+    assert result.events[0].trigger == "user_frustration_signal"
+    assert result.events[0].message_line == 2
+
+
 def test_openclaw_initial_changed_only_scan_uses_recent_sessions_only(tmp_path: Path) -> None:
     sessions = tmp_path / "sessions"
     sessions.mkdir()

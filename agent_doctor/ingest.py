@@ -181,8 +181,13 @@ def normalize_event(
     session_id = session_id or default_session
 
     raw_type = _first_text(event, ["type", "event", "kind", "category"]) or ""
-    role = normalize_role(event)
-    content = _strip_agent_doctor_control_block(extract_content(event))
+    if _is_openclaw_prompt_submitted(event, raw_type):
+        role: Role = "user"
+        content = _extract_openclaw_prompt_text(event)
+    else:
+        role = normalize_role(event)
+        content = extract_content(event)
+    content = _strip_agent_doctor_control_block(content)
 
     return Message(
         file=str(path),
@@ -201,6 +206,9 @@ def detect_source_format(event: dict[str, Any], path: Path) -> str:
         return "hermes"
     if "openclaw" in path_text or "open-claw" in path_text:
         return "openclaw"
+    trace_schema = str(event.get("traceSchema", "")).casefold()
+    if trace_schema.startswith("openclaw"):
+        return "openclaw"
 
     marker = " ".join(
         str(container.get(key, ""))
@@ -217,6 +225,22 @@ def detect_source_format(event: dict[str, Any], path: Path) -> str:
     if "payload" in event and ("event" in event or "actor" in event):
         return "openclaw"
     return "generic"
+
+
+def _is_openclaw_prompt_submitted(event: dict[str, Any], raw_type: str) -> bool:
+    if raw_type != "prompt.submitted":
+        return False
+    data = event.get("data")
+    return isinstance(data, dict) and isinstance(data.get("prompt"), str)
+
+
+def _extract_openclaw_prompt_text(event: dict[str, Any]) -> str:
+    data = event.get("data")
+    if isinstance(data, dict):
+        prompt = data.get("prompt")
+        if isinstance(prompt, str):
+            return prompt
+    return ""
 
 
 def _strip_agent_doctor_control_block(content: str) -> str:

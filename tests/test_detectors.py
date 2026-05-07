@@ -166,6 +166,9 @@ def test_common_chinese_dumb_feedback_is_frustration_signal() -> None:
         "你越来越傻了。",
         "你越来越蠢了。",
         "你越来越笨了。",
+        "你它妈的不能自己用眼睛看你做的是什么鬼吗？页面底下那么多空白你是要干什么？",
+        "而且为什么我刚才那么骂你，agent doctor完全没有任何的反应？",
+        "tmd 这是什么鬼？",
     ]:
         messages = [
             Message("session.jsonl", 1, "s1", "user", text),
@@ -227,6 +230,7 @@ def test_technical_terms_do_not_trigger_frustration_signal() -> None:
         Message("session.jsonl", 8, "s1", "user", "这个库很笨重，不适合这个项目。"),
         Message("session.jsonl", 9, "s1", "user", "市场蠢蠢欲动，等待信号。"),
         Message("session.jsonl", 10, "s1", "user", "他蠢动了一下就停了。"),
+        Message("session.jsonl", 11, "s1", "user", "妈妈的照片在这个目录里。"),
     ]
 
     findings = detect_findings(messages)
