@@ -1012,7 +1012,6 @@ class PetView: NSView {
         let hasNotice = !noticeText.isEmpty
         let panelHeight: CGFloat = hasNotice ? 278 : 232
         let primaryY: CGFloat = hasNotice ? 378 : 346
-        let secondaryY: CGFloat = primaryY + 38
         roundRect(18, 210, 324, panelHeight, 22, NSColor.white.withAlphaComponent(0.96), color("#111827"), 1.5)
         text(short(panelTitle("idle"), 82), 36, 232, 288, 36, 13.5, color("#111827"), true, .left)
         text(short(idleSummaryText(), 120), 36, 282, 288, 42, 11.5, color("#374151"), false, .left)
@@ -1024,13 +1023,13 @@ class PetView: NSView {
 
         let actions = visibleActions()
         if actions.count == 1 {
-            drawActionButton(actions[0], 36, primaryY, 288, 30, true, accent)
+            drawActionButton(actions[0], 36, primaryY, 288, 30, false, accent)
         } else {
-            let primary = actions.first ?? "dismiss_for_now"
-            drawActionButton(primary, 36, primaryY, 288, 30, true, accent)
-            let secondary = Array(actions.dropFirst().prefix(2))
-            for (index, actionId) in secondary.enumerated() {
-                drawActionButton(actionId, index == 0 ? 36 : 186, secondaryY, 138, 28, false, accent)
+            let idleActions = Array(actions.prefix(4))
+            for (index, actionId) in idleActions.enumerated() {
+                let col = index % 2
+                let row = index / 2
+                drawActionButton(actionId, col == 0 ? 36 : 186, primaryY + (CGFloat(row) * 34), 138, 28, false, accent)
             }
         }
     }

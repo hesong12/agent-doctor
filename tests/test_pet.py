@@ -728,6 +728,8 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "drawStateChip" in source
     assert "drawPanel" in source
     assert "drawIdlePanel" in source
+    assert "let idleActions = Array(actions.prefix(4))" in source
+    assert "drawActionButton(actionId, col == 0 ? 36 : 186" in source
     assert "drawActionButton" in source
     assert "reloadStatusFromFile" in source
     assert "shouldKeepCurrentIncident" in source
