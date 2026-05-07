@@ -207,12 +207,19 @@ def run_autopilot_once(
             events=pet_events,
             parse_errors=parse_errors,
         )
-        pet_paths = write_pet_artifacts(out_dir, pet_status)
-        if pet_out_dir is not None and pet_out_dir.expanduser() != out_dir:
-            write_pet_artifacts(pet_out_dir, pet_status)
-        pet_state = pet_status.state
-        pet_status_path = str(pet_paths["status"])
-        pet_card_path = str(pet_paths["card"])
+        preserve_dir = pet_out_dir.expanduser() if pet_out_dir is not None else out_dir
+        preserved = _preserved_active_pet_paths(preserve_dir, pet_status, messages)
+        if preserved is not None:
+            pet_state = preserved["state"]
+            pet_status_path = str(preserved["status"])
+            pet_card_path = str(preserved["card"])
+        else:
+            pet_paths = write_pet_artifacts(out_dir, pet_status)
+            if pet_out_dir is not None and pet_out_dir.expanduser() != out_dir:
+                write_pet_artifacts(pet_out_dir, pet_status)
+            pet_state = pet_status.state
+            pet_status_path = str(pet_paths["status"])
+            pet_card_path = str(pet_paths["card"])
     except OSError as exc:
         delivery_errors.append(f"pet_status_write_failed: {exc}")
 
@@ -257,6 +264,35 @@ def baseline_autopilot_state(
     finally:
         state.close()
     return len(paths)
+
+
+def _preserved_active_pet_paths(
+    out_dir: Path,
+    next_status,
+    messages: list[Message],
+) -> dict[str, object] | None:
+    """Keep a live pet intervention visible across empty changed-only polls.
+
+    The watch loop often sees an incident on one cycle, then zero new JSONL
+    lines two seconds later. That empty cycle should not immediately overwrite
+    an active desktop Doctor card with idle; the desktop surface already has an
+    expiry window for live incidents.
+    """
+
+    if messages or next_status.state != "idle":
+        return None
+    status_path = out_dir.expanduser() / "pet-status.json"
+    card_path = out_dir.expanduser() / "pet-card.md"
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        state = str(payload.get("state", "idle"))
+        expires_after = float(payload.get("expires_after_seconds", 0) or 0)
+        age = time.time() - status_path.stat().st_mtime
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if state == "idle" or expires_after <= 0 or age >= expires_after:
+        return None
+    return {"state": state, "status": status_path, "card": card_path}
 
 
 def _ingest_paths(paths: list[Path]) -> tuple[list[Message], int]:

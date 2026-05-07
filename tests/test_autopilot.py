@@ -139,10 +139,49 @@ def test_autopilot_changed_only_skips_unchanged_files_then_detects_modified_file
     assert len(first.events) == 1
     assert second.messages == 0
     assert second.events == []
-    assert second.pet_state == "idle"
+    assert second.pet_state == "intervening"
     assert (tmp_path / "doctor" / "pet-status.json").exists()
     assert [event.session_id for event in third.events] == ["s2"]
     assert third.events[0].message_line == 2
+
+
+def test_changed_only_empty_poll_preserves_active_pet_status(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    transcript = sessions / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s-live-pet",
+                "role": "user",
+                "content": "你为什么现在这么蠢了？这点事情都做不好",
+            }
+        ],
+    )
+    pet_out = tmp_path / "pet"
+
+    first = run_autopilot_once(
+        platform="generic",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+        pet_out_dir=pet_out,
+    )
+    second = run_autopilot_once(
+        platform="generic",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+        pet_out_dir=pet_out,
+        changed_only=True,
+    )
+
+    payload = json.loads((pet_out / "pet-status.json").read_text(encoding="utf-8"))
+    assert first.pet_state == "intervening"
+    assert second.messages == 0
+    assert second.events == []
+    assert second.pet_state == "intervening"
+    assert payload["state"] == "intervening"
+    assert payload["evidence"][0]["quote"] == "你为什么现在这么蠢了？这点事情都做不好"
 
 
 def test_changed_only_does_not_rescan_historical_tool_failure_on_append(tmp_path: Path) -> None:

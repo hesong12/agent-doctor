@@ -149,11 +149,21 @@ def _openclaw_subprocess_env(values: Mapping[str, str]) -> dict[str, str]:
     env = os.environ.copy()
     env.update(values)
     env["PATH"] = _with_host_bin_path(env.get("PATH", ""))
-    host_home = values.get("AGENT_DOCTOR_HOST_HOME")
-    if host_home:
-        env["HOME"] = host_home
-        env["AGENT_DOCTOR_HOST_HOME"] = host_home
+    host_home = values.get("AGENT_DOCTOR_HOST_HOME") or _host_home_from_env(env)
+    env["HOME"] = host_home
+    env["AGENT_DOCTOR_HOST_HOME"] = host_home
     return env
+
+
+def _host_home_from_env(env: Mapping[str, str]) -> str:
+    home = Path(str(env.get("HOME") or str(Path.home()))).expanduser()
+    parts = home.parts
+    for marker in (".openclaw", ".hermes"):
+        if marker in parts:
+            index = parts.index(marker)
+            if index > 0:
+                return str(Path(*parts[:index]))
+    return str(home)
 
 
 def resolve_openclaw_binary(openclaw_bin: str = "openclaw", *, env: Mapping[str, str] | None = None) -> str:

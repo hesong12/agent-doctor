@@ -139,6 +139,38 @@ def test_notify_openclaw_system_event_uses_host_home_for_openclaw_cli(
     assert "/opt/homebrew/bin" in captured["env"]["PATH"]  # type: ignore[index]
 
 
+def test_notify_openclaw_system_event_derives_host_home_from_sandbox_home(
+    tmp_path: Path, monkeypatch
+) -> None:
+    card = tmp_path / "card.md"
+    card.write_text("card", encoding="utf-8")
+    openclaw = tmp_path / "openclaw"
+    openclaw.write_text("#!/bin/sh\n", encoding="utf-8")
+    sandbox_home = tmp_path / ".openclaw" / "agents" / "main" / "agent" / "codex-home" / "home"
+    sandbox_home.mkdir(parents=True)
+    captured: dict[str, object] = {}
+
+    def fake_run(command, text, capture_output, timeout, env):
+        captured["env"] = env
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setenv("HOME", str(sandbox_home))
+    monkeypatch.delenv("AGENT_DOCTOR_HOST_HOME", raising=False)
+    monkeypatch.setattr("agent_doctor.delivery.subprocess.run", fake_run)
+
+    env = _event_env(card)
+    env.pop("AGENT_DOCTOR_HOST_HOME")
+    env["HOME"] = str(sandbox_home)
+    notify_openclaw_system_event(
+        env=env,
+        openclaw_bin=str(openclaw),
+    )
+
+    expected_home = Path(*sandbox_home.parts[: sandbox_home.parts.index(".openclaw")])
+    assert captured["env"]["HOME"] == str(expected_home)  # type: ignore[index]
+    assert captured["env"]["AGENT_DOCTOR_HOST_HOME"] == str(expected_home)  # type: ignore[index]
+
+
 def test_notify_openclaw_system_event_incorporates_custom_process_env(
     tmp_path: Path, monkeypatch
 ) -> None:
