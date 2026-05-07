@@ -89,6 +89,7 @@ class PetStatus:
     recovery_prompt: str = ""
     intervention_payload: dict[str, object] = field(default_factory=dict)
     expires_after_seconds: int = 120
+    dismiss_state_path: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -119,6 +120,7 @@ class PetStatus:
             "recovery_prompt": redact_text(self.recovery_prompt),
             "intervention_payload": redact_value(self.intervention_payload),
             "expires_after_seconds": self.expires_after_seconds,
+            "dismiss_state_path": self.dismiss_state_path,
         }
 
 
@@ -326,7 +328,7 @@ def _status_from_event(
             file=event.message_file,
             line=event.message_line,
             role=_event_evidence_role(event),
-            quote=event.evidence,
+            quote=_human_evidence(event.evidence),
         ),
     )
     chinese = _event_uses_chinese(event, context)
@@ -530,22 +532,83 @@ def _root_cause(event: AutopilotEvent, recent: list[Message], *, chinese: bool =
 
 def _diagnosis_evidence_bits(event: AutopilotEvent, recent: list[Message], *, chinese: bool = False) -> list[str]:
     bits: list[str] = []
-    latest_user = next((m.content for m in reversed(recent) if m.role == "user"), "")
+    latest_user = next((_human_evidence(m.content) for m in reversed(recent) if m.role == "user"), "")
     if not latest_user and event.trigger == "user_frustration_signal":
-        latest_user = event.evidence
+        latest_user = _human_evidence(event.evidence)
     if latest_user:
         label = "用户原话" if chinese else "latest user quote"
         bits.append(f"{label}: {redact_text(latest_user[:180])}")
-    assistant = next((m.content for m in reversed(recent) if m.role == "assistant"), "")
+    assistant = next((_human_evidence(m.content) for m in reversed(recent) if m.role == "assistant"), "")
     if assistant:
         label = "上一条助手回复" if chinese else "prior assistant response"
         bits.append(f"{label}: {redact_text(assistant[:180])}")
-    tool = next((m.content for m in reversed(recent) if m.role == "tool"), "")
+    tool = next((_human_evidence(m.content) for m in reversed(recent) if m.role == "tool"), "")
     if tool:
         label = "工具输出" if chinese else "tool output"
         bits.append(f"{label}: {redact_text(tool[:180])}")
     bits.append(("触发器" if chinese else "trigger") + f": {event.trigger}/{event.severity}")
     return bits
+
+
+def _human_evidence(text: str) -> str:
+    """Convert transcript/tool payloads into short user-facing evidence."""
+
+    cleaned = text.strip()
+    if not cleaned:
+        return ""
+    parsed = _extract_structured_text(cleaned)
+    if parsed:
+        cleaned = parsed
+    cleaned = _strip_openclaw_metadata(cleaned)
+    cleaned = re.sub(r"```(?:json)?\s*", "", cleaned, flags=re.I).replace("```", "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if cleaned.startswith("{") and cleaned.endswith("}"):
+        cleaned = "structured tool output omitted from the user-facing summary"
+    return cleaned[:500]
+
+
+def _extract_structured_text(text: str) -> str:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return ""
+    candidates: list[str] = []
+    if isinstance(payload, dict):
+        for key in ("text", "content", "message", "error", "detail"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(value.strip())
+        content_items = payload.get("contentItems")
+        if isinstance(content_items, list):
+            for item in content_items:
+                if isinstance(item, dict):
+                    value = item.get("text") or item.get("content")
+                    if isinstance(value, str) and value.strip():
+                        candidates.append(value.strip())
+    return "\n".join(candidates[:3]).strip()
+
+
+def _strip_openclaw_metadata(text: str) -> str:
+    markers = [
+        "User text:",
+        "Description:",
+        "User message:",
+        "用户原文:",
+    ]
+    for marker in markers:
+        if marker in text:
+            candidate = text.rsplit(marker, 1)[-1].strip()
+            if candidate:
+                text = candidate
+                break
+    text = re.sub(
+        r"(Conversation info|Sender) \(untrusted metadata\):\s*```json.*?```\s*",
+        "",
+        text,
+        flags=re.S,
+    )
+    text = re.sub(r"\[media attached:.*?\]\s*", "", text, flags=re.S)
+    return text.strip()
 
 def _incident_recommendation(event: AutopilotEvent, *, chinese: bool = False) -> str:
     if chinese:

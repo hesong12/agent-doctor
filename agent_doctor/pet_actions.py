@@ -103,6 +103,35 @@ def diagnose_current_from_status_file(status_file: Path) -> PetActionResult:
     )
 
 
+def dismiss_current_from_status_file(status_file: Path) -> PetActionResult:
+    payload = _read_status_if_present(status_file)
+    event_id = str(payload.get("latest_event_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    trigger = str(payload.get("latest_trigger") or "").strip()
+    state_path = _dismiss_state_path(status_file, payload)
+    if event_id and state_path is not None:
+        from .autopilot import AutopilotState
+
+        state = AutopilotState(state_path)
+        try:
+            state.dismiss(event_id, session_id, trigger)
+        finally:
+            state.close()
+
+    _write_dismissed_status(status_file, payload)
+    if not event_id:
+        return PetActionResult(
+            delivered=True,
+            mode="dismissed_local",
+            detail="Dismissed the visible Agent Doctor alert locally.",
+        )
+    return PetActionResult(
+        delivered=True,
+        mode="dismissed",
+        detail=f"Dismissed Agent Doctor event {event_id}.",
+    )
+
+
 def _read_status(path: Path) -> dict[str, Any]:
     data = json.loads(path.expanduser().read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -115,6 +144,44 @@ def _read_status_if_present(path: Path) -> dict[str, Any]:
         return _read_status(path)
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
         return {}
+
+
+def _dismiss_state_path(status_file: Path, payload: dict[str, Any]) -> Path | None:
+    explicit = str(payload.get("dismiss_state_path") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    platform = str(payload.get("platform") or "").strip().casefold()
+    if platform in {"openclaw", "hermes"}:
+        return Path.home() / ".agent-doctor" / platform / "state.sqlite3"
+    sibling = status_file.expanduser().parent / "state.sqlite3"
+    return sibling if sibling.exists() else None
+
+
+def _write_dismissed_status(status_file: Path, payload: dict[str, Any]) -> None:
+    from .pet import PetStatus, write_pet_artifacts
+
+    platform = str(payload.get("platform") or "generic")
+    status = PetStatus(
+        name="Agent Doctor",
+        persona="doctor",
+        state="idle",
+        action="silent",
+        severity="low",
+        session_id=str(payload.get("session_id") or ""),
+        headline="Incident dismissed.",
+        message="Agent Doctor dismissed this incident and will keep watching for new signals.",
+        evidence=(),
+        options=(),
+        messages=0,
+        sessions=0,
+        findings=0,
+        events=0,
+        platform=platform if platform in {"openclaw", "hermes", "generic"} else "generic",
+        phase="ignored",
+        diagnosis="The visible incident was dismissed by the user.",
+        recommendation="Do not show this same incident again unless a new qualifying trigger appears.",
+    )
+    write_pet_artifacts(status_file.expanduser().parent, status)
 
 
 def _current_transcript_target(payload: dict[str, Any]) -> tuple[str, Path | None]:

@@ -163,6 +163,8 @@ def run_autopilot_once(
 
     emitted: list[AutopilotEvent] = []
     delivery_errors: list[str] = []
+    dismissed_event_ids: set[str] = set()
+    dismissed_finding_ids: set[str] = set()
     suppressed = 0
     try:
         for event in candidates:
@@ -189,6 +191,9 @@ def run_autopilot_once(
                     state.record(event)
                 emitted.append(event)
             else:
+                if state.is_dismissed(event):
+                    dismissed_event_ids.add(event.id)
+                    dismissed_finding_ids.update(event.finding_ids)
                 suppressed += 1
     finally:
         state.close()
@@ -200,14 +205,22 @@ def run_autopilot_once(
         from .pet import build_pet_status, write_pet_artifacts
 
         event_overrides = {event.id: event for event in emitted}
-        pet_events = [event_overrides.get(event.id, event) for event in candidates]
+        pet_events = [
+            event_overrides.get(event.id, event)
+            for event in candidates
+            if event.id not in dismissed_event_ids
+        ]
+        visible_findings = [
+            finding for finding in findings if finding.id not in dismissed_finding_ids
+        ]
         pet_status = build_pet_status(
             messages,
-            findings,
+            visible_findings,
             platform=platform,
             events=pet_events,
             parse_errors=parse_errors,
         )
+        pet_status = replace(pet_status, dismiss_state_path=str(state.path))
         preserve_dir = pet_out_dir.expanduser() if pet_out_dir is not None else out_dir
         preserved = _preserved_active_pet_paths(preserve_dir, pet_status, messages)
         if preserved is not None:
@@ -419,7 +432,7 @@ def write_diagnosis_card(
         "",
         "## Evidence",
         "",
-        f"> {redact_text(event.evidence).strip()}",
+        f"> {_card_evidence(event)}",
         "",
         "## Recommended Action",
         "",
@@ -447,6 +460,39 @@ def write_diagnosis_card(
     latest_path = out_dir / "latest.md"
     _write_private_text(latest_path, "\n".join(lines))
     return replace(event, card_path=str(card_path))
+
+
+def _card_evidence(event: AutopilotEvent) -> str:
+    evidence = event.evidence.strip()
+    try:
+        payload = json.loads(evidence)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        content_items = payload.get("contentItems")
+        if isinstance(content_items, list):
+            parts = [
+                str(item.get("text") or item.get("content") or "").strip()
+                for item in content_items
+                if isinstance(item, dict)
+            ]
+            evidence = "\n".join(part for part in parts if part) or evidence
+        else:
+            for key in ("text", "content", "message", "error", "detail"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    evidence = value.strip()
+                    break
+    evidence = re.sub(
+        r"(Conversation info|Sender) \(untrusted metadata\):\s*```json.*?```\s*",
+        "",
+        evidence,
+        flags=re.S,
+    )
+    evidence = re.sub(r"\s+", " ", evidence).strip()
+    if evidence.startswith("{") and evidence.endswith("}"):
+        evidence = "Structured tool output was omitted from the user-facing card."
+    return redact_text(evidence)[:1200]
 
 
 def append_event(path: Path, event: AutopilotEvent) -> None:
@@ -768,6 +814,16 @@ class AutopilotState:
         )
         self.connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS dismissed_events (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              trigger TEXT NOT NULL,
+              dismissed_at REAL NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS seen_files (
               path TEXT PRIMARY KEY,
               mtime_ns INTEGER NOT NULL,
@@ -782,6 +838,8 @@ class AutopilotState:
             pass
 
     def should_emit(self, event: AutopilotEvent, *, cooldown_seconds: int) -> bool:
+        if self.is_dismissed(event):
+            return False
         row = self.connection.execute(
             "SELECT emitted_at FROM emitted_events WHERE id = ?", (event.id,)
         ).fetchone()
@@ -799,6 +857,12 @@ class AutopilotState:
             return True
         return (time.time() - float(row[0])) >= cooldown_seconds
 
+    def is_dismissed(self, event: AutopilotEvent) -> bool:
+        row = self.connection.execute(
+            "SELECT dismissed_at FROM dismissed_events WHERE id = ?", (event.id,)
+        ).fetchone()
+        return row is not None
+
     def record(self, event: AutopilotEvent) -> None:
         self.connection.execute(
             """
@@ -806,6 +870,22 @@ class AutopilotState:
             VALUES (?, ?, ?, ?)
             """,
             (event.id, event.session_id, event.trigger, time.time()),
+        )
+        self.connection.commit()
+
+    def dismiss(self, event_id: str, session_id: str, trigger: str) -> None:
+        if not event_id:
+            return
+        self.connection.execute(
+            """
+            INSERT INTO dismissed_events(id, session_id, trigger, dismissed_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              session_id = excluded.session_id,
+              trigger = excluded.trigger,
+              dismissed_at = excluded.dismissed_at
+            """,
+            (event_id, session_id, trigger, time.time()),
         )
         self.connection.commit()
 

@@ -3,6 +3,7 @@ import os
 import stat
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from agent_doctor.autopilot import AutopilotEvent
@@ -30,6 +31,7 @@ from agent_doctor.pet_display import (
 )
 from agent_doctor.pet_actions import (
     diagnose_current_from_status_file,
+    dismiss_current_from_status_file,
     send_recovery_from_status_file,
 )
 from agent_doctor import pet as pet_module
@@ -115,6 +117,50 @@ def test_pet_event_uses_user_session_language_for_tool_failure() -> None:
         "告诉当前 Agent",
         "忽略",
     ]
+    assert "{contentItems" not in snapshot.evidence[0].quote
+    assert "Action send failed" in snapshot.diagnosis
+
+
+def test_pet_status_removes_openclaw_metadata_from_user_evidence() -> None:
+    content = (
+        "Conversation info (untrusted metadata):\n"
+        "```json\n{\"chat_id\":\"telegram:1\"}\n```\n"
+        "Sender (untrusted metadata):\n"
+        "```json\n{\"name\":\"Song\"}\n```\n"
+        "User text:\n"
+        "你最近怎么越来越笨了"
+    )
+    messages = [
+        Message(
+            file="/tmp/session.jsonl",
+            line=1,
+            session_id="s-meta",
+            role="user",
+            content=content,
+            source_format="openclaw",
+            raw_type="prompt.submitted",
+        )
+    ]
+    event = AutopilotEvent(
+        id="event-meta",
+        platform="openclaw",
+        action="intervene",
+        trigger="user_frustration_signal",
+        severity="high",
+        session_id="s-meta",
+        message_file="/tmp/session.jsonl",
+        message_line=1,
+        summary="frustration",
+        evidence=content,
+        finding_ids=[],
+    )
+
+    status = build_pet_status(messages, [], platform="openclaw", events=[event])
+    snapshot = snapshot_from_payload(status.to_dict())
+
+    assert "untrusted metadata" not in snapshot.evidence[0].quote
+    assert "```json" not in snapshot.diagnosis
+    assert "你最近怎么越来越笨了" in snapshot.evidence[0].quote
 
 
 def test_pet_event_options_are_only_tell_current_agent_and_dismiss(tmp_path: Path) -> None:
@@ -593,6 +639,47 @@ def test_pet_action_tell_current_agent_rejects_hermes_v1(
     assert "OpenClaw-only" in result.detail
 
 
+def test_pet_action_dismiss_persists_state_and_writes_idle_status(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [{"session_id": "s-dismiss", "role": "user", "content": "Why are you so dumb?"}],
+    )
+    status = pet_status_for_path(transcript, platform="openclaw")
+    status = replace(status, dismiss_state_path=str(tmp_path / "state.sqlite3"))
+    status_file = tmp_path / "pet-status.json"
+    status_file.write_text(json.dumps(status.to_dict(), ensure_ascii=False), encoding="utf-8")
+
+    result = dismiss_current_from_status_file(status_file)
+    payload = json.loads(status_file.read_text(encoding="utf-8"))
+
+    assert result.delivered
+    assert result.mode == "dismissed"
+    assert payload["state"] == "idle"
+    assert payload["phase"] == "ignored"
+
+    from agent_doctor.autopilot import AutopilotState
+
+    event = AutopilotEvent(
+        id=status.latest_event_id or "",
+        platform="openclaw",
+        action="intervene",
+        trigger=status.latest_trigger or "",
+        severity="high",
+        session_id=status.session_id,
+        message_file=str(transcript),
+        message_line=1,
+        summary="frustration",
+        evidence="Why are you so dumb?",
+        finding_ids=[],
+    )
+    state = AutopilotState(tmp_path / "state.sqlite3")
+    try:
+        assert not state.should_emit(event, cooldown_seconds=0)
+    finally:
+        state.close()
+
+
 def test_pet_action_tell_current_agent_sends_targeted_openclaw_session_turn(
     tmp_path: Path,
     monkeypatch,
@@ -778,6 +865,9 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "Agent Doctor is waiting for a valid status." in source
     assert "Agent Doctor could not parse status." not in source
     assert "dismissedEventId" in source
+    assert "persistDismissCurrentIncident" in source
+    assert "\"dismiss\"" in source
+    assert "dismiss_state_path" in source
     assert "isRunnableCommand" in source
     assert "evidence_0_quote" in source
     assert "Suggested next step" in source
