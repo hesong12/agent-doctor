@@ -593,7 +593,7 @@ def test_pet_action_tell_current_agent_rejects_hermes_v1(
     assert "OpenClaw-only" in result.detail
 
 
-def test_pet_action_tell_current_agent_injects_openclaw_system_event(
+def test_pet_action_tell_current_agent_sends_targeted_openclaw_session_turn(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -626,6 +626,10 @@ def test_pet_action_tell_current_agent_injects_openclaw_system_event(
             captured["text"] = text
             captured["mode"] = mode
 
+        def send_agent_turn(self, session_id: str, text: str) -> None:
+            captured["session_id"] = session_id
+            captured["text"] = text
+
     monkeypatch.setattr(adapters_module, "OpenClawAdapter", FakeOpenClaw)
     status = pet_status_for_path(transcript, platform="openclaw")
     status_file = tmp_path / "pet-status.json"
@@ -634,8 +638,8 @@ def test_pet_action_tell_current_agent_injects_openclaw_system_event(
     result = send_recovery_from_status_file(status_file)
 
     assert result.delivered
-    assert result.mode == "openclaw_system_event"
-    assert captured["mode"] == "now"
+    assert result.mode == "openclaw_agent_session"
+    assert captured["session_id"] == "s-open"
     assert "agent_doctor_intervention" in captured["text"]
     assert "required_next_response_behavior" in captured["text"]
 
@@ -729,6 +733,9 @@ def test_pet_action_tell_current_agent_reports_visible_openclaw_failure(
         def inject_system_event(self, text: str, *, mode: str = "now") -> None:
             raise OSError("system event pipe is unavailable")
 
+        def send_agent_turn(self, session_id: str, text: str) -> None:
+            raise OSError("agent session is unavailable")
+
     monkeypatch.setattr(adapters_module, "OpenClawAdapter", FakeOpenClaw)
     status = pet_status_for_path(transcript, platform="openclaw")
     status_file = tmp_path / "pet-status.json"
@@ -737,8 +744,8 @@ def test_pet_action_tell_current_agent_reports_visible_openclaw_failure(
     result = send_recovery_from_status_file(status_file)
 
     assert not result.delivered
-    assert result.mode == "openclaw_system_event_failed"
-    assert "system event pipe is unavailable" in result.detail
+    assert result.mode == "openclaw_agent_session_failed"
+    assert "agent session is unavailable" in result.detail
 
 
 def test_appkit_display_source_uses_single_click_panel() -> None:

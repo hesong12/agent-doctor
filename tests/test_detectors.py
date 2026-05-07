@@ -55,6 +55,23 @@ def test_standalone_again_is_not_repeated_user_correction() -> None:
     assert detect_findings(messages) == []
 
 
+def test_agent_doctor_recovery_prompt_is_not_user_frustration() -> None:
+    messages = [
+        Message(
+            "session.jsonl",
+            1,
+            "s1",
+            "user",
+            (
+                "Agent Doctor detected a live quality issue in the current OpenClaw session.\n"
+                '{"type":"agent_doctor_intervention","evidence":["Why are you so dumb?"]}'
+            ),
+        )
+    ]
+
+    assert detect_findings(messages) == []
+
+
 def test_i_can_offer_is_not_promised_action() -> None:
     messages = [
         Message("session.jsonl", 1, "s1", "assistant", "I can run the tests if you want."),

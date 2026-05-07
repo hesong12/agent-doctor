@@ -200,11 +200,43 @@ def _send_openclaw_recovery(
             detail=f"Could not resolve the current OpenClaw session: {exc}",
         )
 
-    if target.kind() != "tui" or not caps.can_inject_system_event:
+    if target.kind() != "tui":
         return PetActionResult(
             delivered=False,
             mode="openclaw_not_routable",
-            detail="The incident is not routable to an active OpenClaw system-event session.",
+            detail="The incident is not routable to an active OpenClaw TUI session.",
+        )
+
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        return PetActionResult(
+            delivered=False,
+            mode="openclaw_session_missing",
+            detail="The incident did not include an OpenClaw session id for targeted delivery.",
+        )
+
+    send_agent_turn = getattr(adapter, "send_agent_turn", None)
+    if callable(send_agent_turn):
+        try:
+            send_agent_turn(session_id, prompt)
+        except Exception as exc:
+            return PetActionResult(
+                delivered=False,
+                mode="openclaw_agent_session_failed",
+                detail=f"OpenClaw targeted session delivery failed: {exc}",
+            )
+
+        return PetActionResult(
+            delivered=True,
+            mode="openclaw_agent_session",
+            detail=f"Tell Current Agent sent the structured intervention to OpenClaw session {session_id}.",
+        )
+
+    if not caps.can_inject_system_event:
+        return PetActionResult(
+            delivered=False,
+            mode="openclaw_not_routable",
+            detail="The OpenClaw adapter cannot deliver a targeted agent turn or system event.",
         )
 
     try:

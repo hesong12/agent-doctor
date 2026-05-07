@@ -207,6 +207,28 @@ def test_inject_system_event_calls_existing_helper(monkeypatch) -> None:
     assert captured["cmd"][captured["cmd"].index("--text") + 1] == "HEY"
 
 
+def test_send_agent_turn_targets_explicit_session(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["timeout"] = kwargs.get("timeout")
+        return _completed(stdout=json.dumps({"status": "ok"}))
+
+    monkeypatch.setattr("agent_doctor.adapters.openclaw.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_doctor.adapters.openclaw._resolve_openclaw_or_none", lambda: "/fake/openclaw")
+
+    OpenClawAdapter().send_agent_turn("session-123", "recover now", timeout_seconds=120)
+
+    assert captured["cmd"][1:2] == ["agent"]
+    assert "--session-id" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--session-id") + 1] == "session-123"
+    assert "--message" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--message") + 1] == "recover now"
+    assert "--json" in captured["cmd"]
+    assert captured["timeout"] == 125
+
+
 # --- infer_text --------------------------------------------------------------
 
 
@@ -281,6 +303,17 @@ def test_inject_system_event_raises_on_nonzero_rc(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match=r"rc=2.*'bad'"):
         OpenClawAdapter().inject_system_event("hi")
+
+
+def test_send_agent_turn_raises_on_failed_status(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent_doctor.adapters.openclaw.subprocess.run",
+        lambda cmd, **kw: _completed(stdout=json.dumps({"status": "failed", "summary": "busy"})),
+    )
+    monkeypatch.setattr("agent_doctor.adapters.openclaw._resolve_openclaw_or_none", lambda: "/fake/openclaw")
+
+    with pytest.raises(RuntimeError, match="busy"):
+        OpenClawAdapter().send_agent_turn("s1", "hi")
 
 
 def test_infer_text_raises_on_nonzero_rc(monkeypatch) -> None:

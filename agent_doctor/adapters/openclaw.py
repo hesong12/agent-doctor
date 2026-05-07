@@ -259,6 +259,32 @@ class OpenClawAdapter:
                 f"stderr={result.stderr.strip()!r}"
             )
 
+    def send_agent_turn(self, session_id: str, text: str, *, timeout_seconds: int = 600) -> None:
+        cleaned_session_id = session_id.strip()
+        if not cleaned_session_id:
+            raise RuntimeError("OpenClaw session id is required")
+        args = [
+            "agent",
+            "--session-id", cleaned_session_id,
+            "--timeout", str(timeout_seconds),
+            "--json",
+            "--message", text,
+        ]
+        result = _run_openclaw(args, timeout=max(35, timeout_seconds + 5))
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"openclaw agent session delivery failed: rc={result.returncode} "
+                f"stderr={result.stderr.strip()!r}"
+            )
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("openclaw agent returned non-JSON output") from exc
+        status = str(payload.get("status") or "ok").casefold()
+        if status not in {"ok", "completed", "success"}:
+            detail = payload.get("summary") or payload.get("error") or result.stdout
+            raise RuntimeError(f"openclaw agent session delivery did not complete: {detail}")
+
     def infer_text(self, prompt: str, *, model: str | None = None) -> str:
         # Honor the capability contract: if the binary isn't reachable we
         # cannot infer; raise NotImplementedError so callers (and the

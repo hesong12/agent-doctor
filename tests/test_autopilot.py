@@ -68,6 +68,35 @@ def test_autopilot_detects_negative_feedback_and_writes_card(tmp_path: Path) -> 
     assert "user_frustration_signal" in (tmp_path / "doctor" / "events.jsonl").read_text(encoding="utf-8")
 
 
+def test_autopilot_ignores_agent_doctor_recovery_prompts(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s1",
+                "role": "user",
+                "content": (
+                    "Agent Doctor detected a live quality issue in the current OpenClaw session.\n\n"
+                    "```json\n"
+                    '{"type":"agent_doctor_intervention","evidence":["Why are you so dumb?"]}'
+                    "\n```"
+                ),
+            }
+        ],
+    )
+
+    result = run_autopilot_once(
+        platform="openclaw",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        cooldown_seconds=3600,
+    )
+
+    assert result.events == []
+    assert result.pet_state == "idle"
+
+
 def test_autopilot_uses_state_to_suppress_repeated_events(tmp_path: Path) -> None:
     transcript = tmp_path / "session.jsonl"
     _write_jsonl(

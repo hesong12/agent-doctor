@@ -473,10 +473,10 @@ class PetView: NSView {
     func deliveryFailureText(_ detail: String) -> String {
         let technical = short(detail.trimmingCharacters(in: .whitespacesAndNewlines), 120)
         if useChinese() {
-            let base = "Agent Doctor 还没有把建议送到当前 Agent。OpenClaw 路由不可用或 system event 发送失败。"
+            let base = "Agent Doctor 还没有把建议送到当前 Agent。OpenClaw 路由不可用或定向发送失败。"
             return technical.isEmpty ? base : "\(base)\n\(technical)"
         }
-        let base = "Agent Doctor has not sent the suggestion to the active agent. OpenClaw routing is unavailable or system-event delivery failed."
+        let base = "Agent Doctor has not sent the suggestion to the active agent. OpenClaw routing is unavailable or targeted delivery failed."
         return technical.isEmpty ? base : "\(base)\n\(technical)"
     }
 

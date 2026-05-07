@@ -32,6 +32,7 @@ from .ingest import (
 )
 from .redaction import redact_text, redact_value
 from .schema import Finding, Message, Severity
+from .self_messages import is_agent_doctor_recovery_message
 
 Platform = Literal["openclaw", "hermes", "generic"]
 Action = Literal["silent", "notify", "intervene"]
@@ -341,7 +342,7 @@ def detect_autopilot_events(
     events: list[AutopilotEvent] = []
     for index, message in enumerate(ordered):
         session_findings = findings_by_session.get(message.session_id, [])
-        if message.role == "user":
+        if message.role == "user" and not is_agent_doctor_recovery_message(message.content):
             frustration = _classify_user_message(message, ordered, index, platform)
         else:
             frustration = FrustrationSignal(matched=False)
@@ -594,7 +595,11 @@ def _classify_user_message(
     # Build recent user messages for the same session
     recent: list[str] = []
     for prior in ordered[: index + 1]:
-        if prior.role == "user" and prior.session_id == message.session_id:
+        if (
+            prior.role == "user"
+            and prior.session_id == message.session_id
+            and not is_agent_doctor_recovery_message(prior.content)
+        ):
             recent.append(prior.content)
     recent = recent[-10:]  # last 10 user messages
 
