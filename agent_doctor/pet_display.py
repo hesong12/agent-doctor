@@ -15,6 +15,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -626,11 +627,20 @@ def display_pet(
             "--status-file",
             str(status_path),
         ]
-        subprocess.run(command, text=True, capture_output=True, check=False)
-        status_cache["snapshot"] = snapshot_from_payload(read_status_payload(status_path))
-        status_cache["read_at"] = time.monotonic()
         interaction["bubble"] = False
         interaction["dismissed_event"] = _snapshot_event_key(snapshot)
+
+        def worker() -> None:
+            subprocess.run(command, text=True, capture_output=True, check=False)
+            payload = read_status_payload(status_path)
+
+            def finish() -> None:
+                status_cache["snapshot"] = snapshot_from_payload(payload)
+                status_cache["read_at"] = time.monotonic()
+
+            root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def send_recovery_to_agent(snapshot: DisplaySnapshot, popup: Any | None = None) -> None:
         snapshot_status_path = _write_snapshot_status_file(snapshot)
@@ -643,18 +653,26 @@ def display_pet(
             "--status-file",
             str(snapshot_status_path),
         ]
-        try:
-            result = subprocess.run(command, text=True, capture_output=True, check=False)
-        finally:
-            snapshot_status_path.unlink(missing_ok=True)
-        detail = _pet_action_detail(result.stdout, result.stderr)
-        if result.returncode == 0:
-            dismiss_snapshot(snapshot)
-            if popup is not None:
-                popup.destroy()
-            show_message("Suggestion sent", detail or "The active agent received the recovery suggestion.")
-            return
-        show_message("Suggestion not sent", detail or "Agent Doctor could not route this incident.")
+
+        def worker() -> None:
+            try:
+                result = subprocess.run(command, text=True, capture_output=True, check=False)
+            finally:
+                snapshot_status_path.unlink(missing_ok=True)
+            detail = _pet_action_detail(result.stdout, result.stderr)
+
+            def finish() -> None:
+                if result.returncode == 0:
+                    dismiss_snapshot(snapshot)
+                    if popup is not None:
+                        popup.destroy()
+                    show_message("Suggestion sent", detail or "The active agent received the recovery suggestion.")
+                    return
+                show_message("Suggestion not sent", detail or "Agent Doctor could not route this incident.")
+
+            root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def run_command_action(action: DisplayAction) -> None:
         if action.command:

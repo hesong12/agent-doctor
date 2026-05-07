@@ -83,7 +83,7 @@ def score_trajectory(messages: list[str], window: int = 5) -> int:
 
 
 _EN_TOKENIZE = re.compile(r"[A-Za-z]{3,}")
-_CJK_RUN = re.compile(r"[一-鿿]{2,}")
+_CJK_RUN = re.compile(r"[一-鿿]+")
 
 _EN_STOPWORDS = {
     "the",
@@ -103,6 +103,8 @@ _EN_STOPWORDS = {
     "would",
     "should",
 }
+
+_CJK_CHAR_STOPWORDS = set("你我他她它的是了吗嗎么麼什怎不在这這那有和就都也还還很个個一二三吧啊呢哦呀")
 
 _CJK_STOPWORDS = {
     "一个",
@@ -155,6 +157,9 @@ def _content_tokens(message: str) -> set[str]:
     for run in _CJK_RUN.findall(message):
         if run in _CJK_STOPWORDS:
             continue
+        for char in run:
+            if char not in _CJK_CHAR_STOPWORDS:
+                tokens.add(char)
         for size in (2, 3):
             for index in range(0, len(run) - size + 1):
                 token = run[index : index + size]

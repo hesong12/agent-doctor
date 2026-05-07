@@ -212,6 +212,39 @@ func bob(_ state: String, _ t: Double) -> CGFloat {
     return 2.0 + (1.2 * CGFloat(sin(t * 1.8)))
 }
 
+final class ProcessOutputCollector {
+    private let pipe: Pipe
+    private var data = Data()
+    private let lock = NSLock()
+
+    init(_ pipe: Pipe) {
+        self.pipe = pipe
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            self?.append(chunk)
+        }
+    }
+
+    private func append(_ chunk: Data) {
+        lock.lock()
+        data.append(chunk)
+        lock.unlock()
+    }
+
+    func finish() -> String {
+        pipe.fileHandleForReading.readabilityHandler = nil
+        let tail = pipe.fileHandleForReading.availableData
+        if !tail.isEmpty {
+            append(tail)
+        }
+        lock.lock()
+        let snapshot = data
+        lock.unlock()
+        return String(data: snapshot, encoding: .utf8) ?? ""
+    }
+}
+
 class PetView: NSView {
     var status: [String: String] = loadStatus() {
         didSet {
@@ -235,6 +268,7 @@ class PetView: NSView {
     var deliveryEventId = ""
     var runningActionId = ""
     var activeProcesses: [Process] = []
+    var statusReloadInFlight = false
     let petImage: NSImage? = assetPath.isEmpty ? nil : NSImage(contentsOfFile: assetPath)
 
     override var isOpaque: Bool { false }
@@ -330,11 +364,11 @@ class PetView: NSView {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-lc", command]
         let output = Pipe()
+        let outputCollector = ProcessOutputCollector(output)
         process.standardOutput = output
         process.standardError = output
         process.terminationHandler = { [weak self, weak process] completed in
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            let text = String(data: data, encoding: .utf8) ?? ""
+            let text = outputCollector.finish()
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let process = process {
@@ -342,7 +376,7 @@ class PetView: NSView {
                 }
                 self.runningActionId = ""
                 if completed.terminationStatus == 0 {
-                    self.status = loadStatus()
+                    self.requestStatusReload(Date())
                     self.noticeText = self.actionFinishedText(optionId)
                 } else {
                     self.noticeText = self.actionFailedText(optionId, text)
@@ -382,17 +416,18 @@ class PetView: NSView {
             statusPath
         ]
         let output = Pipe()
+        let outputCollector = ProcessOutputCollector(output)
         process.standardOutput = output
         process.standardError = output
         process.terminationHandler = { [weak self, weak process] completed in
-            _ = output.fileHandleForReading.readDataToEndOfFile()
+            _ = outputCollector.finish()
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let process = process {
                     self.activeProcesses.removeAll { $0 === process }
                 }
                 if completed.terminationStatus == 0 {
-                    self.status = loadStatus()
+                    self.requestStatusReload(Date())
                 }
                 self.needsDisplay = true
             }
@@ -432,11 +467,11 @@ class PetView: NSView {
             snapshotPath
         ]
         let output = Pipe()
+        let outputCollector = ProcessOutputCollector(output)
         process.standardOutput = output
         process.standardError = output
         process.terminationHandler = { [weak self, weak process] completed in
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            let text = String(data: data, encoding: .utf8) ?? ""
+            let text = outputCollector.finish()
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let process = process {
@@ -894,8 +929,22 @@ class PetView: NSView {
         return !incidentExpired()
     }
 
-    func reloadStatusFromFile(_ now: Date) {
-        let nextStatus = loadStatus()
+    func requestStatusReload(_ now: Date) {
+        if statusReloadInFlight {
+            return
+        }
+        statusReloadInFlight = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let nextStatus = loadStatus()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.statusReloadInFlight = false
+                self.applyStatusReload(nextStatus, now)
+            }
+        }
+    }
+
+    func applyStatusReload(_ nextStatus: [String: String], _ now: Date) {
         if shouldKeepCurrentIncident(nextStatus) {
             lastStatusReload = now
             needsDisplay = true
@@ -1302,7 +1351,7 @@ app.activate(ignoringOtherApps: true)
 Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { _ in
     let now = Date()
     if now.timeIntervalSince(view.lastStatusReload) >= max(0.2, pollSeconds) {
-        view.reloadStatusFromFile(now)
+        view.requestStatusReload(now)
     } else {
         view.needsDisplay = true
     }

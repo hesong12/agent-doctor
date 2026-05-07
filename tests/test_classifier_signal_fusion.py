@@ -92,3 +92,8 @@ def test_fuse_signals_works_without_history() -> None:
     assert scores.trajectory == 0
     assert scores.repeat_theme == 0
     assert scores.typing_shape >= 1
+
+def test_repeat_theme_counts_meaningful_single_cjk_tokens() -> None:
+    messages = ["你很笨", "还是笨", "笨"]
+
+    assert score_repeat_themes(messages) == 1

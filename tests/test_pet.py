@@ -843,7 +843,7 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "let idleActions = Array(actions.prefix(4))" in source
     assert "drawActionButton(actionId, col == 0 ? 36 : 186" in source
     assert "drawActionButton" in source
-    assert "reloadStatusFromFile" in source
+    assert "requestStatusReload" in source
     assert "syncWindowSize(expanded: expanded, state: state)" in source
     assert "shouldKeepCurrentIncident" in source
     assert "Date().addingTimeInterval(90)" in source
@@ -880,6 +880,9 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "removeItem(atPath: snapshotPath)" in send_recovery_source
     assert "process.waitUntilExit()" not in send_recovery_source
     assert "terminationHandler" in send_recovery_source
+    assert "readDataToEndOfFile" not in source
+    assert "readabilityHandler" in source
+    assert "DispatchQueue.global(qos: .utility)" in source
     assert "diagnoseCurrentSession" not in source
     assert "pythonExecutable" in source
     assert "pet-action" in source
