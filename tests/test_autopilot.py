@@ -156,6 +156,41 @@ def test_autopilot_uses_state_to_suppress_repeated_events(tmp_path: Path) -> Non
     assert second.pet_status_path is not None
 
 
+def test_autopilot_suppresses_persistently_dismissed_event(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s1",
+                "role": "user",
+                "content": "This is not useful. You keep making the same mistake.",
+            }
+        ],
+    )
+
+    first = run_autopilot_once(platform="generic", path=transcript, out_dir=tmp_path / "doctor")
+
+    from agent_doctor.autopilot import AutopilotState
+
+    state = AutopilotState(tmp_path / "doctor" / "state.sqlite3")
+    try:
+        state.dismiss(first.events[0].id, first.events[0].session_id, first.events[0].trigger)
+    finally:
+        state.close()
+    second = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        cooldown_seconds=0,
+    )
+
+    assert len(first.events) == 1
+    assert second.events == []
+    assert second.suppressed == 1
+    assert second.pet_state == "idle"
+
+
 def test_autopilot_changed_only_skips_unchanged_files_then_detects_modified_file(tmp_path: Path) -> None:
     sessions = tmp_path / "sessions"
     sessions.mkdir()

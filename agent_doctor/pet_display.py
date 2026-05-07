@@ -69,6 +69,7 @@ class DisplaySnapshot:
     primary_command: str
     latest_event_id: str
     latest_trigger: str
+    dismiss_state_path: str
     evidence: tuple[DisplayEvidence, ...]
     options: tuple[DisplayOption, ...]
     fill: str
@@ -164,6 +165,7 @@ def snapshot_from_payload(payload: dict[str, Any]) -> DisplaySnapshot:
         primary_command=primary_command,
         latest_event_id=str(payload.get("latest_event_id") or ""),
         latest_trigger=str(payload.get("latest_trigger") or ""),
+        dismiss_state_path=str(payload.get("dismiss_state_path") or ""),
         evidence=evidence,
         options=options,
         fill=fill,
@@ -604,6 +606,18 @@ def display_pet(
         messagebox.showinfo(title, body, parent=root)
 
     def dismiss_snapshot(snapshot: DisplaySnapshot) -> None:
+        command = [
+            sys.executable,
+            "-m",
+            "agent_doctor.cli",
+            "pet-action",
+            "dismiss",
+            "--status-file",
+            str(status_path),
+        ]
+        subprocess.run(command, text=True, capture_output=True, check=False)
+        status_cache["snapshot"] = snapshot_from_payload(read_status_payload(status_path))
+        status_cache["read_at"] = time.monotonic()
         interaction["bubble"] = False
         interaction["dismissed_event"] = _snapshot_event_key(snapshot)
 

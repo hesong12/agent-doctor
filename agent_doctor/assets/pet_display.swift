@@ -42,6 +42,7 @@ func loadStatus() -> [String: String] {
             "card_path": "",
             "latest_event_id": "",
             "latest_trigger": "",
+            "dismiss_state_path": "",
             "evidence_count": "0",
             "option_count": "0"
         ]
@@ -67,6 +68,7 @@ func loadStatus() -> [String: String] {
             "card_path": "",
             "latest_event_id": "",
             "latest_trigger": "",
+            "dismiss_state_path": "",
             "evidence_count": "0",
             "option_count": "0"
         ]
@@ -92,6 +94,7 @@ func loadStatus() -> [String: String] {
         "card_path": stringValue(dict, "card_path", ""),
         "latest_event_id": stringValue(dict, "latest_event_id", ""),
         "latest_trigger": stringValue(dict, "latest_trigger", ""),
+        "dismiss_state_path": stringValue(dict, "dismiss_state_path", ""),
         "evidence_count": String(limitedEvidence.count),
         "option_count": String(limitedOptions.count)
     ]
@@ -127,7 +130,8 @@ func currentStatusSnapshotData(_ status: [String: String]) -> Data? {
         "session_id": status["session_id"] ?? "",
         "card_path": status["card_path"] ?? "",
         "latest_event_id": status["latest_event_id"] ?? "",
-        "latest_trigger": status["latest_trigger"] ?? ""
+        "latest_trigger": status["latest_trigger"] ?? "",
+        "dismiss_state_path": status["dismiss_state_path"] ?? ""
     ]
     var evidence: [[String: Any]] = []
     let evidenceCount = Int(status["evidence_count"] ?? "0") ?? 0
@@ -274,6 +278,7 @@ class PetView: NSView {
         clearDeliveryResult()
         needsDisplay = true
         displayIfNeeded()
+        persistDismissCurrentIncident()
     }
 
     @objc func openStatusCard(_ sender: Any?) {
@@ -358,6 +363,44 @@ class PetView: NSView {
             runningActionId = ""
             bubbleOpen = true
             needsDisplay = true
+            return
+        }
+    }
+
+    func persistDismissCurrentIncident() {
+        if statusPath.isEmpty {
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: pythonExecutable)
+        process.arguments = [
+            "-m",
+            "agent_doctor.cli",
+            "pet-action",
+            "dismiss",
+            "--status-file",
+            statusPath
+        ]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        process.terminationHandler = { [weak self, weak process] completed in
+            _ = output.fileHandleForReading.readDataToEndOfFile()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let process = process {
+                    self.activeProcesses.removeAll { $0 === process }
+                }
+                if completed.terminationStatus == 0 {
+                    self.status = loadStatus()
+                }
+                self.needsDisplay = true
+            }
+        }
+        do {
+            try process.run()
+            activeProcesses.append(process)
+        } catch {
             return
         }
     }
