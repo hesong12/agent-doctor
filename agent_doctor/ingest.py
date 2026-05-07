@@ -127,12 +127,28 @@ def ingest_file(path: Path, *, strict: bool = False) -> list[Message]:
 def ingest_file_with_errors(
     path: Path, *, strict: bool = False
 ) -> tuple[list[Message], int]:
+    return ingest_file_range_with_errors(path, start_byte=0, line_offset=0, strict=strict)
+
+
+def ingest_file_range_with_errors(
+    path: Path,
+    *,
+    start_byte: int = 0,
+    line_offset: int = 0,
+    strict: bool = False,
+) -> tuple[list[Message], int]:
     default_session = path.stem
     messages: list[Message] = []
     parse_errors = 0
 
-    with path.expanduser().open("r", encoding="utf-8", errors="replace") as handle:
+    with path.expanduser().open("rb") as raw_handle:
+        if start_byte > 0:
+            raw_handle.seek(start_byte)
+        import io
+
+        handle = io.TextIOWrapper(raw_handle, encoding="utf-8", errors="replace")
         for line_number, line in enumerate(handle, start=1):
+            line_number += line_offset
             stripped = line.strip()
             if not stripped:
                 continue

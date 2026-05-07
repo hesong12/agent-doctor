@@ -28,6 +28,7 @@ from .ingest import (
     DEFAULT_OPENCLAW_PATH,
     collect_jsonl_paths,
     ingest_path_with_errors,
+    ingest_file_range_with_errors,
 )
 from .redaction import redact_text, redact_value
 from .schema import Finding, Message, Severity
@@ -93,6 +94,13 @@ class AutopilotResult:
         return data
 
 
+@dataclass(frozen=True)
+class JsonlChange:
+    path: Path
+    start_byte: int = 0
+    line_offset: int = 0
+
+
 def default_transcript_path(platform: Platform) -> Path:
     if platform == "openclaw":
         return DEFAULT_OPENCLAW_PATH
@@ -128,11 +136,15 @@ def run_autopilot_once(
                 and input_path.expanduser().is_dir()
                 and not state.has_file_snapshots()
             )
-            changed_paths = state.changed_jsonl_paths(input_path)
             if first_platform_scan:
+                changed_paths = state.changed_jsonl_paths(input_path)
                 snapshot_paths = changed_paths
                 changed_paths = _latest_session_paths(changed_paths)
-            messages, parse_errors = _ingest_paths(changed_paths)
+                messages, parse_errors = _ingest_paths(changed_paths)
+            else:
+                changes = state.changed_jsonl_changes(input_path)
+                changed_paths = [change.path for change in changes]
+                messages, parse_errors = _ingest_changes(changes)
         else:
             messages, parse_errors = ingest_path_with_errors(input_path)
             changed_paths = collect_jsonl_paths(input_path)
@@ -300,6 +312,20 @@ def _ingest_paths(paths: list[Path]) -> tuple[list[Message], int]:
     parse_errors = 0
     for path in paths:
         file_messages, file_errors = ingest_path_with_errors(path)
+        messages.extend(file_messages)
+        parse_errors += file_errors
+    return messages, parse_errors
+
+
+def _ingest_changes(changes: list[JsonlChange]) -> tuple[list[Message], int]:
+    messages: list[Message] = []
+    parse_errors = 0
+    for change in changes:
+        file_messages, file_errors = ingest_file_range_with_errors(
+            change.path,
+            start_byte=change.start_byte,
+            line_offset=change.line_offset,
+        )
         messages.extend(file_messages)
         parse_errors += file_errors
     return messages, parse_errors
@@ -802,6 +828,33 @@ class AutopilotState:
                 changed.append(path)
         return changed
 
+    def changed_jsonl_changes(self, root: Path) -> list[JsonlChange]:
+        paths = collect_jsonl_paths(root)
+        changes: list[JsonlChange] = []
+        for path in paths:
+            stat_result = path.stat()
+            row = self.connection.execute(
+                "SELECT mtime_ns, size FROM seen_files WHERE path = ?", (str(path),)
+            ).fetchone()
+            if row is None:
+                changes.append(JsonlChange(path=path))
+                continue
+            old_mtime_ns, old_size = int(row[0]), int(row[1])
+            if old_mtime_ns == stat_result.st_mtime_ns and old_size == stat_result.st_size:
+                continue
+            if stat_result.st_size <= old_size:
+                # Rotation/truncation/rewrite: rescan the new file content.
+                changes.append(JsonlChange(path=path))
+                continue
+            changes.append(
+                JsonlChange(
+                    path=path,
+                    start_byte=old_size,
+                    line_offset=_count_lines_before_byte(path, old_size),
+                )
+            )
+        return changes
+
     def has_file_snapshots(self) -> bool:
         row = self.connection.execute("SELECT 1 FROM seen_files LIMIT 1").fetchone()
         return row is not None
@@ -823,6 +876,21 @@ class AutopilotState:
 
     def close(self) -> None:
         self.connection.close()
+
+
+def _count_lines_before_byte(path: Path, byte_offset: int) -> int:
+    if byte_offset <= 0:
+        return 0
+    count = 0
+    remaining = byte_offset
+    with path.open("rb") as handle:
+        while remaining > 0:
+            chunk = handle.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            count += chunk.count(b"\n")
+            remaining -= len(chunk)
+    return count
 
 
 def _build_event(
