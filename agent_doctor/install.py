@@ -162,9 +162,11 @@ The desktop surface renders a packaged chibi doctor sprite when available and
 animates locally by state: idle breathing, watching scan, concerned diagnostic
 pulse, and intervening alert. In autopilot setup it is the default user-facing
 entry point: click it for the single status/action panel. That panel owns active
-controls such as Check Session, Hide Alert, and Quit. For transcript-backed
-OpenClaw/Hermes incidents, it can send the generated recovery suggestion back
-through the local host adapter; manual incidents remain copy-only.
+controls such as Tell Current Agent and Dismiss for active incidents; healthy
+idle is monitored automatically and has no manual session-check action. For
+transcript-backed OpenClaw incidents, it can send the generated recovery
+suggestion back through the local host adapter; manual or unroutable incidents
+show a visible degraded state instead of pretending delivery succeeded.
 
 If Agent Doctor returns `action=intervene`, pause the normal success path, name
 the concrete failure, cite the evidence, and provide one corrective next step.

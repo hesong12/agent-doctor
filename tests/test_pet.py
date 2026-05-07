@@ -303,7 +303,6 @@ def test_pet_display_treats_unreadable_status_as_idle(tmp_path: Path) -> None:
     assert snapshot.action == "silent"
     assert "valid status" in snapshot.headline
     assert [action.id for action in _display_actions(snapshot)] == [
-        "diagnose_current",
         "dismiss_for_now",
         "quit_pet",
     ]
@@ -361,7 +360,6 @@ def test_pet_display_suppresses_legacy_idle_start_monitoring_action() -> None:
     )
 
     assert [action.id for action in _display_actions(snapshot)] == [
-        "diagnose_current",
         "dismiss_for_now",
         "quit_pet",
     ]
@@ -733,7 +731,6 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "drawActionButton" in source
     assert "reloadStatusFromFile" in source
     assert "shouldKeepCurrentIncident" in source
-    assert "Date().addingTimeInterval(60)" in source
     assert "Date().addingTimeInterval(90)" in source
     assert "performButton" in source
     assert "displayActions" in source
@@ -751,18 +748,19 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "Suggested next step" in source
     assert "Tell Current Agent" in source
     assert "告诉当前 Agent" in source
-    assert "Check Session" in source
-    assert "Current Session Checked" in source
+    assert "Check Session" not in source
+    assert "Current Session Checked" not in source
     assert "Quit" in source
     assert "sendRecoveryToAgent" in source
-    assert "process.waitUntilExit()" not in source[source.index("func sendRecoveryToAgent") : source.index("func diagnoseCurrentSession")]
-    assert "terminationHandler" in source[source.index("func sendRecoveryToAgent") : source.index("func diagnoseCurrentSession")]
-    assert "diagnoseCurrentSession" in source
+    send_recovery_source = source[source.index("func sendRecoveryToAgent") : source.index("func quitPet")]
+    assert "process.waitUntilExit()" not in send_recovery_source
+    assert "terminationHandler" in send_recovery_source
+    assert "diagnoseCurrentSession" not in source
     assert "pythonExecutable" in source
     assert "pet-action" in source
-    assert "diagnose-current" in source
+    assert "diagnose-current" not in source
     assert "expires_after_seconds" in source
-    assert "NSPasteboard.general.setString" in source
+    assert "NSPasteboard.general.setString" not in source
     assert "Dismiss" in source
     assert "Intervention needed" in source
     assert "runningActionId" in source
@@ -782,7 +780,7 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "runModal()" not in source
 
 
-def test_pet_panel_keeps_diagnose_and_quit_in_single_click_actions() -> None:
+def test_pet_panel_keeps_idle_controls_to_hide_or_quit_only() -> None:
     snapshot = snapshot_from_payload(
         {
             "state": "idle",
@@ -797,7 +795,6 @@ def test_pet_panel_keeps_diagnose_and_quit_in_single_click_actions() -> None:
     actions = _display_actions(snapshot)
 
     assert [action.id for action in actions] == [
-        "diagnose_current",
         "dismiss_for_now",
         "quit_pet",
     ]

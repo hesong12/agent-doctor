@@ -165,8 +165,6 @@ class PetView: NSView {
     var lastStatusReload = Date(timeIntervalSince1970: 0)
     var buttonFrames: [(String, NSRect)] = []
     var noticeText = ""
-    var checkResultText = ""
-    var checkResultUntil = Date(timeIntervalSince1970: 0)
     var deliveryResultText = ""
     var deliveryResultSucceeded = false
     var deliveryResultUntil = Date(timeIntervalSince1970: 0)
@@ -213,8 +211,6 @@ class PetView: NSView {
         } else {
             dismissedEventId = currentEventKey()
         }
-        checkResultText = ""
-        checkResultUntil = Date(timeIntervalSince1970: 0)
         clearDeliveryResult()
         needsDisplay = true
         displayIfNeeded()
@@ -234,10 +230,6 @@ class PetView: NSView {
     func performAction(_ actionId: String) {
         if actionId == "tell_current_agent" {
             sendRecoveryToAgent(nil)
-            return
-        }
-        if actionId == "diagnose_current" {
-            diagnoseCurrentSession()
             return
         }
         if actionId == "open_card" {
@@ -365,84 +357,6 @@ class PetView: NSView {
         }
     }
 
-    func diagnoseCurrentSession() {
-        runPetBackendAction("diagnose-current", "diagnose_current")
-    }
-
-    func runPetBackendAction(_ subcommand: String, _ actionId: String) {
-        if !runningActionId.isEmpty {
-            bubbleOpen = true
-            noticeText = actionBusyText(runningActionId)
-            needsDisplay = true
-            return
-        }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: pythonExecutable)
-        process.arguments = [
-            "-m",
-            "agent_doctor.cli",
-            "pet-action",
-            subcommand,
-            "--status-file",
-            statusPath
-        ]
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = output
-        process.terminationHandler = { [weak self, weak process] completed in
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            let text = String(data: data, encoding: .utf8) ?? ""
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                if let process = process {
-                    self.activeProcesses.removeAll { $0 === process }
-                }
-                self.runningActionId = ""
-                let detail = self.actionDetail(text)
-                if actionId == "diagnose_current" {
-                    let resultText = completed.terminationStatus == 0
-                        ? (detail.isEmpty ? self.actionFinishedText(actionId) : detail)
-                        : (detail.isEmpty ? self.actionFailedText(actionId, text) : detail)
-                    self.checkResultText = resultText
-                    self.checkResultUntil = Date().addingTimeInterval(60)
-                }
-                if completed.terminationStatus == 0 {
-                    self.status = loadStatus()
-                    if actionId == "diagnose_current" {
-                        self.noticeText = ""
-                    } else {
-                        self.noticeText = detail.isEmpty ? self.actionFinishedText(actionId) : detail
-                    }
-                } else {
-                    self.noticeText = detail.isEmpty ? self.actionFailedText(actionId, text) : detail
-                }
-                self.bubbleOpen = true
-                self.needsDisplay = true
-            }
-        }
-        runningActionId = actionId
-        noticeText = actionStartedText(actionId)
-        bubbleOpen = true
-        needsDisplay = true
-        do {
-            try process.run()
-            activeProcesses.append(process)
-        } catch {
-            noticeText = error.localizedDescription
-            runningActionId = ""
-            bubbleOpen = true
-            needsDisplay = true
-        }
-    }
-
-    func copyRecoveryPrompt() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(recoveryPrompt(), forType: .string)
-        bubbleOpen = true
-        noticeText = useChinese() ? "建议已复制。" : "Suggestion copied."
-        needsDisplay = true
-    }
-
     func quitPet() {
         NSApplication.shared.terminate(nil)
     }
@@ -536,8 +450,6 @@ class PetView: NSView {
             actions.append("dismiss_for_now")
             return actions
         }
-        actions.append("diagnose_current")
-        seen.insert("diagnose_current")
         let count = Int(status["option_count"] ?? "0") ?? 0
         for index in 0..<count {
             let optionId = status["option_\(index)_id"] ?? ""
@@ -595,9 +507,6 @@ class PetView: NSView {
         }
         if actionId == "tell_current_agent" {
             return chinese ? "告诉当前 Agent" : "Tell Current Agent"
-        }
-        if actionId == "diagnose_current" {
-            return chinese ? "检查会话" : "Check Session"
         }
         if actionId == "open_card" {
             return chinese ? "打开详情" : "Open Card"
@@ -670,10 +579,6 @@ class PetView: NSView {
         return status["headline"] ?? "Agent Doctor"
     }
 
-    func checkResultActive() -> Bool {
-        return !checkResultText.isEmpty && Date() <= checkResultUntil
-    }
-
     func deliveryResultActive() -> Bool {
         return !deliveryResultText.isEmpty && Date() <= deliveryResultUntil
     }
@@ -692,43 +597,24 @@ class PetView: NSView {
                 : "Return to OpenClaw and confirm the agent recovers. Agent Doctor will keep watching for new feedback."
         }
         return useChinese()
-            ? "自动发送没有成功。复制建议后手动粘贴给当前 Agent，或者忽略这次提醒。"
-            : "Automatic delivery did not complete. Copy the suggestion and paste it to the active agent, or ignore this alert."
+            ? "自动发送没有成功。请忽略这次提醒，Agent Doctor 会继续监控新的反馈。"
+            : "Automatic delivery did not complete. Dismiss this alert; Agent Doctor will keep watching for new feedback."
     }
 
     func panelTitle(_ state: String) -> String {
-        if state == "idle" && checkResultActive() {
-            return "Current Session Checked"
-        }
         return issueTitle()
     }
 
     func panelDiagnosisText(_ state: String) -> String {
         let diagnosis = status["diagnosis"] ?? ""
-        if state == "idle" && checkResultActive() {
-            if status["headline"] == "Current session checked." && !diagnosis.isEmpty {
-                return diagnosis
-            }
-            return checkResultText
-        }
         return diagnosis.isEmpty ? (status["message"] ?? "") : diagnosis
     }
 
     func panelNextStepText(_ state: String) -> String {
-        if state == "idle" && checkResultActive() {
-            let recommendation = status["recommendation"] ?? ""
-            if !recommendation.isEmpty {
-                return recommendation
-            }
-            return "Keep working normally. Agent Doctor is still watching supported OpenClaw sessions."
-        }
         return expectationText()
     }
 
     func idleSummaryText() -> String {
-        if checkResultActive() {
-            return "No quality signal found in the latest supported session."
-        }
         if status["headline"] == "Current session checked." {
             return "No quality signal found in the latest supported session."
         }
@@ -779,19 +665,14 @@ class PetView: NSView {
         if state == "concerned" || state == "intervening" {
             let quiet = "If you do nothing, Agent Doctor will quiet this alert after \(status["expires_after_seconds"] ?? "120") seconds and keep watching."
             if canSendRecovery() {
-                return "Send the suggestion to the active agent, copy the prompt manually, or hide this alert to ignore this incident for now. \(quiet)"
+                return "Send the suggestion to the active agent, or hide this alert to ignore this incident for now. \(quiet)"
             }
-            return "Copy the recovery prompt into the active agent, or hide this alert to ignore this incident for now. \(quiet)"
-        }
-        for actionId in displayActions() {
-            if actionId == "diagnose_current" {
-                return "Click Check Session to refresh the current OpenClaw session diagnosis, or Quit to stop Agent Doctor."
-            }
+            return "Try sending the suggestion to the active agent, or hide this alert to ignore this incident for now. \(quiet)"
         }
         if !(status["card_path"] ?? "").isEmpty {
             return "Open the status card for details, or hide this alert after you have seen it."
         }
-        return "No extra input is needed in this panel. Use the issue and evidence above to correct the active agent response, then hide this alert."
+        return "Agent Doctor is monitoring automatically. No manual session check is needed."
     }
 
     func detailText(_ state: String, _ action: String) -> String {
@@ -846,7 +727,7 @@ class PetView: NSView {
             if (state == "concerned" || state == "intervening") && key != dismissedEventId {
                 clearDeliveryResult()
             }
-            if dismissedEventId != key && !checkResultActive() && !deliveryResultActive() {
+            if dismissedEventId != key && !deliveryResultActive() {
                 bubbleOpen = false
             }
         }
@@ -875,9 +756,6 @@ class PetView: NSView {
     }
 
     func panelVisible(_ state: String) -> Bool {
-        if checkResultActive() {
-            return true
-        }
         if deliveryResultActive() {
             return true
         }
@@ -1148,7 +1026,7 @@ class PetView: NSView {
         if actions.count == 1 {
             drawActionButton(actions[0], 36, primaryY, 288, 30, true, accent)
         } else {
-            let primary = actions.first ?? "diagnose_current"
+            let primary = actions.first ?? "dismiss_for_now"
             drawActionButton(primary, 36, primaryY, 288, 30, true, accent)
             let secondary = Array(actions.dropFirst().prefix(2))
             for (index, actionId) in secondary.enumerated() {

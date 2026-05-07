@@ -270,8 +270,6 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
         actions.append(DisplayAction(id="tell_current_agent", label=label))
         actions.append(DisplayAction(id="dismiss_for_now", label="忽略" if chinese else "Dismiss"))
         return tuple(actions)
-    actions.append(DisplayAction(id="diagnose_current", label="检查会话" if chinese else "Check session"))
-    seen.add("diagnose_current")
     for option in snapshot.options:
         if option.id == "start_autopilot":
             continue
@@ -597,15 +595,6 @@ def display_pet(
         interaction["bubble"] = False
         interaction["dismissed_event"] = _snapshot_event_key(snapshot)
 
-    def copy_recovery_prompt(snapshot: DisplaySnapshot) -> None:
-        root.clipboard_clear()
-        root.clipboard_append(_recovery_prompt(snapshot))
-        root.update_idletasks()
-        show_message(
-            "Recovery prompt copied",
-            "Paste it into the active agent so it can correct the current response.",
-        )
-
     def send_recovery_to_agent(snapshot: DisplaySnapshot, popup: Any | None = None) -> None:
         command = [
             sys.executable,
@@ -626,26 +615,6 @@ def display_pet(
             return
         show_message("Suggestion not sent", detail or "Agent Doctor could not route this incident.")
 
-    def diagnose_current_session() -> None:
-        command = [
-            sys.executable,
-            "-m",
-            "agent_doctor.cli",
-            "pet-action",
-            "diagnose-current",
-            "--status-file",
-            str(status_path),
-        ]
-        result = subprocess.run(command, text=True, capture_output=True, check=False)
-        detail = _pet_action_detail(result.stdout, result.stderr)
-        status_cache["snapshot"] = snapshot_from_payload(read_status_payload(status_path))
-        status_cache["read_at"] = time.monotonic()
-        interaction["bubble"] = True
-        if result.returncode == 0:
-            show_message("Session checked", detail or "Agent Doctor checked the current session.")
-            return
-        show_message("Session check failed", detail or "Agent Doctor could not check the current session.")
-
     def run_command_action(action: DisplayAction) -> None:
         if action.command:
             subprocess.Popen(
@@ -665,9 +634,6 @@ def display_pet(
         if action.id == "dismiss_for_now":
             dismiss_snapshot(snapshot)
             popup.destroy()
-            return
-        if action.id == "diagnose_current":
-            diagnose_current_session()
             return
         if action.id == "quit_pet":
             root.destroy()
