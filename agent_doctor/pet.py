@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable, Literal
 
 from .autopilot import Action, AutopilotEvent, Platform, detect_autopilot_events
+from .comfort import comfort_copy_for_event
 from .detectors import detect_findings
 from .ingest import ingest_path_with_errors
 from .redaction import redact_text, redact_value
@@ -332,17 +333,13 @@ def _status_from_event(
         ),
     )
     chinese = _event_uses_chinese(event, context)
-    emotion_message = _emotion_message(event, chinese=chinese)
-    diagnosis = _incident_diagnosis(event, context, chinese=chinese)
-    recommendation = _incident_recommendation(event, chinese=chinese)
-    payload = _incident_intervention_payload(
-        event,
-        context,
-        diagnosis=diagnosis,
-        recommendation=recommendation,
+    comfort = comfort_copy_for_event(
+        trigger=event.trigger,
+        severity=event.severity,
+        evidence=event.evidence,
+        recent=_recent_session_messages(event, context),
         chinese=chinese,
     )
-    recovery_prompt = _incident_recovery_prompt(payload, chinese=chinese)
     return PetStatus(
         name="Agent Doctor",
         persona="doctor",
@@ -350,8 +347,8 @@ def _status_from_event(
         action=event.action,
         severity=event.severity,
         session_id=event.session_id,
-        headline=_event_headline(event, chinese=chinese),
-        message=_event_message(event, chinese=chinese),
+        headline=comfort.headline,
+        message=comfort.message,
         evidence=evidence,
         options=_event_options(event),
         messages=messages,
@@ -364,12 +361,16 @@ def _status_from_event(
         card_path=event.card_path,
         finding_ids=tuple(event.finding_ids),
         platform=platform,
-        phase="advice_ready" if event.action == "intervene" else "diagnosing",
-        emotion_message=emotion_message,
-        diagnosis=diagnosis,
-        recommendation=recommendation,
-        recovery_prompt=recovery_prompt,
-        intervention_payload=payload,
+        phase="comforting",
+        emotion_message=comfort.message,
+        diagnosis=comfort.headline,
+        recommendation=(
+            "不用操作，先缓一下；Agent Doctor 会继续安静看着。"
+            if chinese
+            else "No action is needed; Agent Doctor will keep quietly watching."
+        ),
+        recovery_prompt="",
+        intervention_payload={},
         expires_after_seconds=120,
     )
 
@@ -726,23 +727,13 @@ TOOL_FAILURE_WORDS = re.compile(
 
 
 def _event_options(event: AutopilotEvent) -> tuple[PetOption, ...]:
-    options: list[PetOption] = []
-    if event.platform == "openclaw" and event.message_file and event.message_file != "<manual>":
-        options.append(
-            PetOption(
-                id="tell_current_agent",
-                label="Tell Current Agent",
-                description="Inject the structured recovery payload into the current OpenClaw session.",
-            )
-        )
-    options.append(
+    return (
         PetOption(
             id="dismiss",
             label="Dismiss",
-            description="Hide this incident without changing agent config, SOP, or memory.",
+            description="Let the comfort moment fade without changing agent config, SOP, or memory.",
         ),
     )
-    return tuple(options)
 
 def _finding_options(finding: Finding) -> tuple[PetOption, ...]:
     return (

@@ -269,10 +269,7 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
     seen: set[str] = set()
     chinese = _snapshot_uses_chinese(snapshot)
     if snapshot.state in ("concerned", "intervening"):
-        if _can_send_recovery(snapshot):
-            label = "发送给当前 Agent" if chinese else "Tell Current Agent"
-            actions.append(DisplayAction(id="tell_current_agent", label=label))
-        actions.append(DisplayAction(id="dismiss_for_now", label="忽略" if chinese else "Dismiss"))
+        actions.append(DisplayAction(id="dismiss_for_now", label="知道了" if chinese else "Got it"))
         return tuple(actions)
     for option in snapshot.options:
         if option.id == "start_autopilot":
@@ -302,14 +299,14 @@ def _can_send_recovery(snapshot: DisplaySnapshot) -> bool:
 
 def _issue_title(snapshot: DisplaySnapshot) -> str:
     chinese = _snapshot_uses_chinese(snapshot)
+    if snapshot.headline:
+        return snapshot.headline
     if snapshot.latest_trigger == "user_frustration_signal":
         return "检测到用户不满" if chinese else "User frustration detected"
     if snapshot.latest_trigger == "completion_claim_without_nearby_verification":
         return "完成声明需要验证" if chinese else "Completion claim needs verification"
     if snapshot.latest_trigger == "tool_failure_or_hidden_error":
         return "工具失败需要处理" if chinese else "Tool failure needs acknowledgement"
-    if snapshot.headline:
-        return snapshot.headline
     return _state_label(snapshot)
 
 
@@ -360,23 +357,10 @@ def _expectation_text(snapshot: DisplaySnapshot) -> str:
 def _user_action_text(snapshot: DisplaySnapshot) -> str:
     chinese = _snapshot_uses_chinese(snapshot)
     if snapshot.state in ("concerned", "intervening"):
-        if not _can_send_recovery(snapshot):
-            if chinese:
-                return (
-                    "这次提醒没有可路由的 OpenClaw transcript，所以 Agent Doctor 不会假装能发送。"
-                    f"忽略会隐藏这次提醒；如果你不操作，它会在 {snapshot.expires_after_seconds} 秒后收起。"
-                )
-            return (
-                "This alert has no routable OpenClaw transcript, so Agent Doctor will not "
-                f"pretend it can send. Dismiss hides this incident; otherwise it quiets after {snapshot.expires_after_seconds} seconds."
-            )
         if chinese:
-            quiet = f"如果你不操作，Agent Doctor 会在 {snapshot.expires_after_seconds} 秒后收起提醒并继续监控。"
-            return f"告诉当前 Agent 会尝试把结构化修正建议注入当前 OpenClaw session；忽略会隐藏这次提醒。{quiet}"
-        quiet = f"If you do nothing, Agent Doctor will quiet this alert after {snapshot.expires_after_seconds} seconds and keep watching."
+            return f"不用操作。点“知道了”会收起这次安慰；如果你不点，它会在 {snapshot.expires_after_seconds} 秒后自己安静退下。"
         return (
-            "Tell Current Agent tries to inject the structured recovery payload into the active "
-            f"OpenClaw session; Dismiss hides this incident. {quiet}"
+            f"No action is needed. Got it hides this comfort moment; otherwise it fades after {snapshot.expires_after_seconds} seconds."
         )
     has_runnable_action = any(
         action.command for action in _display_actions(snapshot) if action.id != "dismiss_for_now"
@@ -414,10 +398,9 @@ def _recovery_prompt(snapshot: DisplaySnapshot) -> str:
 def _detail_sections(snapshot: DisplaySnapshot) -> tuple[tuple[str, str], ...]:
     sections: list[tuple[str, str]] = []
     if snapshot.emotion_message:
-        sections.append(("First", snapshot.emotion_message))
-    sections.append(("Diagnosis", snapshot.diagnosis or snapshot.message or _issue_title(snapshot)))
-    sections.append(("Evidence", _evidence_text(snapshot)))
-    sections.append(("Suggested next step", _expectation_text(snapshot)))
+        sections.append(("安慰" if _snapshot_uses_chinese(snapshot) else "Comfort", snapshot.emotion_message))
+    sections.append(("场景" if _snapshot_uses_chinese(snapshot) else "Scene", snapshot.diagnosis or _issue_title(snapshot)))
+    sections.append(("现场一句" if _snapshot_uses_chinese(snapshot) else "What it saw", _evidence_text(snapshot)))
     sections.append(("Your choices", _user_action_text(snapshot)))
     return tuple(sections)
 
@@ -443,7 +426,7 @@ def _snapshot_event_key(snapshot: DisplaySnapshot) -> str:
 def snapshot_to_dict(snapshot: DisplaySnapshot) -> dict[str, Any]:
     data = asdict(snapshot)
     data["actions"] = [asdict(action) for action in _display_actions(snapshot)]
-    data["recovery_prompt"] = _recovery_prompt(snapshot)
+    data["recovery_prompt"] = snapshot.recovery_prompt
     return data
 
 
@@ -460,6 +443,8 @@ def _write_snapshot_status_file(snapshot: DisplaySnapshot) -> Path:
 
 
 def _state_label(snapshot: DisplaySnapshot) -> str:
+    if snapshot.phase == "comforting":
+        return "小医生陪着" if _snapshot_uses_chinese(snapshot) else "Comforting"
     if snapshot.phase == "advice_ready":
         return "Suggestion ready"
     if snapshot.phase == "diagnosing":
@@ -836,14 +821,16 @@ def _draw_pet(
 
 def _draw_tk_bubble(canvas: Any, snapshot: DisplaySnapshot) -> None:
     headline = _shorten(_issue_title(snapshot), 54)
-    message = _shorten(_evidence_text(snapshot), 90)
-    canvas.create_rectangle(12, 10, 248, 140, fill="#ffffff", outline="#111827", width=2)
-    canvas.create_polygon(108, 140, 130, 158, 152, 140, fill="#ffffff", outline="#111827")
+    message = _shorten(snapshot.emotion_message or snapshot.message or _evidence_text(snapshot), 126)
+    canvas.create_oval(14, 8, 246, 142, fill="#fff7ed", outline="#111827", width=2)
+    canvas.create_polygon(108, 138, 130, 160, 152, 138, fill="#fff7ed", outline="#111827")
+    canvas.create_oval(210, 20, 224, 34, fill="#fde68a", outline="#111827", width=1)
+    canvas.create_oval(226, 38, 236, 48, fill="#14b8a6", outline="#111827", width=1)
     canvas.create_text(
         26,
         25,
         text=_state_label(snapshot),
-        fill=snapshot.accent,
+        fill="#f97316",
         font=("Helvetica", 12, "bold"),
         anchor="w",
         width=208,
@@ -869,8 +856,8 @@ def _draw_tk_bubble(canvas: Any, snapshot: DisplaySnapshot) -> None:
     canvas.create_text(
         26,
         122,
-        text="Click for details",
-        fill=snapshot.accent,
+        text="Click for a tiny hug" if not _snapshot_uses_chinese(snapshot) else "点一下，收个小抱抱",
+        fill="#f97316",
         font=("Helvetica", 11, "bold"),
         anchor="w",
         width=208,
@@ -985,9 +972,20 @@ def _draw_tk_effects(canvas: Any, snapshot: DisplaySnapshot, phase: float) -> No
             86 + y_offset - size / 2,
             95 + x_offset + size / 2,
             86 + y_offset + size / 2,
-            outline=snapshot.accent,
+            outline="#f97316",
             width=2,
         )
+        for index, (dx, dy, color) in enumerate(((30, 10, "#fde68a"), (130, 30, "#14b8a6"), (40, 132, "#f97316"))):
+            bob = 8 * ((math.sin(phase * (2.4 + index)) + 1) / 2)
+            canvas.create_oval(
+                x_offset + dx,
+                y_offset + dy - bob,
+                x_offset + dx + 12,
+                y_offset + dy + 12 - bob,
+                fill=color,
+                outline="#111827",
+                width=1,
+            )
 
 
 def _bob_for_state(state: str, phase: float) -> float:

@@ -595,10 +595,6 @@ class PetView: NSView {
         }
         let state = status["state"] ?? "idle"
         if state == "concerned" || state == "intervening" {
-            if canSendRecovery() {
-                actions.append("tell_current_agent")
-                seen.insert("tell_current_agent")
-            }
             actions.append("dismiss_for_now")
             return actions
         }
@@ -669,7 +665,7 @@ class PetView: NSView {
             }
             let state = status["state"] ?? "idle"
             if state == "concerned" || state == "intervening" {
-                return chinese ? "忽略" : "Dismiss"
+                return chinese ? "知道了" : "Got it"
             }
             return chinese ? "关闭" : "Close"
         }
@@ -717,6 +713,10 @@ class PetView: NSView {
     }
 
     func issueTitle() -> String {
+        let headline = status["headline"] ?? ""
+        if !headline.isEmpty {
+            return headline
+        }
         let trigger = status["latest_trigger"] ?? ""
         let chinese = useChinese()
         if trigger == "user_frustration_signal" {
@@ -815,11 +815,10 @@ class PetView: NSView {
     func userActionText() -> String {
         let state = status["state"] ?? "idle"
         if state == "concerned" || state == "intervening" {
-            let quiet = "If you do nothing, Agent Doctor will quiet this alert after \(status["expires_after_seconds"] ?? "120") seconds and keep watching."
-            if canSendRecovery() {
-                return "Send the suggestion to the active agent, or hide this alert to ignore this incident for now. \(quiet)"
+            if useChinese() {
+                return "不用操作。点“知道了”会收起这次安慰；如果你不点，它会在 \(status["expires_after_seconds"] ?? "120") 秒后自己安静退下。"
             }
-            return "This alert has no routable OpenClaw transcript, so Agent Doctor will not pretend it can send. Hide this alert to ignore this incident for now. \(quiet)"
+            return "No action is needed. Got it hides this comfort moment; otherwise it fades after \(status["expires_after_seconds"] ?? "120") seconds."
         }
         if !(status["card_path"] ?? "").isEmpty {
             return "Open the status card for details, or hide this alert after you have seen it."
@@ -1064,8 +1063,16 @@ class PetView: NSView {
             ], accent.withAlphaComponent(0.75), 3)
         } else if state == "intervening" {
             let size = 106 + (16 * p)
-            oval(95 - size / 2, 86 - size / 2, size, size, color("#ef4444").withAlphaComponent(0.05), accent.withAlphaComponent(0.38), 2)
-            oval(52, 40, 86, 86, color("#fee2e2").withAlphaComponent(0.09), NSColor.clear, 0)
+            oval(95 - size / 2, 86 - size / 2, size, size, color("#fff7ed").withAlphaComponent(0.18), color("#f97316").withAlphaComponent(0.45), 2)
+            oval(52, 40, 86, 86, color("#fde68a").withAlphaComponent(0.12), NSColor.clear, 0)
+            for index in 0..<5 {
+                let fi = CGFloat(index)
+                let bob = CGFloat(8.0 * pulse(t + Double(index), 2.2 + Double(index) * 0.35))
+                let x = CGFloat([28, 48, 136, 150, 72][index])
+                let y = CGFloat([42, 122, 36, 116, 20][index]) + bob
+                let c = [color("#fde68a"), color("#14b8a6"), color("#f97316"), color("#fca5a5"), color("#ffffff")][index]
+                oval(x, y, 10 + (fi.truncatingRemainder(dividingBy: 2) * 4), 10 + (fi.truncatingRemainder(dividingBy: 2) * 4), c.withAlphaComponent(0.82), color("#111827").withAlphaComponent(0.55), 1)
+            }
         }
     }
 
@@ -1120,9 +1127,9 @@ class PetView: NSView {
             oval(95 - ring, 128 - ring, ring * 2, ring * 2, NSColor.clear, accent.withAlphaComponent(0.72), 2)
         } else if state == "intervening" {
             let p = pulse(t, 5.5)
-            roundRect(142, 25, 30, 30, 15, accent, .white, 2)
-            text("!", 142, 28, 30, 22, 17, .white, true)
-            oval(142 - (6 * p), 25 - (6 * p), 30 + (12 * p), 30 + (12 * p), NSColor.clear, accent.withAlphaComponent(0.45), 2)
+            roundRect(142, 25 + (4 * p), 30, 30, 15, color("#f97316"), .white, 2)
+            text("~", 142, 28 + (4 * p), 30, 22, 17, .white, true)
+            oval(142 - (6 * p), 25 - (6 * p), 30 + (12 * p), 30 + (12 * p), NSColor.clear, color("#f97316").withAlphaComponent(0.45), 2)
         }
     }
 
@@ -1138,6 +1145,9 @@ class PetView: NSView {
         let chinese = useChinese()
         if state != "idle" {
             let phase = status["phase"] ?? ""
+            if phase == "comforting" {
+                return chinese ? "小医生陪着" : "Comforting"
+            }
             if phase == "advice_ready" {
                 return chinese ? "建议已准备" : "Suggestion ready"
             }
@@ -1168,8 +1178,8 @@ class PetView: NSView {
 
     func drawActionButton(_ actionId: String, _ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ primary: Bool, _ accent: NSColor) {
         let busy = actionId == runningActionId
-        let fill = busy ? accent : (primary ? color("#0b84ff") : NSColor.white.withAlphaComponent(0.92))
-        let stroke = busy ? accent : (primary ? color("#0b84ff") : color("#d1d5db"))
+        let fill = busy ? accent : (primary ? color("#f97316") : NSColor.white.withAlphaComponent(0.92))
+        let stroke = busy ? accent : (primary ? color("#f97316") : color("#d1d5db"))
         let foreground = primary ? NSColor.white : color("#111827")
         let rect = r(x, y, w, h)
         roundRect(x, y, w, h, h / 2, fill, stroke, 1)
@@ -1240,32 +1250,25 @@ class PetView: NSView {
             drawIdlePanel(accent)
             return
         }
-        roundRect(18, 210, 324, 340, 22, NSColor.white.withAlphaComponent(0.96), color("#111827"), 1.5)
+        roundRect(18, 210, 324, 340, 22, color("#fff7ed").withAlphaComponent(0.98), color("#111827"), 1.5)
         let chinese = useChinese()
-        let titleY: CGFloat = 230
-        roundRect(36, titleY - 2, 126, 24, 12, accent.withAlphaComponent(0.10), accent, 1)
-        text(stateLabel(state, status["action"] ?? "silent"), 48, titleY + 4, 102, 13, 9.5, accent, true, .left)
-        text(short(panelTitle(state), 74), 36, 262, 288, 34, 13.5, color("#111827"), true, .left)
+        roundRect(36, 228, 116, 24, 12, color("#fde68a").withAlphaComponent(0.75), color("#f97316"), 1)
+        text(chinese ? "小医生来了" : "Tiny doctor here", 48, 234, 92, 13, 9.5, color("#9a3412"), true, .left)
+        text(short(panelTitle(state), 58), 36, 266, 288, 40, 15, color("#111827"), true, .left)
 
-        var y: CGFloat = 306
+        var y: CGFloat = 320
         let emotion = status["emotion_message"] ?? ""
         if !emotion.isEmpty {
-            text(short(emotion, 96), 36, y, 288, 30, 11, accent, true, .left)
-            y += 38
+            roundRect(34, y - 8, 292, 92, 18, NSColor.white.withAlphaComponent(0.78), color("#f97316").withAlphaComponent(0.35), 1)
+            text(short(emotion, 190), 50, y + 6, 260, 66, 12, color("#374151"), false, .left)
+            y += 104
         }
-        text(chinese ? "证据" : "Evidence", 36, y, 288, 14, 10, color("#111827"), true, .left)
-        text(short(evidenceText(), 128), 36, y + 16, 288, 38, 10.5, color("#374151"), false, .left)
-        y += 56
-        let diagnosisText = panelDiagnosisText(state)
-        text(chinese ? "诊断" : "Diagnosis", 36, y, 288, 14, 10, color("#111827"), true, .left)
-        text(short(diagnosisText, 104), 36, y + 16, 288, 34, 10.5, color("#374151"), false, .left)
-        y += 52
-        text(chinese ? "建议" : "Next step", 36, y, 288, 14, 10, color("#111827"), true, .left)
-        text(short(panelNextStepText(state), 102), 36, y + 16, 288, 34, 10.5, color("#374151"), false, .left)
+        text(chinese ? "它看到的现场" : "What it noticed", 40, y, 288, 14, 10, color("#111827"), true, .left)
+        text(short(evidenceText(), 128), 40, y + 18, 270, 48, 10.5, color("#6b7280"), false, .left)
 
         if !noticeText.isEmpty {
-            roundRect(176, 228, 132, 24, 12, accent.withAlphaComponent(0.10), accent.withAlphaComponent(0.28), 1)
-            text(short(noticeText, 42), 186, 234, 112, 12, 9.5, accent, true, .left)
+            roundRect(176, 228, 132, 24, 12, color("#14b8a6").withAlphaComponent(0.10), color("#14b8a6").withAlphaComponent(0.28), 1)
+            text(short(noticeText, 42), 186, 234, 112, 12, 9.5, color("#0f766e"), true, .left)
         }
 
         let actions = visibleActions()
