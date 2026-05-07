@@ -35,7 +35,12 @@ class GenericAdapter:
         return cls()
 
     def capabilities(self) -> HostCapabilities:
-        return HostCapabilities(host_name="generic", detected_at=Path("/"))
+        return HostCapabilities(
+            host_name="generic",
+            detected_at=Path("/"),
+            can_write_inbox=True,
+            available_channels=("inbox",),
+        )
 
     def send_message(
         self,
@@ -111,7 +116,8 @@ class GenericAdapter:
         session_id = jsonl_path.expanduser().stem
         language = "en"
         try:
-            sample = jsonl_path.expanduser().read_text(encoding="utf-8", errors="replace")[:4000]
+            with jsonl_path.expanduser().open("r", encoding="utf-8", errors="replace") as handle:
+                sample = handle.read(4000)
             try:
                 first = json.loads(sample.splitlines()[0]) if sample.splitlines() else {}
                 if isinstance(first, dict) and first.get("session_id"):

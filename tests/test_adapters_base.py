@@ -98,6 +98,7 @@ def test_host_capabilities_defaults_are_conservative() -> None:
     assert caps.can_react is False
     assert caps.can_list_reactions is False
     assert caps.can_edit_message is False
+    assert caps.can_write_inbox is False
     assert caps.can_inject_system_event is False
     assert caps.can_infer_text is False
     assert caps.can_infer_embedding is False

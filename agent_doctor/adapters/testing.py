@@ -56,6 +56,7 @@ class AdapterContractTest:
             "can_edit_message",
             "can_react",
             "can_list_reactions",
+            "can_write_inbox",
             "can_inject_system_event",
             "can_infer_text",
             "can_infer_embedding",
