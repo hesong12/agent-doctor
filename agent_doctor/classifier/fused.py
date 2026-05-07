@@ -87,7 +87,7 @@ def fused_classify(
             rationale_parts.append(f"tier2_error={exc}")
 
     severity = _score_to_severity(score)
-    if severity == "none":
+    if severity is None:
         return FrustrationSignal(matched=False)
     return FrustrationSignal(
         matched=True,
@@ -102,11 +102,11 @@ def _severity_to_score(severity: str) -> int:
     return {"none": 0, "low": 1, "medium": 2, "high": 3}.get(severity, 0)
 
 
-def _score_to_severity(score: int) -> Severity:
+def _score_to_severity(score: int) -> Optional[Severity]:
     if score >= 3:
         return "high"
     if score == 2:
         return "medium"
     if score == 1:
         return "low"
-    return "none"  # type: ignore[return-value]
+    return None
