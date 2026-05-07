@@ -142,6 +142,51 @@ def test_autopilot_changed_only_skips_unchanged_files_then_detects_modified_file
     assert second.pet_state == "idle"
     assert (tmp_path / "doctor" / "pet-status.json").exists()
     assert [event.session_id for event in third.events] == ["s2"]
+    assert third.events[0].message_line == 2
+
+
+def test_changed_only_does_not_rescan_historical_tool_failure_on_append(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    transcript = sessions / "session.trajectory.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s1",
+                "role": "tool",
+                "content": "Action send requires a target.",
+            }
+        ],
+    )
+
+    from agent_doctor.autopilot import baseline_autopilot_state
+
+    baseline_autopilot_state(
+        platform="openclaw",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+    )
+    with transcript.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {"session_id": "s1", "role": "user", "content": "continue"},
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+
+    result = run_autopilot_once(
+        platform="openclaw",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+        changed_only=True,
+        cooldown_seconds=0,
+    )
+
+    assert result.messages == 1
+    assert result.events == []
+    assert result.pet_state == "idle"
 
 
 def test_openclaw_initial_changed_only_scan_uses_recent_sessions_only(tmp_path: Path) -> None:
