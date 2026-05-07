@@ -110,6 +110,64 @@ func loadStatus() -> [String: String] {
     return result
 }
 
+func currentStatusSnapshotData(_ status: [String: String]) -> Data? {
+    var payload: [String: Any] = [
+        "state": status["state"] ?? "idle",
+        "action": status["action"] ?? "silent",
+        "severity": status["severity"] ?? "low",
+        "platform": status["platform"] ?? "generic",
+        "phase": status["phase"] ?? "healthy",
+        "headline": status["headline"] ?? "",
+        "message": status["message"] ?? "",
+        "emotion_message": status["emotion_message"] ?? "",
+        "diagnosis": status["diagnosis"] ?? "",
+        "recommendation": status["recommendation"] ?? "",
+        "recovery_prompt": status["recovery_prompt"] ?? "",
+        "expires_after_seconds": status["expires_after_seconds"] ?? "120",
+        "session_id": status["session_id"] ?? "",
+        "card_path": status["card_path"] ?? "",
+        "latest_event_id": status["latest_event_id"] ?? "",
+        "latest_trigger": status["latest_trigger"] ?? ""
+    ]
+    var evidence: [[String: Any]] = []
+    let evidenceCount = Int(status["evidence_count"] ?? "0") ?? 0
+    for index in 0..<evidenceCount {
+        evidence.append([
+            "file": status["evidence_\(index)_file"] ?? "",
+            "line": status["evidence_\(index)_line"] ?? "",
+            "role": status["evidence_\(index)_role"] ?? "",
+            "quote": status["evidence_\(index)_quote"] ?? ""
+        ])
+    }
+    payload["evidence"] = evidence
+    var options: [[String: Any]] = []
+    let optionCount = Int(status["option_count"] ?? "0") ?? 0
+    for index in 0..<optionCount {
+        options.append([
+            "id": status["option_\(index)_id"] ?? "",
+            "label": status["option_\(index)_label"] ?? "",
+            "description": status["option_\(index)_description"] ?? "",
+            "command": status["option_\(index)_command"] ?? ""
+        ])
+    }
+    payload["options"] = options
+    return try? JSONSerialization.data(withJSONObject: payload)
+}
+
+func writeCurrentStatusSnapshot(_ status: [String: String]) throws -> String {
+    guard let data = currentStatusSnapshotData(status) else {
+        throw NSError(
+            domain: "AgentDoctor",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Could not serialize current Agent Doctor status."]
+        )
+    }
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("agent-doctor-send-\(UUID().uuidString).json")
+    try data.write(to: url, options: .atomic)
+    return url.path
+}
+
 func color(_ hex: String) -> NSColor {
     let value = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
     var int: UInt64 = 0
@@ -311,6 +369,15 @@ class PetView: NSView {
             needsDisplay = true
             return
         }
+        let snapshotPath: String
+        do {
+            snapshotPath = try writeCurrentStatusSnapshot(status)
+        } catch {
+            bubbleOpen = true
+            setDeliveryResult(false, error.localizedDescription)
+            needsDisplay = true
+            return
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: pythonExecutable)
         process.arguments = [
@@ -319,7 +386,7 @@ class PetView: NSView {
             "pet-action",
             "send-recovery",
             "--status-file",
-            statusPath
+            snapshotPath
         ]
         let output = Pipe()
         process.standardOutput = output
@@ -332,6 +399,7 @@ class PetView: NSView {
                 if let process = process {
                     self.activeProcesses.removeAll { $0 === process }
                 }
+                try? FileManager.default.removeItem(atPath: snapshotPath)
                 self.runningActionId = ""
                 let detail = self.actionDetail(text)
                 if completed.terminationStatus == 0 {
@@ -352,6 +420,7 @@ class PetView: NSView {
             activeProcesses.append(process)
         } catch {
             runningActionId = ""
+            try? FileManager.default.removeItem(atPath: snapshotPath)
             bubbleOpen = true
             setDeliveryResult(false, error.localizedDescription)
             needsDisplay = true

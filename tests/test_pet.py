@@ -22,6 +22,7 @@ from agent_doctor.pet_display import (
     _recovery_prompt,
     _state_label,
     _visible_snapshot,
+    _write_snapshot_status_file,
     pet_asset_path,
     read_status_payload,
     snapshot_to_dict,
@@ -432,6 +433,27 @@ def test_pet_display_shows_send_recovery_for_transcript_backed_openclaw(tmp_path
     ]
 
 
+def test_pet_display_writes_send_action_from_visible_snapshot(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [{"session_id": "s-send", "role": "user", "content": "Are you stupid?"}],
+    )
+    status = pet_status_for_path(transcript, platform="openclaw")
+    snapshot = snapshot_from_payload(status.to_dict())
+
+    snapshot_file = _write_snapshot_status_file(snapshot)
+    try:
+        payload = json.loads(snapshot_file.read_text(encoding="utf-8"))
+    finally:
+        snapshot_file.unlink(missing_ok=True)
+
+    assert payload["platform"] == "openclaw"
+    assert payload["state"] == "intervening"
+    assert payload["evidence"][0]["file"] == str(transcript)
+    assert payload["recovery_prompt"]
+
+
 def test_pet_display_auto_recovers_alert_after_inactivity() -> None:
     snapshot = snapshot_from_payload(
         {
@@ -758,7 +780,11 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "Current Session Checked" not in source
     assert "Quit" in source
     assert "sendRecoveryToAgent" in source
+    assert "writeCurrentStatusSnapshot(status)" in source
     send_recovery_source = source[source.index("func sendRecoveryToAgent") : source.index("func quitPet")]
+    assert "statusPath" not in send_recovery_source
+    assert "snapshotPath" in send_recovery_source
+    assert "removeItem(atPath: snapshotPath)" in send_recovery_source
     assert "process.waitUntilExit()" not in send_recovery_source
     assert "terminationHandler" in send_recovery_source
     assert "diagnoseCurrentSession" not in source

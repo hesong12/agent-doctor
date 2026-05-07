@@ -18,7 +18,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from tempfile import gettempdir
+from tempfile import NamedTemporaryFile, gettempdir
 from typing import Any
 
 _WINDOW_WIDTH = 260
@@ -433,6 +433,18 @@ def snapshot_to_dict(snapshot: DisplaySnapshot) -> dict[str, Any]:
     return data
 
 
+def _write_snapshot_status_file(snapshot: DisplaySnapshot) -> Path:
+    with NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        prefix="agent-doctor-send-",
+        suffix=".json",
+        delete=False,
+    ) as handle:
+        json.dump(snapshot_to_dict(snapshot), handle, ensure_ascii=False)
+        return Path(handle.name)
+
+
 def _state_label(snapshot: DisplaySnapshot) -> str:
     if snapshot.phase == "advice_ready":
         return "Suggestion ready"
@@ -596,6 +608,7 @@ def display_pet(
         interaction["dismissed_event"] = _snapshot_event_key(snapshot)
 
     def send_recovery_to_agent(snapshot: DisplaySnapshot, popup: Any | None = None) -> None:
+        snapshot_status_path = _write_snapshot_status_file(snapshot)
         command = [
             sys.executable,
             "-m",
@@ -603,9 +616,12 @@ def display_pet(
             "pet-action",
             "send-recovery",
             "--status-file",
-            str(status_path),
+            str(snapshot_status_path),
         ]
-        result = subprocess.run(command, text=True, capture_output=True, check=False)
+        try:
+            result = subprocess.run(command, text=True, capture_output=True, check=False)
+        finally:
+            snapshot_status_path.unlink(missing_ok=True)
         detail = _pet_action_detail(result.stdout, result.stderr)
         if result.returncode == 0:
             dismiss_snapshot(snapshot)
