@@ -116,18 +116,19 @@ def _iter_jsonl(path: Path) -> Iterator[dict]:
     if not path.exists():
         return
     try:
-        text = path.read_text(encoding="utf-8")
+        handle = path.open("r", encoding="utf-8")
     except OSError:
         return
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(row, dict):
-            yield row
+    with handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                yield row
 
 
 def _row_timestamp(row: dict, *, default_keys: tuple[str, ...]) -> float | None:

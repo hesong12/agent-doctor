@@ -103,6 +103,7 @@ class HostCapabilities:
     can_edit_message: bool = False
     can_react: bool = False
     can_list_reactions: bool = False
+    can_write_inbox: bool = False
     can_inject_system_event: bool = False
     can_infer_text: bool = False
     can_infer_embedding: bool = False

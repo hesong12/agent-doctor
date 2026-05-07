@@ -146,12 +146,16 @@ def load_proposals(path: Path) -> list[Proposal]:
     if not path.exists():
         return []
     out: list[Proposal] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            d = json.loads(line)
-            out.append(Proposal(**d))
-        except (json.JSONDecodeError, TypeError):
-            continue
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    d = json.loads(line)
+                    out.append(Proposal(**d))
+                except (json.JSONDecodeError, TypeError):
+                    continue
+    except OSError:
+        return []
     return out

@@ -43,6 +43,8 @@ class HermesAdapter:
             skill_dir=HERMES_HOME / "skills" / "autonomous-ai-agents" / "agent-doctor",
             memory_writable=HERMES_HOME / "memory" / "MEMORY.md",
             identity_writable=HERMES_HOME / "identity" / "identity.md",
+            can_write_inbox=True,
+            available_channels=("inbox",),
             # All outbound flags default to False — Hermes outbound surface TBD.
         )
 

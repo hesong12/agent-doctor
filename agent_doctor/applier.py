@@ -67,10 +67,11 @@ def apply_proposal(proposal: Proposal, adapter: HostAdapter) -> AppliedPatch:
 
     # Write
     if proposal.target_kind in APPEND_ONLY_KINDS:
-        # Append, with newline normalization
-        existing = target_file.read_text(encoding="utf-8")
+        # Append, with newline normalization. Avoid reading the full file:
+        # memory/SOP files can grow over time.
+        needs_separator = target_file.stat().st_size > 0 and not _ends_with_newline(target_file)
         with target_file.open("a", encoding="utf-8") as h:
-            if existing and not existing.endswith("\n"):
+            if needs_separator:
                 h.write("\n")
             h.write(proposal.patch_body.rstrip("\n") + "\n")
     else:
@@ -136,3 +137,12 @@ def _hash_file(path: Path) -> str:
     h = hashlib.sha256()
     h.update(path.read_bytes())
     return h.hexdigest()
+
+
+def _ends_with_newline(path: Path) -> bool:
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        if handle.tell() == 0:
+            return True
+        handle.seek(-1, 2)
+        return handle.read(1) == b"\n"

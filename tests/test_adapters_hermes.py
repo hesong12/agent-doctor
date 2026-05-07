@@ -37,6 +37,7 @@ def test_hermes_capabilities_are_partial(tmp_path: Path, monkeypatch) -> None:
     assert caps.skill_dir is not None
     # Outbound surface unknown / not implemented yet
     assert caps.can_send_message is False
+    assert caps.can_write_inbox is True
     assert caps.can_react is False
     assert caps.can_inject_system_event is False
     assert caps.can_infer_text is False

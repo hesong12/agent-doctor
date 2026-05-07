@@ -34,12 +34,13 @@ def test_generic_capabilities_are_minimal() -> None:
     caps = GenericAdapter().capabilities()
     assert caps.host_name == "generic"
     assert caps.can_send_message is False
+    assert caps.can_write_inbox is True
     assert caps.can_react is False
     assert caps.can_list_reactions is False
     assert caps.can_inject_system_event is False
     assert caps.can_infer_text is False
     assert caps.can_infer_embedding is False
-    assert caps.available_channels == ()
+    assert caps.available_channels == ("inbox",)
 
 
 def test_generic_send_message_writes_inbox_file(tmp_path: Path) -> None:
