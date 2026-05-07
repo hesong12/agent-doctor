@@ -194,6 +194,14 @@ agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes --watch --
 agent-doctor autopilot --platform generic --path ./sessions --out ./doctor-autopilot
 ```
 
+The default desktop setup uses short polling because Agent Doctor must notice
+live OpenClaw transcript changes quickly enough to be useful in the same user
+flow. The watch daemon scans only changed JSONL files after its first baseline,
+and the desktop pet reloads a small status JSON file; this keeps the 2-second
+daemon interval and 1-second pet refresh practical for local desktop use. If a
+host later exposes file-system events or a native session-change stream, that
+should replace polling for lower CPU and I/O overhead.
+
 For an AI agent configuring Agent Doctor on the user's behalf, prefer:
 
 ```bash

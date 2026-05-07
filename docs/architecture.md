@@ -124,6 +124,13 @@ files, preventing the daemon from reprocessing the full session history on
 every poll. One-shot invocations or watch mode restarts can opt into the same
 behavior with `--changed-only`.
 
+The short default interval is intentional for the desktop product: the Doctor
+pet should react while the user is still in the OpenClaw recovery moment, not
+minutes later. The cost is bounded because the daemon polls file metadata and
+changed JSONL tails, while the pet polls only its generated status file. A
+future host-level file event stream should replace this polling loop when
+OpenClaw exposes one.
+
 `agent_doctor.service` writes the user-service wrapper:
 
 - macOS: `~/Library/LaunchAgents/com.agentdoctor.<platform>.plist`.
