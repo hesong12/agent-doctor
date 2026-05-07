@@ -724,14 +724,18 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
 
     assert "compactWindowWidth: CGFloat = 260" in source
     assert "expandedWindowHeight: CGFloat = 560" in source
+    assert "idleExpandedWindowHeight: CGFloat = 430" in source
+    assert "idleNoticeExpandedWindowHeight: CGFloat = 500" in source
     assert ".usesLineFragmentOrigin" in source
     assert "drawStateChip" in source
     assert "drawPanel" in source
     assert "drawIdlePanel" in source
+    assert "let panelHeight: CGFloat = hasNotice ? 250 : 184" in source
     assert "let idleActions = Array(actions.prefix(4))" in source
     assert "drawActionButton(actionId, col == 0 ? 36 : 186" in source
     assert "drawActionButton" in source
     assert "reloadStatusFromFile" in source
+    assert "syncWindowSize(expanded: expanded, state: state)" in source
     assert "shouldKeepCurrentIncident" in source
     assert "Date().addingTimeInterval(90)" in source
     assert "performButton" in source

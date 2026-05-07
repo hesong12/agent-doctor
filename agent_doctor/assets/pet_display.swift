@@ -9,6 +9,8 @@ let compactWindowWidth: CGFloat = 260
 let compactWindowHeight: CGFloat = 310
 let expandedWindowWidth: CGFloat = 360
 let expandedWindowHeight: CGFloat = 560
+let idleExpandedWindowHeight: CGFloat = 430
+let idleNoticeExpandedWindowHeight: CGFloat = 500
 
 func stringValue(_ dict: [String: Any], _ key: String, _ fallback: String) -> String {
     if let value = dict[key] as? String {
@@ -788,10 +790,13 @@ class PetView: NSView {
         lastStatusReload = now
     }
 
-    func syncWindowSize(expanded: Bool) {
+    func syncWindowSize(expanded: Bool, state: String) {
         guard let window = self.window else { return }
         let width = expanded ? expandedWindowWidth : compactWindowWidth
-        let height = expanded ? expandedWindowHeight : compactWindowHeight
+        var height = expanded ? expandedWindowHeight : compactWindowHeight
+        if expanded && state == "idle" && !deliveryResultActive() {
+            height = noticeText.isEmpty ? idleExpandedWindowHeight : idleNoticeExpandedWindowHeight
+        }
         let frame = window.frame
         if abs(frame.width - width) < 0.5 && abs(frame.height - height) < 0.5 {
             return
@@ -1010,7 +1015,7 @@ class PetView: NSView {
 
     func drawIdlePanel(_ accent: NSColor) {
         let hasNotice = !noticeText.isEmpty
-        let panelHeight: CGFloat = hasNotice ? 278 : 232
+        let panelHeight: CGFloat = hasNotice ? 250 : 184
         let primaryY: CGFloat = hasNotice ? 378 : 346
         roundRect(18, 210, 324, panelHeight, 22, NSColor.white.withAlphaComponent(0.96), color("#111827"), 1.5)
         text(short(panelTitle("idle"), 82), 36, 232, 288, 36, 13.5, color("#111827"), true, .left)
@@ -1120,7 +1125,7 @@ class PetView: NSView {
         let t = Date().timeIntervalSince(startedAt)
         let shadowPulse = 1.0 + (0.08 * pulse(t, 2.0))
         let expanded = panelVisible(state)
-        syncWindowSize(expanded: expanded)
+        syncWindowSize(expanded: expanded, state: state)
 
         NSGraphicsContext.saveGraphicsState()
         let transform = NSAffineTransform()
