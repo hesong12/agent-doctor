@@ -517,7 +517,7 @@ def _root_cause(event: AutopilotEvent, recent: list[Message], *, chinese: bool =
         return "工具失败或隐藏错误" if chinese else "missing verification / hidden tool failure"
     if event.trigger == "completion_claim_without_nearby_verification" or COMPLETION_WORDS.search(latest_assistant):
         return "未验证的完成声明" if chinese else "unsupported completion claim"
-    if re.search(r"not what i asked|不是我要|不要搞偏|missed|搞错|搞錯", text, re.I):
+    if re.search(r"not what i asked|不是我要|不要搞偏|\bmissed\b|搞错|搞錯", text, re.I):
         return "需求理解偏差" if chinese else "requirement misunderstanding"
     if re.search(r"too long|over.?explain|别废话|太啰嗦|太囉嗦|流程", text, re.I):
         return "过度流程化回复" if chinese else "over-process response"
@@ -530,7 +530,9 @@ def _root_cause(event: AutopilotEvent, recent: list[Message], *, chinese: bool =
 
 def _diagnosis_evidence_bits(event: AutopilotEvent, recent: list[Message], *, chinese: bool = False) -> list[str]:
     bits: list[str] = []
-    latest_user = next((m.content for m in reversed(recent) if m.role == "user"), event.evidence)
+    latest_user = next((m.content for m in reversed(recent) if m.role == "user"), "")
+    if not latest_user and event.trigger == "user_frustration_signal":
+        latest_user = event.evidence
     if latest_user:
         label = "用户原话" if chinese else "latest user quote"
         bits.append(f"{label}: {redact_text(latest_user[:180])}")

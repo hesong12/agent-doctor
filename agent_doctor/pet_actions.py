@@ -209,7 +209,7 @@ def _send_openclaw_recovery(
 
     try:
         adapter.inject_system_event(prompt, mode="now")
-    except RuntimeError as exc:
+    except Exception as exc:
         return PetActionResult(
             delivered=False,
             mode="openclaw_system_event_failed",

@@ -311,6 +311,12 @@ class PetView: NSView {
     }
 
     @objc func sendRecoveryToAgent(_ sender: Any?) {
+        if !runningActionId.isEmpty {
+            bubbleOpen = true
+            noticeText = actionBusyText(runningActionId)
+            needsDisplay = true
+            return
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: pythonExecutable)
         process.arguments = [
@@ -324,25 +330,39 @@ class PetView: NSView {
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
+        process.terminationHandler = { [weak self, weak process] completed in
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let text = String(data: data, encoding: .utf8) ?? ""
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let process = process {
+                    self.activeProcesses.removeAll { $0 === process }
+                }
+                self.runningActionId = ""
+                let detail = self.actionDetail(text)
+                if completed.terminationStatus == 0 {
+                    self.dismissedEventId = self.currentEventKey()
+                    self.setDeliveryResult(true, self.deliverySuccessText(detail))
+                } else {
+                    self.setDeliveryResult(false, self.deliveryFailureText(detail))
+                }
+                self.needsDisplay = true
+            }
+        }
+        runningActionId = "tell_current_agent"
+        noticeText = actionStartedText("tell_current_agent")
+        bubbleOpen = true
+        needsDisplay = true
         do {
             try process.run()
-            process.waitUntilExit()
+            activeProcesses.append(process)
         } catch {
+            runningActionId = ""
             bubbleOpen = true
             setDeliveryResult(false, error.localizedDescription)
             needsDisplay = true
             return
         }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let text = String(data: data, encoding: .utf8) ?? ""
-        let detail = actionDetail(text)
-        if process.terminationStatus == 0 {
-            dismissedEventId = currentEventKey()
-            setDeliveryResult(true, deliverySuccessText(detail))
-        } else {
-            setDeliveryResult(false, deliveryFailureText(detail))
-        }
-        needsDisplay = true
     }
 
     func diagnoseCurrentSession() {

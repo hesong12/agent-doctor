@@ -620,6 +620,64 @@ def test_pet_action_tell_current_agent_injects_openclaw_system_event(
     assert "required_next_response_behavior" in captured["text"]
 
 
+def test_incident_root_cause_missed_regex_does_not_match_dismissed() -> None:
+    event = AutopilotEvent(
+        id="event-dismissed",
+        platform="openclaw",
+        action="intervene",
+        trigger="user_frustration_signal",
+        severity="high",
+        session_id="s-dismissed",
+        message_file="/tmp/session.jsonl",
+        message_line=1,
+        summary="frustration",
+        evidence="This was bad.",
+        finding_ids=[],
+    )
+    messages = [
+        Message(
+            file="/tmp/session.jsonl",
+            line=1,
+            session_id="s-dismissed",
+            role="user",
+            content="I dismissed the old dialog, but this is still bad.",
+        )
+    ]
+
+    status = build_pet_status(messages, [], platform="openclaw", events=[event])
+
+    assert status.intervention_payload["root_cause"] == "emotional / trust recovery failure"
+
+
+def test_tool_failure_without_user_message_does_not_label_tool_output_as_user_quote() -> None:
+    event = AutopilotEvent(
+        id="event-tool-only",
+        platform="openclaw",
+        action="intervene",
+        trigger="tool_failure_or_hidden_error",
+        severity="high",
+        session_id="s-tool-only",
+        message_file="/tmp/session.jsonl",
+        message_line=1,
+        summary="tool failed",
+        evidence="Traceback: command failed",
+        finding_ids=[],
+    )
+    messages = [
+        Message(
+            file="/tmp/session.jsonl",
+            line=1,
+            session_id="s-tool-only",
+            role="tool",
+            content="Traceback: command failed",
+        )
+    ]
+
+    status = build_pet_status(messages, [], platform="openclaw", events=[event])
+
+    assert "latest user quote" not in status.diagnosis
+    assert "tool output: Traceback: command failed" in status.diagnosis
+
 def test_pet_action_tell_current_agent_reports_visible_openclaw_failure(
     tmp_path: Path,
     monkeypatch,
@@ -642,11 +700,14 @@ def test_pet_action_tell_current_agent_reports_visible_openclaw_failure(
             return HostCapabilities(
                 host_name="openclaw",
                 detected_at=tmp_path,
-                can_inject_system_event=False,
+                can_inject_system_event=True,
             )
 
         def session_metadata(self, jsonl_path: Path):
             return SessionMetadata("s-open", "en", "tui", "local")
+
+        def inject_system_event(self, text: str, *, mode: str = "now") -> None:
+            raise OSError("system event pipe is unavailable")
 
     monkeypatch.setattr(adapters_module, "OpenClawAdapter", FakeOpenClaw)
     status = pet_status_for_path(transcript, platform="openclaw")
@@ -656,8 +717,8 @@ def test_pet_action_tell_current_agent_reports_visible_openclaw_failure(
     result = send_recovery_from_status_file(status_file)
 
     assert not result.delivered
-    assert result.mode == "openclaw_not_routable"
-    assert "not routable" in result.detail
+    assert result.mode == "openclaw_system_event_failed"
+    assert "system event pipe is unavailable" in result.detail
 
 
 def test_appkit_display_source_uses_single_click_panel() -> None:
@@ -694,6 +755,8 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "Current Session Checked" in source
     assert "Quit" in source
     assert "sendRecoveryToAgent" in source
+    assert "process.waitUntilExit()" not in source[source.index("func sendRecoveryToAgent") : source.index("func diagnoseCurrentSession")]
+    assert "terminationHandler" in source[source.index("func sendRecoveryToAgent") : source.index("func diagnoseCurrentSession")]
     assert "diagnoseCurrentSession" in source
     assert "pythonExecutable" in source
     assert "pet-action" in source
