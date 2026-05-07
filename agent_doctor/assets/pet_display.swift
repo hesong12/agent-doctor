@@ -448,6 +448,7 @@ class PetView: NSView {
                 if completed.terminationStatus == 0 {
                     self.dismissedEventId = self.currentEventKey()
                     self.setDeliveryResult(true, self.deliverySuccessText(detail))
+                    self.persistDismissCurrentIncident()
                 } else {
                     self.setDeliveryResult(false, self.deliveryFailureText(detail))
                 }
@@ -559,8 +560,10 @@ class PetView: NSView {
         }
         let state = status["state"] ?? "idle"
         if state == "concerned" || state == "intervening" {
-            actions.append("tell_current_agent")
-            seen.insert("tell_current_agent")
+            if canSendRecovery() {
+                actions.append("tell_current_agent")
+                seen.insert("tell_current_agent")
+            }
             actions.append("dismiss_for_now")
             return actions
         }
@@ -620,7 +623,7 @@ class PetView: NSView {
             return chinese ? "处理中..." : "Working..."
         }
         if actionId == "tell_current_agent" {
-            return chinese ? "告诉当前 Agent" : "Tell Current Agent"
+            return chinese ? "发送给当前 Agent" : "Tell Current Agent"
         }
         if actionId == "open_card" {
             return chinese ? "打开详情" : "Open Card"
@@ -781,7 +784,7 @@ class PetView: NSView {
             if canSendRecovery() {
                 return "Send the suggestion to the active agent, or hide this alert to ignore this incident for now. \(quiet)"
             }
-            return "Try sending the suggestion to the active agent, or hide this alert to ignore this incident for now. \(quiet)"
+            return "This alert has no routable OpenClaw transcript, so Agent Doctor will not pretend it can send. Hide this alert to ignore this incident for now. \(quiet)"
         }
         if !(status["card_path"] ?? "").isEmpty {
             return "Open the status card for details, or hide this alert after you have seen it."
@@ -1198,15 +1201,18 @@ class PetView: NSView {
         var y: CGFloat = 306
         let emotion = status["emotion_message"] ?? ""
         if !emotion.isEmpty {
-            text(short(emotion, 128), 36, y, 288, 42, 11, accent, true, .left)
-            y += 50
+            text(short(emotion, 96), 36, y, 288, 30, 11, accent, true, .left)
+            y += 38
         }
+        text(chinese ? "证据" : "Evidence", 36, y, 288, 14, 10, color("#111827"), true, .left)
+        text(short(evidenceText(), 128), 36, y + 16, 288, 38, 10.5, color("#374151"), false, .left)
+        y += 56
         let diagnosisText = panelDiagnosisText(state)
         text(chinese ? "诊断" : "Diagnosis", 36, y, 288, 14, 10, color("#111827"), true, .left)
-        text(short(diagnosisText, 118), 36, y + 16, 288, 40, 10.5, color("#374151"), false, .left)
-        y += 58
+        text(short(diagnosisText, 104), 36, y + 16, 288, 34, 10.5, color("#374151"), false, .left)
+        y += 52
         text(chinese ? "建议" : "Next step", 36, y, 288, 14, 10, color("#111827"), true, .left)
-        text(short(panelNextStepText(state), 116), 36, y + 16, 288, 34, 10.5, color("#374151"), false, .left)
+        text(short(panelNextStepText(state), 102), 36, y + 16, 288, 34, 10.5, color("#374151"), false, .left)
 
         if !noticeText.isEmpty {
             roundRect(176, 228, 132, 24, 12, accent.withAlphaComponent(0.10), accent.withAlphaComponent(0.28), 1)
@@ -1214,7 +1220,7 @@ class PetView: NSView {
         }
 
         let actions = visibleActions()
-        let rowY: CGFloat = 488
+        let rowY: CGFloat = 512
         if actions.count == 1 {
             drawActionButton(actions[0], 36, rowY, 288, 30, true, accent)
         } else if actions.count == 2 {

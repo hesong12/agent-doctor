@@ -268,8 +268,9 @@ def _display_actions(snapshot: DisplaySnapshot) -> tuple[DisplayAction, ...]:
     seen: set[str] = set()
     chinese = _snapshot_uses_chinese(snapshot)
     if snapshot.state in ("concerned", "intervening"):
-        label = "告诉当前 Agent" if chinese else "Tell Current Agent"
-        actions.append(DisplayAction(id="tell_current_agent", label=label))
+        if _can_send_recovery(snapshot):
+            label = "发送给当前 Agent" if chinese else "Tell Current Agent"
+            actions.append(DisplayAction(id="tell_current_agent", label=label))
         actions.append(DisplayAction(id="dismiss_for_now", label="忽略" if chinese else "Dismiss"))
         return tuple(actions)
     for option in snapshot.options:
@@ -358,6 +359,16 @@ def _expectation_text(snapshot: DisplaySnapshot) -> str:
 def _user_action_text(snapshot: DisplaySnapshot) -> str:
     chinese = _snapshot_uses_chinese(snapshot)
     if snapshot.state in ("concerned", "intervening"):
+        if not _can_send_recovery(snapshot):
+            if chinese:
+                return (
+                    "这次提醒没有可路由的 OpenClaw transcript，所以 Agent Doctor 不会假装能发送。"
+                    f"忽略会隐藏这次提醒；如果你不操作，它会在 {snapshot.expires_after_seconds} 秒后收起。"
+                )
+            return (
+                "This alert has no routable OpenClaw transcript, so Agent Doctor will not "
+                f"pretend it can send. Dismiss hides this incident; otherwise it quiets after {snapshot.expires_after_seconds} seconds."
+            )
         if chinese:
             quiet = f"如果你不操作，Agent Doctor 会在 {snapshot.expires_after_seconds} 秒后收起提醒并继续监控。"
             return f"告诉当前 Agent 会尝试把结构化修正建议注入当前 OpenClaw session；忽略会隐藏这次提醒。{quiet}"

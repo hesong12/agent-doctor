@@ -726,18 +726,23 @@ TOOL_FAILURE_WORDS = re.compile(
 
 
 def _event_options(event: AutopilotEvent) -> tuple[PetOption, ...]:
-    return (
-        PetOption(
-            id="tell_current_agent",
-            label="Tell Current Agent",
-            description="Inject the structured recovery payload into the current OpenClaw session when routable.",
-        ),
+    options: list[PetOption] = []
+    if event.platform == "openclaw" and event.message_file and event.message_file != "<manual>":
+        options.append(
+            PetOption(
+                id="tell_current_agent",
+                label="Tell Current Agent",
+                description="Inject the structured recovery payload into the current OpenClaw session.",
+            )
+        )
+    options.append(
         PetOption(
             id="dismiss",
             label="Dismiss",
             description="Hide this incident without changing agent config, SOP, or memory.",
         ),
     )
+    return tuple(options)
 
 def _finding_options(finding: Finding) -> tuple[PetOption, ...]:
     return (

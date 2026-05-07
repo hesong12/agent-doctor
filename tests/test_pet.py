@@ -58,17 +58,14 @@ def test_pet_manual_frustration_summon_intervenes() -> None:
     assert status.diagnosis
     assert status.recommendation
     assert status.recovery_prompt
-    assert [option.id for option in status.options] == [
-        "tell_current_agent",
-        "dismiss",
-    ]
+    assert [option.id for option in status.options] == ["dismiss"]
     assert status.intervention_payload["type"] == "agent_doctor_intervention"
     assert "root_cause" in status.intervention_payload
     assert "required_next_response_behavior" in status.intervention_payload
 
     text = render_pet_markdown(status)
     assert "Agent Doctor" in text
-    assert "Tell Current Agent" in text
+    assert "Dismiss" in text
 
 
 def test_pet_event_uses_user_session_language_for_tool_failure() -> None:
@@ -114,7 +111,7 @@ def test_pet_event_uses_user_session_language_for_tool_failure() -> None:
     assert "关键证据" in status.recovery_prompt
     assert _issue_title(snapshot) == "工具失败需要处理"
     assert [action.label for action in _display_actions(snapshot)] == [
-        "告诉当前 Agent",
+        "发送给当前 Agent",
         "忽略",
     ]
     assert "{contentItems" not in snapshot.evidence[0].quote
@@ -176,7 +173,7 @@ def test_pet_event_options_are_only_tell_current_agent_and_dismiss(tmp_path: Pat
         ],
     )
 
-    status = pet_status_for_path(transcript)
+    status = pet_status_for_path(transcript, platform="openclaw")
 
     assert [option.id for option in status.options] == ["tell_current_agent", "dismiss"]
     assert all(not option.command for option in status.options)
@@ -362,17 +359,14 @@ def test_pet_display_snapshot_exposes_user_facing_state_label(tmp_path: Path) ->
 
     assert snapshot.state == "intervening"
     assert snapshot.action == "intervene"
-    assert snapshot.primary_label == "Tell Current Agent"
+    assert snapshot.primary_label == "Dismiss"
     assert snapshot.evidence[0].quote == "Why are you so dumb?"
     assert _issue_title(snapshot) == "User frustration detected"
     assert "Why are you so dumb?" in _dialog_detail_text(snapshot)
     assert "Manual report" in _dialog_detail_text(snapshot)
-    assert "Tell Current Agent tries" in _dialog_detail_text(snapshot)
+    assert "will not pretend it can send" in _dialog_detail_text(snapshot)
     assert "required_next_response_behavior" in _recovery_prompt(snapshot)
-    assert [option.id for option in snapshot.options] == [
-        "tell_current_agent",
-        "dismiss",
-    ]
+    assert [option.id for option in snapshot.options] == ["dismiss"]
     assert _state_label(snapshot) == "Suggestion ready"
 
 
@@ -380,11 +374,11 @@ def test_pet_display_actionable_manual_incident_has_only_tell_and_dismiss() -> N
     status = pet_status_for_text("Why are you so dumb?", session_id="s-manual")
     snapshot = snapshot_from_payload(status.to_dict())
 
-    assert snapshot.primary_label == "Tell Current Agent"
+    assert snapshot.primary_label == "Dismiss"
     assert [action.id for action in _display_actions(snapshot)] == [
-        "tell_current_agent",
         "dismiss_for_now",
     ]
+    assert "will not pretend it can send" in _dialog_detail_text(snapshot)
 
 
 def test_pet_display_suppresses_legacy_idle_start_monitoring_action() -> None:
@@ -452,7 +446,6 @@ def test_pet_display_ignores_legacy_stage_repair_for_actionable_incident() -> No
 
     assert _command_is_runnable(snapshot.primary_command)
     assert [action.id for action in _display_actions(snapshot)] == [
-        "tell_current_agent",
         "dismiss_for_now",
     ]
 
@@ -870,9 +863,11 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "dismiss_state_path" in source
     assert "isRunnableCommand" in source
     assert "evidence_0_quote" in source
+    assert "Evidence" in source
+    assert "evidenceText()" in source
     assert "Suggested next step" in source
     assert "Tell Current Agent" in source
-    assert "告诉当前 Agent" in source
+    assert "发送给当前 Agent" in source
     assert "Check Session" not in source
     assert "Current Session Checked" not in source
     assert "Quit" in source
@@ -880,6 +875,7 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "writeCurrentStatusSnapshot(status)" in source
     send_recovery_source = source[source.index("func sendRecoveryToAgent") : source.index("func quitPet")]
     assert "statusPath" not in send_recovery_source
+    assert "self.persistDismissCurrentIncident()" in send_recovery_source
     assert "snapshotPath" in send_recovery_source
     assert "removeItem(atPath: snapshotPath)" in send_recovery_source
     assert "process.waitUntilExit()" not in send_recovery_source

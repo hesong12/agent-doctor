@@ -186,6 +186,8 @@ def test_common_chinese_dumb_feedback_is_frustration_signal() -> None:
         "你它妈的不能自己用眼睛看你做的是什么鬼吗？页面底下那么多空白你是要干什么？",
         "而且为什么我刚才那么骂你，agent doctor完全没有任何的反应？",
         "tmd 这是什么鬼？",
+        "agent doctor 的产品现在交互做的跟一坨屎一样",
+        "这个 UI 体验屎一样",
     ]:
         messages = [
             Message("session.jsonl", 1, "s1", "user", text),
