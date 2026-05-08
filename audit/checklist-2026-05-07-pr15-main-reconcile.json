@@ -24,7 +24,12 @@
     {
       "id": "github_pr_updated",
       "description": "PR #15 branch is pushed to GitHub and reports non-dirty merge status or a clear remaining blocker.",
-      "status": "pending"
+      "status": "passed",
+      "evidence": [
+        "Pushed feat/agent-doctor-desktop-foundation head bcc6d36ae808c268082a9164bd937c3fb30fdb04 to PR #15.",
+        "GitHub PR #15 reported mergeStateStatus=CLEAN.",
+        "GitHub CI passed: test (3.11), test (3.12), test (3.13), bench."
+      ]
     }
   ],
   "risks": [
