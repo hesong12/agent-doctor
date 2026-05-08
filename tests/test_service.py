@@ -3,12 +3,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_doctor.service import install_sidecar_service
+from agent_doctor.service import install_desktop_pet_service, install_sidecar_service
 
 
 def test_service_install_writes_launchd_plist_without_starting(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("agent_doctor.service.service_home", lambda: tmp_path)
     monkeypatch.setattr("agent_doctor.service._service_kind", lambda: "launchd")
+    monkeypatch.delenv("AGENT_DOCTOR_COMFORT_MODEL", raising=False)
     sessions = tmp_path / ".openclaw" / "agents" / "main" / "sessions"
     sessions.mkdir(parents=True)
     (sessions / "old.jsonl").write_text('{"role":"user","content":"not useful"}\n', encoding="utf-8")
@@ -34,12 +35,32 @@ def test_service_install_writes_launchd_plist_without_starting(tmp_path: Path, m
     assert "--inbox-dir" in args
     assert "--changed-only" in args
     assert payload["EnvironmentVariables"]["AGENT_DOCTOR_HOST_HOME"] == str(tmp_path)
+    assert "/opt/homebrew/bin" in payload["EnvironmentVariables"]["PATH"]
+    assert "AGENT_DOCTOR_COMFORT_MODEL" not in payload["EnvironmentVariables"]
     assert (tmp_path / "doctor" / "state.sqlite3").exists()
+
+
+def test_service_install_passes_optional_comfort_model_to_launchd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("agent_doctor.service.service_home", lambda: tmp_path)
+    monkeypatch.setattr("agent_doctor.service._service_kind", lambda: "launchd")
+    monkeypatch.setenv("AGENT_DOCTOR_COMFORT_MODEL", "local/test-model")
+
+    result = install_desktop_pet_service(
+        status_file=tmp_path / "pet" / "pet-status.json",
+        start=False,
+    )
+
+    payload = plistlib.loads(result.service_file.read_bytes())
+    assert payload["EnvironmentVariables"]["AGENT_DOCTOR_COMFORT_MODEL"] == "local/test-model"
 
 
 def test_service_install_writes_systemd_unit_without_starting(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("agent_doctor.service.service_home", lambda: tmp_path)
     monkeypatch.setattr("agent_doctor.service._service_kind", lambda: "systemd-user")
+    monkeypatch.setenv("AGENT_DOCTOR_COMFORT_MODEL", "local/test model")
 
     result = install_sidecar_service(
         platform="hermes",
@@ -55,6 +76,7 @@ def test_service_install_writes_systemd_unit_without_starting(tmp_path: Path, mo
     assert "--platform hermes" in text
     assert "--notify-command 'echo ok'" in text
     assert "Restart=always" in text
+    assert "Environment=AGENT_DOCTOR_COMFORT_MODEL=local/test\\x20model" in text
 
 
 def test_service_install_start_runs_platform_commands(tmp_path: Path, monkeypatch) -> None:
@@ -80,3 +102,24 @@ def test_service_install_start_runs_platform_commands(tmp_path: Path, monkeypatc
         ["systemctl", "--user", "daemon-reload"],
         ["systemctl", "--user", "enable", "--now", result.service_file.name],
     ]
+
+
+def test_desktop_pet_service_is_launchd_run_at_load_without_keepalive(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("agent_doctor.service.service_home", lambda: tmp_path)
+    monkeypatch.setattr("agent_doctor.service._service_kind", lambda: "launchd")
+
+    result = install_desktop_pet_service(
+        status_file=tmp_path / ".agent-doctor" / "pet" / "pet-status.json",
+        start=False,
+    )
+
+    payload = plistlib.loads(result.service_file.read_bytes())
+    args = payload["ProgramArguments"]
+    assert result.platform == "pet"
+    assert payload["RunAtLoad"] is True
+    assert payload["KeepAlive"] is False
+    assert args[:4] == [sys.executable, "-m", "agent_doctor.cli", "pet-display"]
+    assert "--status-file" in args
+    assert str(tmp_path / ".agent-doctor" / "pet" / "pet-status.json") in args

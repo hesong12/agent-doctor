@@ -26,6 +26,7 @@ from .frustration import classify_user_frustration
 from .recommend import build_eval_case, build_recommendations
 from .redaction import redact_text
 from .schema import Evidence, Finding, Message, Severity
+from .self_messages import is_agent_doctor_recovery_message
 
 USER_SIGNAL_PATTERNS: dict[str, list[str]] = {
     "repeated_user_correction": [
@@ -448,6 +449,8 @@ def _collect_raw_matches(ordered: list[Message]) -> list[_RawMatch]:
 
     for message in ordered:
         if message.role != "user":
+            continue
+        if is_agent_doctor_recovery_message(message.content):
             continue
         frustration = classify_user_frustration(message.content)
         overlaps_existing_user_signal = _matches_existing_user_signal(message.content)

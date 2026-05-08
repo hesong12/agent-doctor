@@ -6,9 +6,11 @@ import sys
 from pathlib import Path
 
 from agent_doctor.delivery import (
+    _openclaw_subprocess_env,
     default_openclaw_notify_command,
     notify_openclaw_system_event,
     render_openclaw_system_event_text,
+    resolve_openclaw_binary,
 )
 
 
@@ -93,16 +95,18 @@ def test_notify_openclaw_system_event_skips_non_interventions(tmp_path: Path) ->
 def test_notify_openclaw_system_event_dry_run_builds_system_event_command(tmp_path: Path) -> None:
     card = tmp_path / "card.md"
     card.write_text("card", encoding="utf-8")
+    openclaw = tmp_path / "openclaw"
+    openclaw.write_text("#!/bin/sh\n", encoding="utf-8")
 
     result = notify_openclaw_system_event(
         env=_event_env(card),
-        openclaw_bin="/bin/openclaw",
+        openclaw_bin=str(openclaw),
         dry_run=True,
     )
 
     assert result.skipped is False
     assert result.delivered is False
-    assert result.command[:4] == ["/bin/openclaw", "system", "event", "--mode"]
+    assert result.command[:4] == [str(openclaw), "system", "event", "--mode"]
     assert "--text" in result.command
     assert "AGENT DOCTOR INTERVENTION" in result.command[-1]
 
@@ -112,6 +116,8 @@ def test_notify_openclaw_system_event_uses_host_home_for_openclaw_cli(
 ) -> None:
     card = tmp_path / "card.md"
     card.write_text("card", encoding="utf-8")
+    openclaw = tmp_path / "openclaw"
+    openclaw.write_text("#!/bin/sh\n", encoding="utf-8")
     captured: dict[str, object] = {}
 
     def fake_run(command, text, capture_output, timeout, env):
@@ -123,7 +129,7 @@ def test_notify_openclaw_system_event_uses_host_home_for_openclaw_cli(
 
     result = notify_openclaw_system_event(
         env=_event_env(card),
-        openclaw_bin="/bin/openclaw",
+        openclaw_bin=str(openclaw),
     )
 
     assert result.delivered is True
@@ -131,6 +137,87 @@ def test_notify_openclaw_system_event_uses_host_home_for_openclaw_cli(
     assert captured["env"]["HOME"] == str(tmp_path)  # type: ignore[index]
     assert captured["env"]["AGENT_DOCTOR_HOST_HOME"] == str(tmp_path)  # type: ignore[index]
     assert captured["env"]["AGENT_DOCTOR_EVENT_ID"] == "evt-1"  # type: ignore[index]
+    assert "/opt/homebrew/bin" in captured["env"]["PATH"]  # type: ignore[index]
+
+
+def test_openclaw_subprocess_env_loads_host_provider_keys_for_launchd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    dotenv = tmp_path / ".openclaw" / ".env"
+    dotenv.parent.mkdir()
+    dotenv.write_text(
+        "\n".join(
+            [
+                "GEMINI_API_KEY=gemini-from-dotenv",
+                "OPENROUTER_API_KEY='router-from-dotenv'",
+                "UNRELATED_SECRET=do-not-load",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    env = _openclaw_subprocess_env(
+        {
+            "AGENT_DOCTOR_HOST_HOME": str(tmp_path),
+            "PATH": "/usr/bin:/bin",
+        }
+    )
+
+    assert env["HOME"] == str(tmp_path)
+    assert env["GEMINI_API_KEY"] == "gemini-from-dotenv"
+    assert env["OPENROUTER_API_KEY"] == "router-from-dotenv"
+    assert "UNRELATED_SECRET" not in env
+
+
+def test_openclaw_subprocess_env_keeps_existing_provider_keys(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    dotenv = tmp_path / ".openclaw" / ".env"
+    dotenv.parent.mkdir()
+    dotenv.write_text("GEMINI_API_KEY=dotenv-value\n", encoding="utf-8")
+
+    env = _openclaw_subprocess_env(
+        {
+            "AGENT_DOCTOR_HOST_HOME": str(tmp_path),
+            "GEMINI_API_KEY": "existing-value",
+        }
+    )
+
+    assert env["GEMINI_API_KEY"] == "existing-value"
+
+
+def test_notify_openclaw_system_event_derives_host_home_from_sandbox_home(
+    tmp_path: Path, monkeypatch
+) -> None:
+    card = tmp_path / "card.md"
+    card.write_text("card", encoding="utf-8")
+    openclaw = tmp_path / "openclaw"
+    openclaw.write_text("#!/bin/sh\n", encoding="utf-8")
+    sandbox_home = tmp_path / ".openclaw" / "agents" / "main" / "agent" / "codex-home" / "home"
+    sandbox_home.mkdir(parents=True)
+    captured: dict[str, object] = {}
+
+    def fake_run(command, text, capture_output, timeout, env):
+        captured["env"] = env
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setenv("HOME", str(sandbox_home))
+    monkeypatch.delenv("AGENT_DOCTOR_HOST_HOME", raising=False)
+    monkeypatch.setattr("agent_doctor.delivery.subprocess.run", fake_run)
+
+    env = _event_env(card)
+    env.pop("AGENT_DOCTOR_HOST_HOME")
+    env["HOME"] = str(sandbox_home)
+    notify_openclaw_system_event(
+        env=env,
+        openclaw_bin=str(openclaw),
+    )
+
+    expected_home = Path(*sandbox_home.parts[: sandbox_home.parts.index(".openclaw")])
+    assert captured["env"]["HOME"] == str(expected_home)  # type: ignore[index]
+    assert captured["env"]["AGENT_DOCTOR_HOST_HOME"] == str(expected_home)  # type: ignore[index]
 
 
 def test_notify_openclaw_system_event_incorporates_custom_process_env(
@@ -138,6 +225,8 @@ def test_notify_openclaw_system_event_incorporates_custom_process_env(
 ) -> None:
     card = tmp_path / "card.md"
     card.write_text("card", encoding="utf-8")
+    openclaw = tmp_path / "openclaw"
+    openclaw.write_text("#!/bin/sh\n", encoding="utf-8")
     captured: dict[str, object] = {}
 
     def fake_run(command, text, capture_output, timeout, env):
@@ -148,10 +237,11 @@ def test_notify_openclaw_system_event_incorporates_custom_process_env(
 
     notify_openclaw_system_event(
         env=_event_env(card) | {"PATH": "/custom/bin"},
-        openclaw_bin="/bin/openclaw",
+        openclaw_bin=str(openclaw),
     )
 
-    assert captured["env"]["PATH"] == "/custom/bin"  # type: ignore[index]
+    assert captured["env"]["PATH"].endswith("/custom/bin")  # type: ignore[index]
+    assert "/opt/homebrew/bin" in captured["env"]["PATH"]  # type: ignore[index]
 
 
 def test_notify_openclaw_system_event_reports_missing_openclaw_binary(
@@ -176,6 +266,8 @@ def test_notify_openclaw_system_event_reports_missing_openclaw_binary(
 def test_notify_openclaw_system_event_reports_timeout(tmp_path: Path, monkeypatch) -> None:
     card = tmp_path / "card.md"
     card.write_text("card", encoding="utf-8")
+    openclaw = tmp_path / "openclaw"
+    openclaw.write_text("#!/bin/sh\n", encoding="utf-8")
 
     def fake_run(command, text, capture_output, timeout, env):
         raise subprocess.TimeoutExpired(command, timeout)
@@ -183,7 +275,7 @@ def test_notify_openclaw_system_event_reports_timeout(tmp_path: Path, monkeypatc
     monkeypatch.setattr("agent_doctor.delivery.subprocess.run", fake_run)
 
     try:
-        notify_openclaw_system_event(env=_event_env(card), openclaw_bin="/bin/openclaw")
+        notify_openclaw_system_event(env=_event_env(card), openclaw_bin=str(openclaw))
     except RuntimeError as exc:
         assert "timed out" in str(exc)
     else:  # pragma: no cover
@@ -193,6 +285,8 @@ def test_notify_openclaw_system_event_reports_timeout(tmp_path: Path, monkeypatc
 def test_cli_notify_openclaw_system_event_dry_run(tmp_path: Path) -> None:
     card = tmp_path / "card.md"
     card.write_text("card", encoding="utf-8")
+    openclaw = tmp_path / "openclaw"
+    openclaw.write_text("#!/bin/sh\n", encoding="utf-8")
     env = os.environ.copy() | _event_env(card)
 
     result = subprocess.run(
@@ -203,7 +297,7 @@ def test_cli_notify_openclaw_system_event_dry_run(tmp_path: Path) -> None:
             "notify",
             "openclaw-system-event",
             "--openclaw-bin",
-            "/bin/openclaw",
+            str(openclaw),
             "--dry-run",
         ],
         check=True,
@@ -215,7 +309,7 @@ def test_cli_notify_openclaw_system_event_dry_run(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["skipped"] is False
     assert payload["delivered"] is False
-    assert payload["command"][:3] == ["/bin/openclaw", "system", "event"]
+    assert payload["command"][:3] == [str(openclaw), "system", "event"]
 
 
 def test_cli_notify_openclaw_system_event_missing_binary_has_clean_error(
@@ -243,3 +337,57 @@ def test_cli_notify_openclaw_system_event_missing_binary_has_clean_error(
     assert result.returncode == 1
     assert "agent-doctor: error: openclaw binary not found" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_resolve_openclaw_binary_uses_host_paths_when_launchd_path_is_minimal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fake_openclaw = tmp_path / "openclaw"
+    fake_openclaw.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr("agent_doctor.delivery.HOST_BIN_DIRS", (str(tmp_path),))
+
+    resolved = resolve_openclaw_binary(
+        "openclaw",
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+    )
+
+    assert resolved == str(fake_openclaw)
+
+
+def test_notify_openclaw_system_event_works_under_launchd_minimal_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Integration test reproducing the original launchd failure mode.
+
+    With launchd's default PATH (/usr/bin:/bin:/usr/sbin:/sbin), bare
+    'openclaw' is not findable. Before resolve_openclaw_binary, this
+    failed with FileNotFoundError -> RuntimeError -> exit 1. After the
+    fix, HOST_BIN_DIRS resolves the binary even with a stripped PATH.
+    """
+    fake_openclaw = tmp_path / "openclaw"
+    fake_openclaw.write_text(
+        "#!/bin/sh\necho ok\nexit 0\n",
+        encoding="utf-8",
+    )
+    fake_openclaw.chmod(0o755)
+    monkeypatch.setattr(
+        "agent_doctor.delivery.HOST_BIN_DIRS",
+        (str(tmp_path),),
+    )
+
+    card = tmp_path / "card.md"
+    card.write_text("card body", encoding="utf-8")
+
+    env = _event_env(card) | {
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    }
+
+    result = notify_openclaw_system_event(env=env)
+
+    assert result.delivered is True, (
+        f"expected delivery, got skipped={result.skipped} stderr={result.stderr!r}"
+    )
+    assert result.command[0] == str(fake_openclaw), (
+        "openclaw should be resolved to absolute path even with minimal PATH"
+    )
+    assert "ok" in result.stdout

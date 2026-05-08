@@ -27,6 +27,7 @@ from .ingest import (
     DEFAULT_HERMES_PATH,
     DEFAULT_OPENCLAW_PATH,
     collect_jsonl_paths,
+    ingest_file_range_with_errors,
     ingest_path_with_errors,
 )
 from .redaction import redact_text, redact_value
@@ -74,11 +75,21 @@ class AutopilotResult:
     events: list[AutopilotEvent]
     suppressed: int = 0
     delivery_errors: list[str] | None = None
+    pet_state: str = "idle"
+    pet_status_path: str | None = None
+    pet_card_path: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
         data["events"] = [event.to_dict() for event in self.events]
         return data
+
+
+@dataclass(frozen=True)
+class JsonlChange:
+    path: Path
+    start_byte: int = 0
+    line_offset: int = 0
 
 
 def default_transcript_path(platform: Platform) -> Path:
@@ -99,6 +110,8 @@ def run_autopilot_once(
     min_severity: Severity = "medium",
     notify_command: str | None = None,
     inbox_dir: Path | None = None,
+    pet_out_dir: Path | None = None,
+    dispatch_adapter: bool = False,
     changed_only: bool = False,
 ) -> AutopilotResult:
     input_path = path or default_transcript_path(platform)
@@ -106,14 +119,27 @@ def run_autopilot_once(
     out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     state = AutopilotState(state_path or out_dir / "state.sqlite3")
     changed_paths: list[Path] | None = None
+    snapshot_paths: list[Path] | None = None
     try:
         if changed_only:
-            changed_paths = state.changed_jsonl_paths(input_path)
-            messages, parse_errors = _ingest_paths(changed_paths)
+            first_platform_scan = (
+                platform in {"openclaw", "hermes"}
+                and input_path.expanduser().is_dir()
+                and not state.has_file_snapshots()
+            )
+            if first_platform_scan:
+                changed_paths = state.changed_jsonl_paths(input_path)
+                snapshot_paths = changed_paths
+                changed_paths = _latest_session_paths(changed_paths)
+                messages, parse_errors = _ingest_paths(changed_paths)
+            else:
+                changes = state.changed_jsonl_changes(input_path)
+                changed_paths = [change.path for change in changes]
+                messages, parse_errors = _ingest_changes(changes)
         else:
             messages, parse_errors = ingest_path_with_errors(input_path)
             changed_paths = collect_jsonl_paths(input_path)
-        state.record_file_snapshots(changed_paths)
+        state.record_file_snapshots(snapshot_paths or changed_paths)
     except Exception:
         state.close()
         raise
@@ -127,6 +153,8 @@ def run_autopilot_once(
 
     emitted: list[AutopilotEvent] = []
     delivery_errors: list[str] = []
+    dismissed_event_ids: set[str] = set()
+    dismissed_finding_ids: set[str] = set()
     suppressed = 0
     try:
         for event in candidates:
@@ -136,17 +164,74 @@ def run_autopilot_once(
                 write_regression_eval(out_dir / "regressions", event)
                 if inbox_dir is not None:
                     write_inbox_advisory(inbox_dir, event)
+                delivered = True
                 if notify_command:
                     error = run_notify_command(notify_command, event)
                     if error:
+                        delivered = False
                         delivery_errors.append(error)
                         append_delivery_error(out_dir / "delivery-errors.jsonl", event, error)
-                state.record(event)
+                if dispatch_adapter:
+                    adapter_error = _dispatch_via_adapter(event, platform=platform)
+                    if adapter_error:
+                        # Adapter-side errors don't block delivered status: legacy notify_command
+                        # is the gate. Adapter dispatch is best-effort additive.
+                        delivery_errors.append(adapter_error)
+                        append_delivery_error(out_dir / "delivery-errors.jsonl", event, adapter_error)
+                if delivered:
+                    state.record(event)
                 emitted.append(event)
             else:
+                if state.is_dismissed(event):
+                    dismissed_event_ids.add(event.id)
+                    dismissed_finding_ids.update(event.finding_ids)
                 suppressed += 1
     finally:
         state.close()
+
+    pet_status_path: str | None = None
+    pet_card_path: str | None = None
+    pet_state = "idle"
+    try:
+        from .pet import build_pet_status, write_pet_artifacts
+
+        event_overrides = {event.id: event for event in emitted}
+        pet_events = [
+            event_overrides.get(event.id, event)
+            for event in candidates
+            if event.id not in dismissed_event_ids
+        ]
+        visible_findings = [
+            finding for finding in findings if finding.id not in dismissed_finding_ids
+        ]
+        pet_status = build_pet_status(
+            messages,
+            visible_findings,
+            platform=platform,
+            events=pet_events,
+            parse_errors=parse_errors,
+        )
+        pet_status = replace(pet_status, dismiss_state_path=str(state.path))
+        preserve_dir = pet_out_dir.expanduser() if pet_out_dir is not None else out_dir
+        preserved = _preserved_active_pet_paths(preserve_dir, pet_status, messages)
+        if preserved is not None:
+            pet_state = preserved["state"]
+            pet_status_path = str(preserved["status"])
+            pet_card_path = str(preserved["card"])
+        else:
+            pet_paths = write_pet_artifacts(out_dir, pet_status)
+            if pet_out_dir is not None and pet_out_dir.expanduser() != out_dir:
+                write_pet_artifacts(pet_out_dir, pet_status)
+            pet_state = pet_status.state
+            pet_status_path = str(pet_paths["status"])
+            pet_card_path = str(pet_paths["card"])
+    except OSError as exc:
+        delivery_errors.append(f"pet_status_write_failed: {exc}")
+
+    # v1 boundary: the desktop Doctor/pet can tell the current OpenClaw agent
+    # how to recover, but Agent Doctor must not auto-apply config/SOP/memory or
+    # run reaction-approval loops from autopilot. Durable changes remain
+    # reviewable via explicit scan/apply flows.
 
     return AutopilotResult(
         platform=platform,
@@ -159,6 +244,9 @@ def run_autopilot_once(
         events=emitted,
         suppressed=suppressed,
         delivery_errors=delivery_errors,
+        pet_state=pet_state,
+        pet_status_path=pet_status_path,
+        pet_card_path=pet_card_path,
     )
 
 
@@ -183,6 +271,35 @@ def baseline_autopilot_state(
     return len(paths)
 
 
+def _preserved_active_pet_paths(
+    out_dir: Path,
+    next_status,
+    messages: list[Message],
+) -> dict[str, object] | None:
+    """Keep a live pet intervention visible across empty changed-only polls.
+
+    The watch loop often sees an incident on one cycle, then zero new JSONL
+    lines two seconds later. That empty cycle should not immediately overwrite
+    an active desktop Doctor card with idle; the desktop surface already has an
+    expiry window for live incidents.
+    """
+
+    if messages or next_status.state != "idle":
+        return None
+    status_path = out_dir.expanduser() / "pet-status.json"
+    card_path = out_dir.expanduser() / "pet-card.md"
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        state = str(payload.get("state", "idle"))
+        expires_after = float(payload.get("expires_after_seconds", 0) or 0)
+        age = time.time() - status_path.stat().st_mtime
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if state == "idle" or expires_after <= 0 or age >= expires_after:
+        return None
+    return {"state": state, "status": status_path, "card": card_path}
+
+
 def _ingest_paths(paths: list[Path]) -> tuple[list[Message], int]:
     messages: list[Message] = []
     parse_errors = 0
@@ -191,6 +308,26 @@ def _ingest_paths(paths: list[Path]) -> tuple[list[Message], int]:
         messages.extend(file_messages)
         parse_errors += file_errors
     return messages, parse_errors
+
+
+def _ingest_changes(changes: list[JsonlChange]) -> tuple[list[Message], int]:
+    messages: list[Message] = []
+    parse_errors = 0
+    for change in changes:
+        file_messages, file_errors = ingest_file_range_with_errors(
+            change.path,
+            start_byte=change.start_byte,
+            line_offset=change.line_offset,
+        )
+        messages.extend(file_messages)
+        parse_errors += file_errors
+    return messages, parse_errors
+
+
+def _latest_session_paths(paths: list[Path], *, limit: int = 3) -> list[Path]:
+    ordinary = [path for path in paths if not path.name.endswith(".trajectory.jsonl")]
+    selected = ordinary or paths
+    return sorted(selected, key=lambda path: path.stat().st_mtime_ns, reverse=True)[:limit]
 
 
 def detect_autopilot_events(
@@ -348,7 +485,7 @@ def write_diagnosis_card(
         "",
         "## Evidence",
         "",
-        f"> {redact_text(event.evidence).strip()}",
+        f"> {_card_evidence(event)}",
         "",
         "## Recommended Action",
         "",
@@ -367,6 +504,39 @@ def write_diagnosis_card(
     latest_path = out_dir / "latest.md"
     _write_private_text(latest_path, "\n".join(lines))
     return replace(event, card_path=str(card_path))
+
+
+def _card_evidence(event: AutopilotEvent) -> str:
+    evidence = event.evidence.strip()
+    try:
+        payload = json.loads(evidence)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        content_items = payload.get("contentItems")
+        if isinstance(content_items, list):
+            parts = [
+                str(item.get("text") or item.get("content") or "").strip()
+                for item in content_items
+                if isinstance(item, dict)
+            ]
+            evidence = "\n".join(part for part in parts if part) or evidence
+        else:
+            for key in ("text", "content", "message", "error", "detail"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    evidence = value.strip()
+                    break
+    evidence = re.sub(
+        r"(Conversation info|Sender) \(untrusted metadata\):\s*```json.*?```\s*",
+        "",
+        evidence,
+        flags=re.S,
+    )
+    evidence = re.sub(r"\s+", " ", evidence).strip()
+    if evidence.startswith("{") and evidence.endswith("}"):
+        evidence = "Structured tool output was omitted from the user-facing card."
+    return redact_text(evidence)[:1200]
 
 
 def _intervention_instruction_lines(event: AutopilotEvent) -> list[str]:
@@ -477,10 +647,187 @@ def run_notify_command(command: str, event: AutopilotEvent) -> str | None:
         }
     )
     try:
-        subprocess.run(args, check=True, text=True, capture_output=True, timeout=15, env=env)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return str(exc)
+        completed = subprocess.run(
+            args,
+            check=False,  # we want to inspect the result, not raise
+            text=True,
+            capture_output=True,
+            timeout=15,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return f"timeout after {exc.timeout}s: {' '.join(args)}"
+    except OSError as exc:
+        return f"could not start notify command {args!r}: {exc}"
+    if completed.returncode != 0:
+        stderr_tail = completed.stderr.strip() if completed.stderr else ""
+        stdout_tail = completed.stdout.strip() if completed.stdout else ""
+        parts = [f"rc={completed.returncode}"]
+        if stderr_tail:
+            parts.append(f"stderr={stderr_tail!r}")
+        if stdout_tail:
+            parts.append(f"stdout={stdout_tail!r}")
+        return " ".join(parts)
     return None
+
+
+def dispatch_event(
+    event: AutopilotEvent,
+    adapter,  # HostAdapter; not type-hinted to avoid circular import
+    *,
+    target_resolver=None,
+) -> str | None:
+    """Adapter-driven event delivery. Parallel to run_notify_command.
+
+    Phase 1 introduces this so Phase 3 has a foundation; the existing
+    --notify-command path remains for backward compatibility.
+
+    Returns None on success, an error string on failure.
+    """
+    from .adapters import MessageBody, MessageKind, Target  # late import to avoid circular
+
+    caps = adapter.capabilities()
+    kind = MessageKind.intervene  # phase 1: only intervene events
+
+    if target_resolver is not None:
+        target = target_resolver(event)
+    else:
+        # Default: inbox fallback under the agent-doctor output for this host
+        inbox_path = (
+            Path("~/.agent-doctor").expanduser()
+            / caps.host_name
+            / "inbox"
+            / f"{event.session_id}.md"
+        )
+        target = Target(
+            host=caps.host_name,
+            channel="inbox",
+            recipient="",
+            inbox_path=inbox_path,
+        )
+
+    summary = event.summary or (event.evidence[:400] if event.evidence else "")
+    body = MessageBody(
+        header=f"🩺 Agent Doctor — {event.trigger}",
+        body=summary if summary else "(no summary)",
+        footer=f"Card: {event.card_path or 'n/a'}",
+    )
+    try:
+        adapter.send_message(target, body, kind)
+    except (NotImplementedError, RuntimeError) as exc:
+        return f"adapter_error: {exc}"
+    return None
+
+
+def _dispatch_via_adapter(event: AutopilotEvent, *, platform: Platform) -> str | None:
+    """Try to deliver the event through the host adapter's send_message.
+
+    Best-effort: returns an error string on failure (logged to
+    delivery-errors.jsonl) but never raises. Phase 3 of the redesign
+    introduces this; the legacy --notify-command path is unchanged.
+    """
+    try:
+        from .adapters import GenericAdapter, HermesAdapter, MessageKind, OpenClawAdapter
+        from .channel_router import resolve
+        from .speaker import render_intervene
+    except ImportError as exc:
+        return f"adapter_dispatch_import_failed: {exc}"
+
+    adapter_classes = {
+        "openclaw": OpenClawAdapter,
+        "hermes": HermesAdapter,
+        "generic": GenericAdapter,
+    }
+    cls = adapter_classes.get(platform, GenericAdapter)
+    instance = cls.detect()
+    if instance is None:
+        instance = GenericAdapter()  # always-available fallback
+
+    try:
+        target, language = resolve(Path(event.message_file), instance)
+    except Exception as exc:
+        return f"channel_router_failed: {exc}"
+
+    body = render_intervene(event, language=language)
+    try:
+        instance.send_message(target, body, MessageKind.intervene)
+    except (NotImplementedError, RuntimeError) as exc:
+        return f"adapter_dispatch_failed: {exc}"
+    return None
+
+
+def _apply_and_log(proposal, adapter, out_dir) -> bool:
+    """Apply a proposal and log the result to patch-log.jsonl on success.
+
+    Returns True iff state == 'applied'.
+    """
+    from .applier import apply_proposal as _apply
+    result = _apply(proposal, adapter)
+    if result.state == "applied":
+        _append_patch_log(result, proposal)
+        return True
+    return False
+
+
+def _append_patch_log(applied_patch, proposal) -> None:
+    """Append a row to ~/.agent-doctor/patch-log.jsonl describing this apply."""
+    log_path = Path("~/.agent-doctor").expanduser() / "patch-log.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    payload = {
+        "id": applied_patch.patch_id,
+        "target_file": str(applied_patch.target_file),
+        "backup_path": str(applied_patch.backup_path) if applied_patch.backup_path else None,
+        "applied_at": time.time(),
+        "session_id": proposal.session_id,
+        "target_kind": proposal.target_kind,
+        "undo_command": f"agent-doctor undo {applied_patch.patch_id}",
+    }
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        with os.fdopen(fd, "a", encoding="utf-8") as h:
+            h.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    finally:
+        os.chmod(log_path, 0o600)
+
+
+def _persist_proposal_transitions(path: Path, transitions) -> None:
+    """Rewrite proposals.jsonl with new states from transitions."""
+    from .proposer import load_proposals
+    from dataclasses import replace as _dc_replace
+
+    by_id = {t.proposal_id: t for t in transitions}
+    proposals = load_proposals(path)
+    new_lines: list[str] = []
+    for p in proposals:
+        if p.id in by_id:
+            t = by_id[p.id]
+            p = _dc_replace(p, state=t.new_state, resolved_at=time.time())
+        new_lines.append(json.dumps(p.to_dict(), ensure_ascii=False))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as h:
+            h.write("\n".join(new_lines) + ("\n" if new_lines else ""))
+    finally:
+        os.chmod(path, 0o600)
+
+
+def _replace_proposals_with_redrafts(path: Path, redrafts) -> None:
+    """Replace each redrafted proposal in proposals.jsonl by id."""
+    from .proposer import load_proposals
+
+    redraft_by_id = {p.id: p for p in redrafts}
+    proposals = load_proposals(path)
+    new_lines: list[str] = []
+    for p in proposals:
+        if p.id in redraft_by_id:
+            p = redraft_by_id[p.id]
+        new_lines.append(json.dumps(p.to_dict(), ensure_ascii=False))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as h:
+            h.write("\n".join(new_lines) + ("\n" if new_lines else ""))
+    finally:
+        os.chmod(path, 0o600)
 
 
 REGRESSION_ELIGIBLE_TRIGGERS: frozenset[str] = frozenset(
@@ -565,6 +912,16 @@ class AutopilotState:
         )
         self.connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS dismissed_events (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              trigger TEXT NOT NULL,
+              dismissed_at REAL NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS seen_files (
               path TEXT PRIMARY KEY,
               mtime_ns INTEGER NOT NULL,
@@ -584,6 +941,8 @@ class AutopilotState:
             pass
 
     def should_emit(self, event: AutopilotEvent, *, cooldown_seconds: int) -> bool:
+        if self.is_dismissed(event):
+            return False
         row = self.connection.execute(
             "SELECT emitted_at FROM emitted_events WHERE id = ?", (event.id,)
         ).fetchone()
@@ -601,6 +960,12 @@ class AutopilotState:
             return True
         return (time.time() - float(row[0])) >= cooldown_seconds
 
+    def is_dismissed(self, event: AutopilotEvent) -> bool:
+        row = self.connection.execute(
+            "SELECT dismissed_at FROM dismissed_events WHERE id = ?", (event.id,)
+        ).fetchone()
+        return row is not None
+
     def record(self, event: AutopilotEvent) -> None:
         self.connection.execute(
             """
@@ -608,6 +973,22 @@ class AutopilotState:
             VALUES (?, ?, ?, ?)
             """,
             (event.id, event.session_id, event.trigger, time.time()),
+        )
+        self.connection.commit()
+
+    def dismiss(self, event_id: str, session_id: str, trigger: str) -> None:
+        if not event_id:
+            return
+        self.connection.execute(
+            """
+            INSERT INTO dismissed_events(id, session_id, trigger, dismissed_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              session_id = excluded.session_id,
+              trigger = excluded.trigger,
+              dismissed_at = excluded.dismissed_at
+            """,
+            (event_id, session_id, trigger, time.time()),
         )
         self.connection.commit()
 
@@ -622,6 +1003,37 @@ class AutopilotState:
             if row is None or int(row[0]) != stat_result.st_mtime_ns or int(row[1]) != stat_result.st_size:
                 changed.append(path)
         return changed
+
+    def changed_jsonl_changes(self, root: Path) -> list[JsonlChange]:
+        paths = collect_jsonl_paths(root)
+        changes: list[JsonlChange] = []
+        for path in paths:
+            stat_result = path.stat()
+            row = self.connection.execute(
+                "SELECT mtime_ns, size FROM seen_files WHERE path = ?", (str(path),)
+            ).fetchone()
+            if row is None:
+                changes.append(JsonlChange(path=path))
+                continue
+            old_mtime_ns, old_size = int(row[0]), int(row[1])
+            if old_mtime_ns == stat_result.st_mtime_ns and old_size == stat_result.st_size:
+                continue
+            if stat_result.st_size <= old_size:
+                # Rotation/truncation/rewrite: rescan the new file content.
+                changes.append(JsonlChange(path=path))
+                continue
+            changes.append(
+                JsonlChange(
+                    path=path,
+                    start_byte=old_size,
+                    line_offset=_count_lines_before_byte(path, old_size),
+                )
+            )
+        return changes
+
+    def has_file_snapshots(self) -> bool:
+        row = self.connection.execute("SELECT 1 FROM seen_files LIMIT 1").fetchone()
+        return row is not None
 
     def record_file_snapshots(self, paths: list[Path]) -> None:
         for path in paths:
@@ -640,6 +1052,21 @@ class AutopilotState:
 
     def close(self) -> None:
         self.connection.close()
+
+
+def _count_lines_before_byte(path: Path, byte_offset: int) -> int:
+    if byte_offset <= 0:
+        return 0
+    count = 0
+    remaining = byte_offset
+    with path.open("rb") as handle:
+        while remaining > 0:
+            chunk = handle.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            count += chunk.count(b"\n")
+            remaining -= len(chunk)
+    return count
 
 
 def _build_event(

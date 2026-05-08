@@ -11,9 +11,11 @@ Agent Doctor is CLI-first with an optional MCP stdio server in front. The trust 
 - `scan` — ingest JSONL transcripts, detect findings, write reports. On first use (no SKILL.md installed in any detected host), prints a one-line hint to stderr suggesting `agent-doctor bootstrap --invalidate-cache`.
 - `apply` — read `findings.json`, stage reviewable patches into a directory plus a unified diff against an optional `--target`. Live config is never modified.
 - `eval` — sub-command group: `generate`, `bench`, `replay` for the LLM-first eval framework (see `docs/evaluation.md`).
+- `pet` — render the Agent Doctor state for a transcript or current user message. Optional `--out` writes `pet-status.json` and `pet-card.md` for desktop/widget shells.
+- `pet-display` — open the always-on-top desktop Agent Doctor window by watching a `pet-status.json` file. This lazy-imports Tkinter / AppKit and is isolated from the headless production path.
 - `autopilot` — run the platform-agnostic sidecar trigger engine. It reads host transcripts through adapters, keeps local SQLite state for de-duplication/cooldown, and writes diagnosis cards/events under `--out`.
-- `setup autopilot` — opinionated agent-managed installation: detect OpenClaw/Hermes, bootstrap skills, baseline existing transcripts, write launchd/systemd user services, and start the sidecar with safe defaults.
-- `notify openclaw-system-event` — host-native delivery adapter for OpenClaw. It reads `AGENT_DOCTOR_*` metadata from autopilot's notify hook and enqueues an `openclaw system event` for live intervention cards.
+- `setup autopilot` — opinionated agent-managed installation: detect OpenClaw/Hermes, bootstrap skills, baseline existing transcripts, write launchd/systemd sidecar services, install the desktop Agent Doctor service, and start them with safe defaults.
+- `notify openclaw-system-event` — legacy explicit delivery adapter for OpenClaw. It reads `AGENT_DOCTOR_*` metadata from autopilot's notify hook and enqueues an `openclaw system event` only when the caller opts into that hook.
 - `bootstrap` — auto-detect `~/.hermes`, `~/.openclaw`, `~/.claude/skills` and write the unified `SKILL.md` into each host's correct skill location. `--invalidate-cache` best-effort signals each host to rebuild its skill prompt on next start (removes Hermes's `.skills_prompt_snapshot.json`, bumps Claude Code's `skills/` mtime). `--dry-run` previews; `--force` installs into hosts whose home dir doesn't exist.
 - `install-skill` — write a single skill file by hand (`--target hermes|openclaw|claude-code|generic`).
 - `doctor` — print environment, version, default paths, and privacy info.
@@ -21,6 +23,51 @@ Agent Doctor is CLI-first with an optional MCP stdio server in front. The trust 
 - `mcp serve` — run the stdio MCP server (requires the `[mcp]` extra).
 
 The console script is `agent-doctor`; the same commands run via `python3 -m agent_doctor.cli`.
+
+### Agent Doctor Desktop
+
+`agent_doctor.pet` is the product-facing state adapter above the deterministic
+detection/autopilot layer. It does not introduce new detection rules. Instead,
+it consumes normalized `Message` objects plus `Finding` / `AutopilotEvent`
+outputs and returns an immutable `PetStatus`:
+
+- persona: currently `doctor`.
+- state: `idle`, `watching`, `concerned`, or `intervening`.
+- action: `silent`, `notify`, or `intervene`.
+- redacted evidence and stable action options such as `pause_and_diagnose`,
+  `stage_fix`, and `keep_watching`.
+
+There are two entry paths:
+
+```bash
+agent-doctor pet --message "<current user message>"
+agent-doctor pet --path ./sessions --out ./doctor-pet
+agent-doctor pet-display --status-file ./doctor-pet/pet-status.json
+```
+
+The first path is manual summon for an active turn; it creates one synthetic
+local `Message` and runs the same deterministic detectors. The second path
+reads transcripts through normal ingestion and picks the highest-priority
+autopilot event or finding. Optional artifacts are written only under `--out`
+as `pet-status.json` and `pet-card.md` with `0o600` permissions. This lets a
+future desktop widget render Agent Doctor without linking to the detection core or
+watching live host runtime state.
+
+Autopilot writes the same `pet-status.json` / `pet-card.md` pair by default on
+every sidecar pass. When setup installs the desktop service, sidecars also write
+a shared Agent Doctor status under `~/.agent-doctor/pet`. That is the always-display
+contract: Agent Doctor is the default user-facing surface, while sidecars remain
+headless sensors. The display reads a packaged transparent PNG doctor sprite
+when available, falls back to code-drawn shapes, applies local state-specific
+effects, and opens one click panel for status and actions. Healthy idle status
+is passive and carries no setup/start action; host service setup belongs to
+`setup autopilot`, not to the desktop window itself. The same click panel owns
+active user controls. For actionable incidents the only v1 controls are Tell Current Agent and Dismiss.
+Transcript-backed OpenClaw incidents can be routed back through Tell Current Agent,
+which injects the structured intervention payload into the current OpenClaw
+system-event stream when routable. Manual incidents and unroutable sessions show
+a visible degraded/failure state. Hermes delivery, channel-native delivery,
+reaction approval, dashboards, mobile clients, and auto-apply are out of v1.
 
 ### Autopilot Sidecar
 
@@ -36,8 +83,9 @@ changes. The connection to host platforms is adapter-based:
   (or caller-provided `--state`) for event fingerprints, per-session cooldowns,
   and de-duplication.
 - **Write side:** emit `events.jsonl`, `latest.md`, and one short diagnosis
-  card per event under `cards/`. These are intervention artifacts, not live
-  config changes.
+  card per event under `cards/`. It also refreshes host-local and optional
+  shared `pet-status.json` / `pet-card.md` so Agent Doctor can remain visible even
+  when idle. These are intervention/display artifacts, not live config changes.
 
 Current triggers are intentionally deterministic and local:
 
@@ -55,13 +103,15 @@ Current triggers are intentionally deterministic and local:
 High-severity `user_frustration_signal` events are emitted with action
 `intervene`, not just `notify`. The card instructs the host agent to pause the
 normal success path, name the concrete quality failure, cite evidence, and
-provide the next corrective action.
+provide the next corrective action. Agent Doctor renders the same event as an
+`intervening` state so the product can show a visible small-doctor presence
+instead of sending OS notifications or injecting host messages.
 
 Run modes:
 
 ```bash
 agent-doctor autopilot --platform openclaw --out ~/.agent-doctor/openclaw
-agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes --watch --interval 15
+agent-doctor autopilot --platform hermes --out ~/.agent-doctor/hermes --watch --interval 2
 agent-doctor service install --platform openclaw --out ~/.agent-doctor/openclaw --start
 ```
 
@@ -76,6 +126,13 @@ files, preventing the daemon from reprocessing the full session history on
 every poll. One-shot invocations or watch mode restarts can opt into the same
 behavior with `--changed-only`.
 
+The short default interval is intentional for the desktop product: the Doctor
+pet should react while the user is still in the OpenClaw recovery moment, not
+minutes later. The cost is bounded because the daemon polls file metadata and
+changed JSONL tails, while the pet polls only its generated status file. A
+future host-level file event stream should replace this polling loop when
+OpenClaw exposes one.
+
 `agent_doctor.service` writes the user-service wrapper:
 
 - macOS: `~/Library/LaunchAgents/com.agentdoctor.<platform>.plist`.
@@ -89,34 +146,37 @@ file for review.
 Before starting, service installation records the current JSONL file snapshots
 in the sidecar SQLite state and adds `--changed-only` to the generated service
 command by default. This baselines historical transcripts and prevents a new
-daemon from emitting old findings into the user inbox. `--no-baseline-existing`
+daemon from surfacing old findings through Agent Doctor. `--no-baseline-existing`
 disables that behavior for deliberate backfills.
 
-Delivery stays adapter-free and host-runtime-free:
+Default delivery is adapter-free and host-runtime-free: sidecars write local
+cards/events plus desktop status, and Agent Doctor is the user-facing surface.
+Legacy delivery hooks remain explicit opt-ins:
 
 - `--inbox-dir` writes per-session advisory Markdown files.
 - `--notify-command` invokes a local command with `AGENT_DOCTOR_*` environment
   variables pointing at the event/card.
-- delivery failures are appended to `delivery-errors.jsonl` and do not stop
-  diagnosis.
+- delivery failures are appended to `delivery-errors.jsonl`, but failed
+  interventions are not recorded as handled in SQLite. The next watch pass can
+  retry them instead of losing the recovery moment behind cooldown state.
 
-OpenClaw has one built-in delivery adapter:
+OpenClaw has one built-in legacy delivery adapter:
 
 ```bash
 agent-doctor notify openclaw-system-event
 ```
 
 It runs as a notify command, reads the emitted card path from
-`AGENT_DOCTOR_CARD`, skips non-`intervene` events by default, and calls the
-public OpenClaw CLI:
+`AGENT_DOCTOR_CARD`, skips non-`intervene` events by default, resolves OpenClaw
+from host command locations such as `/opt/homebrew/bin` even under launchd's
+minimal PATH, and calls the public OpenClaw CLI:
 
 ```bash
 openclaw system event --mode now --text <intervention>
 ```
 
-This preserves the outside-in boundary: Agent Doctor does not edit OpenClaw
-runtime config or require hooks, but high-severity interventions are no longer
-left only in `latest.md` / inbox files.
+This preserves the outside-in boundary for callers that explicitly opt into
+host delivery. The default product path uses Agent Doctor instead.
 
 ### Agent-Managed Setup
 
@@ -138,8 +198,8 @@ manually:
    Agent Doctor skill.
 3. install one launchd/systemd user service per detected platform.
 4. baseline current JSONL transcript snapshots before start.
-5. for OpenClaw, set the default notify command to
-   `agent-doctor notify openclaw-system-event`.
+5. install the desktop Agent Doctor service against shared status at
+   `~/.agent-doctor/pet/pet-status.json`.
 6. start services by default with `--changed-only` enabled.
 
 This is deliberately a wrapper around existing public APIs (`bootstrap` and
@@ -250,6 +310,8 @@ Tools:
 | `bench` | corpus dir | `bench.json`, `bench.md` under `out_dir` |
 | `stage_patches` | `findings.json` (+ optional read-only `target_dir`) | `staging_dir` only |
 | `generate_corpus` | scenario cards | corpus under `out_dir` |
+| `doctor_pet_status` | JSONL transcripts or current message | optional `pet-status.json` / `pet-card.md` under `out_dir` |
+| `doctor_pet_intervene` | JSONL transcripts or current message | optional `pet-status.json` / `pet-card.md` under `out_dir` |
 
 Pure-Python tool handlers are testable without the SDK; the SDK glue (`build_server`, `serve`) lazy-imports `mcp`. Missing-extra path exits with a clean install hint, not a stacktrace. No tool calls a remote LLM — the LLM-augmented generator is a CLI-only path on purpose.
 
@@ -286,15 +348,19 @@ scenario cards
   → eval replay → before/after delta with patched agent
 
 Autopilot:
-
-```text
 OpenClaw/Hermes/generic transcript JSONL
   → adapter default path or --path
   → ingest + deterministic detectors
   → trigger engine + cooldown state
-  → events.jsonl + latest.md + cards/<event>.md
-  → user/session notification by the host's existing delivery mechanism
-```
+  → events.jsonl + latest.md + pet-status.json + pet-card.md + cards/<event>.md
+  → shared Agent Doctor status for the desktop surface
+
+Agent Doctor Desktop:
+current user message or transcript JSONL
+  → ingest/synthetic Message
+  → deterministic detectors + autopilot event selection
+  → PetStatus {state, action, evidence, options}
+  → CLI/MCP response or pet-status.json + pet-card.md under --out
 ```
 
 ## Trust Boundary

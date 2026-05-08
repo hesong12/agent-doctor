@@ -8,3 +8,4 @@ build/
 .coverage
 /agent-doctor-report/
 /uv.lock
+.gitnexus

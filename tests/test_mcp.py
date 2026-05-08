@@ -20,6 +20,8 @@ from agent_doctor.mcp import (
     find_tool,
     placeholder_payload,
     tool_bench,
+    tool_doctor_pet_intervene,
+    tool_doctor_pet_status,
     tool_generate_corpus,
     tool_list_findings,
     tool_read_finding,
@@ -56,7 +58,16 @@ def test_placeholder_payload_advertises_real_server() -> None:
     assert payload["transport"] == "stdio"
     assert payload["command"] == "agent-doctor mcp serve"
     tool_names = {tool["name"] for tool in payload["tools"]}
-    assert {"scan", "list_findings", "read_finding", "bench", "stage_patches", "generate_corpus"} <= tool_names
+    assert {
+        "scan",
+        "list_findings",
+        "read_finding",
+        "bench",
+        "stage_patches",
+        "generate_corpus",
+        "doctor_pet_status",
+        "doctor_pet_intervene",
+    } <= tool_names
 
 
 def test_tool_scan_writes_artifacts_and_returns_findings(tmp_path: Path) -> None:
@@ -199,6 +210,42 @@ def test_tool_bench_errors_for_missing_corpus(tmp_path: Path) -> None:
         tool_bench({"corpus_dir": str(tmp_path / "missing"), "out_dir": str(tmp_path / "bench")})
     )
     assert response["ok"] is False
+
+
+def test_tool_doctor_pet_status_from_message(tmp_path: Path) -> None:
+    response = _decode(
+        tool_doctor_pet_status(
+            {
+                "message": "Why are you so dumb?",
+                "session_id": "s-pet",
+                "out_dir": str(tmp_path / "pet"),
+            }
+        )
+    )
+
+    assert response["ok"] is True
+    status = response["status"]
+    assert status["state"] == "intervening"
+    assert status["action"] == "intervene"
+    assert status["session_id"] == "s-pet"
+    assert response["artifacts"]["status"].endswith("pet-status.json")
+    assert (tmp_path / "pet" / "pet-card.md").exists()
+
+
+def test_tool_doctor_pet_intervene_returns_recovery_options() -> None:
+    response = _decode(tool_doctor_pet_intervene({"message": "This is useless."}))
+
+    assert response["ok"] is True
+    assert response["should_intervene"] is True
+    option_ids = [option["id"] for option in response["intervention"]["options"]]
+    assert option_ids == ["dismiss"]
+
+
+def test_tool_doctor_pet_requires_one_input() -> None:
+    response = _decode(tool_doctor_pet_status({"message": "bad", "path": str(FIXTURES)}))
+
+    assert response["ok"] is False
+    assert "exactly one" in response["error"]
 
 
 def _has_mcp_sdk() -> bool:

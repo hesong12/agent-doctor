@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -19,6 +20,20 @@ class OpenClawSystemEventResult:
     command: list[str]
     stdout: str = ""
     stderr: str = ""
+
+
+HOST_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+OPENCLAW_PROVIDER_ENV_KEYS = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "VOYAGE_API_KEY",
+    }
+)
 
 
 def default_openclaw_notify_command() -> str:
@@ -46,8 +61,10 @@ def notify_openclaw_system_event(
         values,
         include_card_chars=include_card_chars,
     )
+    run_env = _openclaw_subprocess_env(values)
+    resolved_openclaw = resolve_openclaw_binary(openclaw_bin, env=run_env)
     command = [
-        openclaw_bin,
+        resolved_openclaw,
         "system",
         "event",
         "--mode",
@@ -57,7 +74,6 @@ def notify_openclaw_system_event(
         "--text",
         text,
     ]
-    run_env = _openclaw_subprocess_env(values)
     if dry_run:
         return OpenClawSystemEventResult(delivered=False, skipped=False, command=command)
 
@@ -70,7 +86,7 @@ def notify_openclaw_system_event(
             env=run_env,
         )
     except FileNotFoundError as exc:
-        raise RuntimeError(f"openclaw binary not found: {openclaw_bin}") from exc
+        raise RuntimeError(f"openclaw binary not found: {resolved_openclaw}") from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"openclaw system event timed out after {exc.timeout}s") from exc
     except OSError as exc:
@@ -143,8 +159,82 @@ def _read_card(path: str, *, include_card_chars: int) -> str:
 def _openclaw_subprocess_env(values: Mapping[str, str]) -> dict[str, str]:
     env = os.environ.copy()
     env.update(values)
-    host_home = values.get("AGENT_DOCTOR_HOST_HOME")
-    if host_home:
-        env["HOME"] = host_home
-        env["AGENT_DOCTOR_HOST_HOME"] = host_home
+    env["PATH"] = _with_host_bin_path(env.get("PATH", ""))
+    host_home = values.get("AGENT_DOCTOR_HOST_HOME") or _host_home_from_env(env)
+    env["HOME"] = host_home
+    env["AGENT_DOCTOR_HOST_HOME"] = host_home
+    env.update(_load_openclaw_provider_env(Path(host_home), existing=env))
     return env
+
+
+def _load_openclaw_provider_env(
+    host_home: Path,
+    *,
+    existing: Mapping[str, str],
+) -> dict[str, str]:
+    dotenv = host_home / ".openclaw" / ".env"
+    try:
+        lines = dotenv.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    loaded: dict[str, str] = {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        if key not in OPENCLAW_PROVIDER_ENV_KEYS or existing.get(key):
+            continue
+        loaded[key] = _dotenv_value(value.strip())
+    return loaded
+
+
+def _dotenv_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _host_home_from_env(env: Mapping[str, str]) -> str:
+    home = Path(str(env.get("HOME") or str(Path.home()))).expanduser()
+    parts = home.parts
+    for marker in (".openclaw", ".hermes"):
+        if marker in parts:
+            index = parts.index(marker)
+            if index > 0:
+                return str(Path(*parts[:index]))
+    return str(home)
+
+
+def resolve_openclaw_binary(openclaw_bin: str = "openclaw", *, env: Mapping[str, str] | None = None) -> str:
+    """Resolve OpenClaw in host-like environments such as launchd.
+
+    launchd services often start with ``PATH=/usr/bin:/bin:/usr/sbin:/sbin``,
+    while Homebrew installs OpenClaw under ``/opt/homebrew/bin`` on Apple
+    Silicon. The delivery adapter is responsible for being host-native and
+    should not rely on a user's interactive shell profile.
+    """
+
+    if "/" in openclaw_bin:
+        path = Path(openclaw_bin).expanduser()
+        if path.exists():
+            return str(path)
+        raise RuntimeError(f"openclaw binary not found: {openclaw_bin}")
+    path_env = (env or os.environ).get("PATH", "")
+    found = shutil.which(openclaw_bin, path=path_env)
+    if found:
+        return found
+    for directory in HOST_BIN_DIRS:
+        candidate = Path(directory) / openclaw_bin
+        if candidate.exists():
+            return str(candidate)
+    raise RuntimeError(f"openclaw binary not found: {openclaw_bin}")
+
+
+def _with_host_bin_path(path: str) -> str:
+    parts = [part for part in path.split(os.pathsep) if part]
+    for directory in reversed(HOST_BIN_DIRS):
+        if directory not in parts:
+            parts.insert(0, directory)
+    return os.pathsep.join(parts)
