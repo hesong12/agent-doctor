@@ -15,6 +15,7 @@ from .ingest import host_home
 from .schema import Severity
 
 HOST_BIN_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+OPTIONAL_SERVICE_ENV_KEYS = ("AGENT_DOCTOR_COMFORT_MODEL",)
 
 
 @dataclass(frozen=True)
@@ -242,6 +243,11 @@ def _pet_display_command(
 
 def _write_launchd_plist(path: Path, command: list[str], *, keep_alive: bool = True) -> None:
     label = path.stem
+    environment = {
+        "AGENT_DOCTOR_HOST_HOME": str(service_home()),
+        "PATH": HOST_BIN_PATH,
+    }
+    environment.update(_optional_service_env())
     payload = {
         "Label": label,
         "ProgramArguments": command,
@@ -249,10 +255,7 @@ def _write_launchd_plist(path: Path, command: list[str], *, keep_alive: bool = T
         "KeepAlive": keep_alive,
         "StandardOutPath": str(service_home() / ".agent-doctor" / "logs" / f"{label}.out.log"),
         "StandardErrorPath": str(service_home() / ".agent-doctor" / "logs" / f"{label}.err.log"),
-        "EnvironmentVariables": {
-            "AGENT_DOCTOR_HOST_HOME": str(service_home()),
-            "PATH": HOST_BIN_PATH,
-        },
+        "EnvironmentVariables": environment,
     }
     Path(payload["StandardOutPath"]).parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as handle:
@@ -278,6 +281,7 @@ def _write_systemd_unit(
             "Type=simple",
             f"Environment=AGENT_DOCTOR_HOST_HOME={service_home()}",
             f"Environment=PATH={HOST_BIN_PATH}",
+            *_systemd_optional_environment_lines(),
             f"ExecStart={_systemd_exec(command)}",
             *restart_lines,
             f"StandardOutput=append:{out_log}",
@@ -289,6 +293,22 @@ def _write_systemd_unit(
         ]
     )
     path.write_text(text, encoding="utf-8")
+
+
+def _optional_service_env() -> dict[str, str]:
+    return {
+        key: value
+        for key in OPTIONAL_SERVICE_ENV_KEYS
+        if (value := os.environ.get(key, "").strip())
+    }
+
+
+def _systemd_optional_environment_lines() -> list[str]:
+    return [f"Environment={key}={_systemd_escape_env(value)}" for key, value in _optional_service_env().items()]
+
+
+def _systemd_escape_env(value: str) -> str:
+    return value.replace("\\", "\\\\").replace(" ", "\\x20")
 
 
 def _start_service(path: Path, service_kind: str) -> tuple[list[list[str]], list[str]]:

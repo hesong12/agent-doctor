@@ -109,6 +109,7 @@ def test_pet_event_uses_user_session_language_for_tool_failure(monkeypatch) -> N
     assert "工具" in status.emotion_message
     assert "不用操作" in status.recommendation
     assert status.recovery_prompt == ""
+    assert status.intervention_payload == {}
     assert _issue_title(snapshot) == status.headline
     assert [action.label for action in _display_actions(snapshot)] == [
         "知道了",
@@ -276,8 +277,67 @@ def test_pet_comfort_copy_uses_openclaw_model_generation(monkeypatch) -> None:
     assert "方向盘" in first.emotion_message
     assert second.emotion_message == first.emotion_message
     assert len(calls) == 1
-    assert calls[0][1] == "google/gemini-2.5-flash"
+    assert calls[0][1] is None
     assert "不是我要的" in calls[0][0]
+
+
+def test_pet_comfort_model_can_be_overridden(monkeypatch) -> None:
+    calls: list[str | None] = []
+
+    class FakeCapabilities:
+        can_infer_text = True
+
+    class FakeOpenClaw:
+        @classmethod
+        def detect(cls):
+            return cls()
+
+        def capabilities(self):
+            return FakeCapabilities()
+
+        def infer_text(self, prompt: str, *, model: str | None = None) -> str:
+            calls.append(model)
+            return json.dumps(
+                {
+                    "headline": "它答偏了",
+                    "message": "你说“不是我要的”，这个模型覆盖只是在用你配置的路写现场安慰话。",
+                    "mood": "offtrack",
+                },
+                ensure_ascii=False,
+            )
+
+    monkeypatch.setattr(pet_module, "OpenClawAdapter", FakeOpenClaw)
+    monkeypatch.setenv("AGENT_DOCTOR_COMFORT_MODEL", "local/test-model")
+    pet_module._COMFORT_CACHE.clear()
+    messages = [
+        Message(
+            file="/tmp/session.jsonl",
+            line=1,
+            session_id="s-model-env",
+            role="user",
+            content="不是我要的，别写死模型",
+            source_format="openclaw",
+            raw_type="message",
+        ),
+    ]
+    event = AutopilotEvent(
+        id="evt-model-env",
+        platform="openclaw",
+        action="intervene",
+        trigger="user_frustration_signal",
+        severity="high",
+        session_id="s-model-env",
+        message_file="/tmp/session.jsonl",
+        message_line=1,
+        summary="frustration",
+        evidence="不是我要的，别写死模型",
+        finding_ids=[],
+    )
+
+    status = build_pet_status(messages, [], platform="openclaw", events=[event])
+
+    assert status.comfort_source == "model"
+    assert calls == ["local/test-model"]
 
 
 def test_pet_comfort_copy_rejects_generic_model_output(monkeypatch) -> None:
@@ -1019,7 +1079,8 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "Evidence" in source
     assert "evidenceText()" in source
     assert "What it noticed" in source
-    active_actions = source[source.index('if state == "concerned" || state == "intervening"') : source.index("let count = Int")]
+    display_actions_source = source[source.index("func displayActions") :]
+    active_actions = display_actions_source[display_actions_source.index('if state == "concerned" || state == "intervening"') : display_actions_source.index("let count = Int")]
     assert "tell_current_agent" not in active_actions
     assert "知道了" in source
     assert "Check Session" not in source

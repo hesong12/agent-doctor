@@ -293,6 +293,11 @@ sessions as soon as it starts. Generated launchd/systemd services also include
 a host command PATH (`/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`)
 so optional legacy hooks do not depend on an interactive shell profile.
 
+Agent Doctor's comfort copy uses the user's configured OpenClaw text model by
+default. Set `AGENT_DOCTOR_COMFORT_MODEL=<provider/model>` before installing or
+starting the service only when you intentionally want a dedicated model for the
+desktop comfort surface.
+
 The installer also supports this as an opt-in:
 
 ```bash

@@ -29,7 +29,7 @@ PetPhase = Literal["healthy", "comforting", "diagnosing", "advice_ready", "ignor
 
 _SEVERITY_RANK: dict[Severity, int] = {"low": 0, "medium": 1, "high": 2}
 _ACTION_RANK: dict[Action, int] = {"silent": 0, "notify": 1, "intervene": 2}
-_DEFAULT_OPENCLAW_COMFORT_MODEL = "google/gemini-2.5-flash"
+_COMFORT_MODEL_ENV = "AGENT_DOCTOR_COMFORT_MODEL"
 _COMFORT_CACHE: dict[str, str] = {}
 
 
@@ -399,7 +399,7 @@ def _comfort_generator(
         return None
 
     cache_key = _comfort_cache_key(event, context)
-    model = os.environ.get("AGENT_DOCTOR_COMFORT_MODEL", _DEFAULT_OPENCLAW_COMFORT_MODEL)
+    model = _comfort_model_override()
 
     def generate(prompt: str) -> str:
         cached = _COMFORT_CACHE.get(cache_key)
@@ -427,10 +427,15 @@ def _comfort_cache_key(event: AutopilotEvent, context: list[Message]) -> str:
             }
             for message in recent[-8:]
         ],
-        "model": os.environ.get("AGENT_DOCTOR_COMFORT_MODEL", _DEFAULT_OPENCLAW_COMFORT_MODEL),
+        "model": _comfort_model_override() or "<openclaw-default>",
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _comfort_model_override() -> str | None:
+    value = os.environ.get(_COMFORT_MODEL_ENV, "").strip()
+    return value or None
 
 
 def _status_from_finding(
