@@ -14,7 +14,9 @@ from agent_doctor.evals.bench import run_benchmark
 from agent_doctor.evals.cards import CardError, ScenarioCard, load_card, load_cards
 from agent_doctor.evals.generator import generate_corpus
 from agent_doctor.evals.metrics import evaluate
+from agent_doctor.evals.regression_phrases import REGRESSION_PHRASES
 from agent_doctor.evals.replay import run_replay
+from agent_doctor.frustration import classify_user_frustration
 from agent_doctor.schema import Finding, Evidence
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -252,3 +254,25 @@ def test_replay_no_op_without_api_key(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "ANTHROPIC_API_KEY" in summary["reason"]
     assert summary["baseline"]["findings"] >= 1
     assert (out / "replay-summary.json").exists()
+
+
+# ---- regression phrases ---------------------------------------------------
+
+
+def test_regression_phrases_are_high_severity_user_frustration() -> None:
+    """Every curated regression phrase must trip the classifier as high severity.
+
+    Acceptance for issue #11: '越来越笨' must be a regression-protected phrase.
+    """
+
+    assert REGRESSION_PHRASES, "regression library should not be empty"
+    for phrase in REGRESSION_PHRASES:
+        signal = classify_user_frustration(phrase.text)
+        assert signal.matched, f"missed: {phrase.text!r}"
+        assert signal.severity == "high", (
+            f"phrase {phrase.text!r} expected severity=high, got {signal.severity}"
+        )
+        for label in phrase.expected_labels:
+            assert label in signal.labels, (
+                f"phrase {phrase.text!r} expected label {label!r}, got {signal.labels}"
+            )

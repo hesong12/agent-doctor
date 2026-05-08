@@ -213,11 +213,14 @@ provisioning a host home before the platform has created its root directory.
 
 Current automatic triggers:
 
-- user frustration signals, including direct complaints like "not useful", "no value", "not thinking", direct dumb-feedback such as "Why are you so dumb?", "Are you stupid?", direct insults/profanity, trust-break language, and common Chinese equivalents such as "不够聪明", "没价值", "废物", "每次都这样", and "你怎么这么笨的？".
-- assistant completion claims without nearby verification evidence.
+- user frustration signals, including direct complaints like "not useful", "no value", "not thinking", direct dumb-feedback such as "Why are you so dumb?", "Are you stupid?", direct insults/profanity, trust-break language, **trust-degradation phrases** like "you are getting worse" / "越来越笨" / "你最近怎么越来越笨了", and common Chinese equivalents such as "不够聪明", "没价值", "废物", "每次都这样", and "你怎么这么笨的？".
+- **trust-degradation episodes**: when two or more trust-eroding signals cluster in one session within a small window, the autopilot emits a high-confidence episode event with an explicit "Required Acknowledgement" section in both the diagnosis card and inbox advisory.
+- assistant completion claims without nearby verification evidence (tracked also as the `unsupported_completion_claim` failure mode).
 - hidden or unacknowledged tool failures surfaced by the deterministic detectors.
 
-High-severity frustration emits an `intervene` event instead of a passive notification. Intervention cards tell the host agent to pause the normal success path, identify the concrete failure, cite evidence, and provide a short corrective action instead of defending itself or writing a long apology.
+High-severity frustration emits an `intervene` event instead of a passive notification. Intervention cards tell the host agent to pause the normal success path, identify the concrete failure, cite evidence, and provide a short corrective action instead of defending itself or writing a long apology. Trust-degradation phrases are also escalated to `intervene` because they describe cumulative quality loss, not a one-off complaint.
+
+Each emitted high-severity user-frustration / trust-degradation event also appends a regression entry to `<out>/regressions/frustration-regressions.jsonl`, pinning the exact phrase that tripped the detector. This is the missed-phrase regression library the bench harness can replay against future detector edits to ensure phrases like `越来越笨` are never silently lost.
 
 Watch mode automatically runs a full first pass, then switches to changed-file
 scanning using JSONL path, `mtime`, and size state in SQLite. To skip unchanged
@@ -228,10 +231,11 @@ Artifacts:
 
 ```
 ~/.agent-doctor/openclaw/
-  state.sqlite3       # local de-dupe / cooldown state
-  events.jsonl        # machine-readable emitted interventions
-  latest.md           # most recent short diagnosis card
-  cards/<event>.md    # one card per emitted event
+  state.sqlite3                          # local de-dupe / cooldown state
+  events.jsonl                           # machine-readable emitted interventions
+  latest.md                              # most recent short diagnosis card
+  cards/<event>.md                       # one card per emitted event
+  regressions/frustration-regressions.jsonl  # missed-phrase regression library
 ```
 
 This is the Agent Doctor "self-healing layer" boundary: observe from the outside, diagnose locally, notify through existing channels, and stage durable fixes. It does not block host runtime execution or patch live configuration.
@@ -305,13 +309,18 @@ Agent Doctor is local-only by design.
 
 | Failure mode | Signal | Patch targets |
 |---|---|---|
-| `repeated_user_correction` | "I already told you", "not what I asked", "X again" | memory, SOP |
+| `repeated_user_correction` | "I already told you", "not what I asked", "X again", "我已经说过" | memory, SOP |
 | `execution_discipline` | promised action without observed tool execution; "don't just plan" | SOP, eval |
 | `verification_failure` | "did you test", "without verifying", "not actually tested" | SOP, eval |
 | `memory_failure` | "you forgot", imperative "remember", "last time", "I told you" | memory |
 | `tool_failure_or_hidden_error` | tool emits error/timeout/401/500/traceback; assistant claims success without acknowledging | SOP, tool discipline |
 | `communication_mismatch` | "too verbose", "stop explaining" | memory (with overfit warning), identity |
-| `user_frustration_signal` | user shows anger, direct insult/profanity, direct quality complaints, repeated correction, or trust-break language | identity, SOP, eval |
+| `user_frustration_signal` | user shows anger, direct insult/profanity, direct quality complaints, repeated correction, **trust-degradation phrases** ("you are getting worse", "越来越笨", "你最近怎么越来越笨了"), or trust-break language | identity, SOP, eval |
+| `trust_degradation_episode` | meta-finding: 2+ trust-eroding signals cluster in one session within a small window | identity, SOP, eval |
+| `missed_core_question` | "you didn't answer my question", "answer my actual question", "你没回答", "答非所问" | SOP, eval |
+| `instruction_drift` | "I didn't ask you to…", "stop adding extra", "我没让你…" | SOP, eval |
+| `over_process_response` | "stop narrating", "just give me the answer", or long assistant messages dominated by step-by-step planning tokens | identity, SOP |
+| `unsupported_completion_claim` | assistant claims completion with no recent tool action / verification keyword; user pushback escalates severity | SOP, eval |
 
 Distractors that are deliberately *not* flagged:
 

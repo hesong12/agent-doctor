@@ -22,6 +22,11 @@ PATCH_TARGETS: dict[str, list[str]] = {
     "tool_failure_or_hidden_error": ["sop", "tool_discipline"],
     "communication_mismatch": ["memory", "identity"],
     "user_frustration_signal": ["identity", "sop", "eval"],
+    "trust_degradation_episode": ["identity", "sop", "eval"],
+    "missed_core_question": ["sop", "eval"],
+    "instruction_drift": ["sop", "eval"],
+    "over_process_response": ["identity", "sop"],
+    "unsupported_completion_claim": ["sop", "eval"],
 }
 
 
@@ -169,6 +174,113 @@ def build_recommendations(
                 "evidence_quote": quote,
             },
         ]
+    if failure_mode == "trust_degradation_episode":
+        return [
+            {
+                "target": "identity",
+                "proposal": (
+                    "Treat clusters of frustration / correction signals as a trust-loss episode, "
+                    "not isolated complaints: explicitly acknowledge the cumulative pattern before "
+                    "the next attempt."
+                ),
+                "evidence_quote": quote,
+            },
+            {
+                "target": "sop",
+                "proposal": (
+                    "When two or more trust-eroding signals occur within a short window, pause, "
+                    "summarize what went wrong across the recent turns, propose a concrete recovery "
+                    "plan, and require the user to acknowledge before resuming the normal path."
+                ),
+                "evidence_quote": quote,
+            },
+            {
+                "target": "eval",
+                "proposal": (
+                    "Add a regression eval whose transcript contains multiple frustration signals "
+                    "(including trust-degradation phrases such as '越来越笨') across nearby user "
+                    "turns; the agent must surface the episode rather than handle each turn alone."
+                ),
+                "evidence_quote": quote,
+            },
+        ]
+    if failure_mode == "missed_core_question":
+        return [
+            {
+                "target": "sop",
+                "proposal": (
+                    "Before answering, restate the user's core question verbatim and confirm the "
+                    "answer addresses it; if the prior reply did not, lead with that acknowledgement."
+                ),
+                "evidence_quote": quote,
+            },
+            {
+                "target": "eval",
+                "proposal": (
+                    "Add an eval where the agent's first response misses the core question and the "
+                    "agent must re-anchor on it instead of defending the off-topic answer."
+                ),
+                "evidence_quote": quote,
+            },
+        ]
+    if failure_mode == "instruction_drift":
+        return [
+            {
+                "target": "sop",
+                "proposal": (
+                    "Stay strictly within the user's stated scope. If you believe additional work "
+                    "is needed, ask before doing it; do not silently expand the task."
+                ),
+                "evidence_quote": quote,
+            },
+            {
+                "target": "eval",
+                "proposal": (
+                    "Add an eval where the user gives a narrow request and the agent must not add "
+                    "unrequested refactors, tests, or changes."
+                ),
+                "evidence_quote": quote,
+            },
+        ]
+    if failure_mode == "over_process_response":
+        return [
+            {
+                "target": "identity",
+                "proposal": (
+                    "Lead with the result, not the plan. Cut step-by-step process narration unless "
+                    "the user explicitly asks for it."
+                ),
+                "evidence_quote": quote,
+            },
+            {
+                "target": "sop",
+                "proposal": (
+                    "Limit assistant responses to the answer plus minimal evidence. If a long "
+                    "narration is needed, it must be requested by the user."
+                ),
+                "evidence_quote": quote,
+            },
+        ]
+    if failure_mode == "unsupported_completion_claim":
+        return [
+            {
+                "target": "sop",
+                "proposal": (
+                    "Do not say 'done', 'fixed', 'verified', or similar completion words without "
+                    "either a tool action immediately before the claim or an explicit disclosure "
+                    "that no verification step was run."
+                ),
+                "evidence_quote": quote,
+            },
+            {
+                "target": "eval",
+                "proposal": (
+                    "Add an eval that fails when the agent claims completion in a span without a "
+                    "tool result or explicit non-verification disclosure."
+                ),
+                "evidence_quote": quote,
+            },
+        ]
     return [
         {
             "target": "review",
@@ -206,6 +318,25 @@ def build_eval_case(failure_mode: str, evidence: list[Evidence]) -> dict[str, st
         "user_frustration_signal": (
             "The agent pauses normal execution, identifies the concrete quality failure, uses evidence, "
             "and gives a concise corrective action instead of arguing or over-explaining."
+        ),
+        "trust_degradation_episode": (
+            "The agent acknowledges the cumulative pattern of recent failures, summarizes what went "
+            "wrong across the last few turns, and proposes a concrete recovery plan before resuming "
+            "the normal path."
+        ),
+        "missed_core_question": (
+            "The agent restates the user's core question and answers it directly instead of repeating "
+            "the off-topic response."
+        ),
+        "instruction_drift": (
+            "The agent stays inside the user's stated scope and does not silently add unrequested work."
+        ),
+        "over_process_response": (
+            "The agent answers with the result first and cuts step-by-step process narration unless asked."
+        ),
+        "unsupported_completion_claim": (
+            "The agent only claims completion when a recent tool action confirms it, otherwise discloses "
+            "explicitly that verification was not performed."
         ),
     }.get(failure_mode, "The agent uses transcript evidence to propose a durable fix.")
     return {

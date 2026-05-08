@@ -30,6 +30,14 @@ from ..schema import Finding, Severity
 
 _SEVERITY_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
 
+# Modes that are *meta-aggregations* of other findings (e.g.
+# ``trust_degradation_episode`` is produced by the detector when multiple
+# trust-eroding signals cluster in one session). They are scored as TP/FP/FN
+# only when corpus labels explicitly seed them; otherwise they are excluded
+# from precision/recall to avoid penalizing an aggregator that surfaces
+# patterns not directly seeded as ground truth.
+_META_AGGREGATION_MODES: set[str] = {"trust_degradation_episode"}
+
 
 @dataclass(frozen=True)
 class Match:
@@ -81,9 +89,17 @@ def evaluate(
         finds = findings_by_session.get(session, [])
         labs = labels_by_session.get(session, [])
         used_label_indices: set[int] = set()
+        seeded_modes_in_session = {label["mode"] for label in labs}
 
         # Match each finding against labels in the same session and mode.
         for finding in finds:
+            # Meta-aggregation modes (e.g. trust_degradation_episode) are
+            # excluded from TP/FP scoring unless the corpus seeds them.
+            if (
+                finding.failure_mode in _META_AGGREGATION_MODES
+                and finding.failure_mode not in seeded_modes_in_session
+            ):
+                continue
             matching_label_indices = [
                 idx
                 for idx, label in enumerate(labs)

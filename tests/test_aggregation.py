@@ -19,12 +19,16 @@ def test_repeated_user_corrections_aggregate_and_escalate_severity() -> None:
 
     findings = detect_findings(messages)
 
-    assert len(findings) == 1
-    finding = findings[0]
-    assert finding.failure_mode == "repeated_user_correction"
-    assert finding.count == 3
-    assert finding.severity == "high"  # 3+ matches escalates to high.
-    assert len(finding.evidence) == 3
+    by_mode = {f.failure_mode: f for f in findings}
+    assert "repeated_user_correction" in by_mode
+    correction = by_mode["repeated_user_correction"]
+    assert correction.count == 3
+    assert correction.severity == "high"  # 3+ matches escalates to high.
+    assert len(correction.evidence) == 3
+    # Three nearby corrections in one session are also a trust-degradation episode.
+    assert "trust_degradation_episode" in by_mode
+    episode = by_mode["trust_degradation_episode"]
+    assert episode.severity == "high"
 
 
 def test_tool_result_with_error_null_envelope_does_not_match() -> None:
@@ -116,8 +120,12 @@ def test_two_distinct_modes_in_one_session_produce_two_findings() -> None:
 
     findings = detect_findings(messages)
     modes = {f.failure_mode for f in findings}
-    assert modes == {"verification_failure", "memory_failure"}
+    # The two distinct per-mode findings are still produced; nearby
+    # cross-mode trust signals are additionally rolled up into an episode.
+    assert {"verification_failure", "memory_failure"}.issubset(modes)
     for finding in findings:
+        if finding.failure_mode == "trust_degradation_episode":
+            continue
         assert finding.count == 1
 
 

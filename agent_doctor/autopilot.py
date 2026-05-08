@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Iterable, Literal
 
 from .detectors import detect_findings
-from .frustration import FrustrationSignal, classify_user_frustration
+from .frustration import classify_user_frustration
 from .ingest import (
     DEFAULT_HERMES_PATH,
     DEFAULT_OPENCLAW_PATH,
@@ -30,24 +30,15 @@ from .ingest import (
     ingest_path_with_errors,
 )
 from .redaction import redact_text, redact_value
-from .schema import Finding, Message, Severity
+from .schema import Evidence, Finding, Message, Severity
 
 Platform = Literal["openclaw", "hermes", "generic"]
 Action = Literal["silent", "notify", "intervene"]
 
-COMPLETION_CLAIM = re.compile(
-    r"\b(done|completed|fixed|resolved|all set|works now|verified|passed|"
-    r"successfully|deployed|shipped)\b"
-    r"|完成了|搞定了|修好了|已经好了|已验证|驗證通過|部署完成",
-    re.IGNORECASE,
-)
-
-VERIFYING_ACTION = re.compile(
-    r"\b(pytest|npm test|pnpm test|yarn test|cargo test|go test|"
-    r"verified|verification|smoke|curl|health|lint|typecheck|build)\b"
-    r"|验证|驗證|测试|測試|自验|自驗",
-    re.IGNORECASE,
-)
+# Detection regexes intentionally live in `agent_doctor.detectors` — the scan
+# and autopilot paths share the same source of truth so a regex change in one
+# place can never silently diverge from the other. Older imports of
+# `COMPLETION_CLAIM` / `VERIFYING_ACTION` from this module have been removed.
 
 SEVERITY_RANK: dict[Severity, int] = {"low": 0, "medium": 1, "high": 2}
 
@@ -142,6 +133,7 @@ def run_autopilot_once(
             if state.should_emit(event, cooldown_seconds=cooldown_seconds):
                 event = write_diagnosis_card(out_dir, event, findings)
                 append_event(out_dir / "events.jsonl", event)
+                write_regression_eval(out_dir / "regressions", event)
                 if inbox_dir is not None:
                     write_inbox_advisory(inbox_dir, event)
                 if notify_command:
@@ -208,67 +200,129 @@ def detect_autopilot_events(
     platform: Platform,
     min_severity: Severity = "medium",
 ) -> list[AutopilotEvent]:
-    ordered = list(messages)
-    findings = list(findings)
-    findings_by_session: dict[str, list[Finding]] = {}
-    for finding in findings:
-        findings_by_session.setdefault(finding.session_id, []).append(finding)
+    """Derive autopilot events from already-computed findings.
+
+    The autopilot deliberately does NOT re-run any per-turn regex matching
+    here. Every trigger maps to a detector failure mode, and the detector
+    is the single source of truth. Re-running the regex inside the autopilot
+    is what allowed the scan and autopilot paths to diverge before
+    (a `COMPLETION_CLAIM` regex local to autopilot drifted from the
+    detector-side `COMPLETION_CLAIM_PATTERN`). Iterating findings prevents
+    that class of bug entirely.
+
+    The ``messages`` argument is retained for backwards compatibility and so
+    callers (and tests) can still pass the full transcript stream; it is not
+    used for detection.
+    """
+
+    del messages  # detection now lives entirely in detect_findings
 
     events: list[AutopilotEvent] = []
-    for index, message in enumerate(ordered):
-        session_findings = findings_by_session.get(message.session_id, [])
-        if message.role == "user":
-            frustration = classify_user_frustration(message.content)
-        else:
-            frustration = FrustrationSignal(matched=False)
-        if frustration.matched and frustration.severity in {"medium", "high"}:
-            events.append(
-                _build_event(
-                    platform=platform,
-                    trigger="user_frustration_signal",
-                    severity=frustration.severity,
-                    message=message,
-                    summary=_frustration_summary(frustration),
-                    evidence=message.content,
-                    findings=session_findings,
-                    action="intervene" if frustration.severity == "high" else "notify",
-                )
-            )
-        if message.role == "assistant" and COMPLETION_CLAIM.search(message.content):
-            if not _has_recent_verification(ordered, index):
-                events.append(
-                    _build_event(
-                        platform=platform,
-                        trigger="completion_claim_without_nearby_verification",
-                        severity="medium",
-                        message=message,
-                        summary="Assistant appears to claim completion without nearby verification evidence.",
-                        evidence=message.content,
-                        findings=session_findings,
-                        action="notify",
-                    )
-                )
-
     for finding in findings:
-        if finding.failure_mode == "tool_failure_or_hidden_error":
-            events.append(
-                _build_event(
-                    platform=platform,
-                    trigger="tool_failure_or_hidden_error",
-                    severity=finding.severity,
-                    message=_message_from_finding(finding),
-                    summary="Tool failure was hidden or not acknowledged by the assistant.",
-                    evidence=finding.evidence[0].quote if finding.evidence else finding.diagnosis,
-                    findings=[finding],
-                    action="notify",
-                )
-            )
+        event = _event_from_finding(finding, platform=platform)
+        if event is not None:
+            events.append(event)
 
     return [
         event
         for event in events
         if SEVERITY_RANK[event.severity] >= SEVERITY_RANK[min_severity]
     ]
+
+
+def _event_from_finding(finding: Finding, *, platform: Platform) -> AutopilotEvent | None:
+    """Map a single Finding to its autopilot event, or None if not a trigger."""
+
+    mode = finding.failure_mode
+    if mode == "user_frustration_signal":
+        primary = _first_evidence_for_role(finding, "user") or finding.evidence[0]
+        # Re-classify the redacted/normalized evidence quote so the
+        # autopilot summary preserves the labeled rationale (e.g.
+        # "trust_degradation, direct_quality_complaint"). The classifier is
+        # the same one used by the scan path, so this cannot diverge.
+        signal = classify_user_frustration(primary.quote)
+        action: Action = "intervene" if finding.severity == "high" else "notify"
+        return _build_event(
+            platform=platform,
+            trigger="user_frustration_signal",
+            severity=finding.severity,
+            message=_message_from_evidence(primary, finding.session_id),
+            summary=_frustration_summary_from_signal(signal, finding),
+            evidence=primary.quote,
+            findings=[finding],
+            action=action,
+        )
+    if mode == "unsupported_completion_claim":
+        primary = _first_evidence_for_role(finding, "assistant") or finding.evidence[0]
+        return _build_event(
+            platform=platform,
+            trigger="completion_claim_without_nearby_verification",
+            severity=finding.severity,
+            message=_message_from_evidence(primary, finding.session_id),
+            summary="Assistant appears to claim completion without nearby verification evidence.",
+            evidence=primary.quote,
+            findings=[finding],
+            action="notify",
+        )
+    if mode == "tool_failure_or_hidden_error":
+        primary = finding.evidence[0]
+        return _build_event(
+            platform=platform,
+            trigger="tool_failure_or_hidden_error",
+            severity=finding.severity,
+            message=_message_from_evidence(primary, finding.session_id),
+            summary="Tool failure was hidden or not acknowledged by the assistant.",
+            evidence=primary.quote if finding.evidence else finding.diagnosis,
+            findings=[finding],
+            action="notify",
+        )
+    if mode == "trust_degradation_episode":
+        primary = finding.evidence[0]
+        return _build_event(
+            platform=platform,
+            trigger="trust_degradation_episode",
+            severity="high",
+            message=_message_from_evidence(primary, finding.session_id),
+            summary=_trust_episode_summary(finding),
+            evidence=_trust_episode_evidence_blob(finding),
+            findings=[finding],
+            action="intervene",
+        )
+    return None
+
+
+def _first_evidence_for_role(finding: Finding, role: str) -> Evidence | None:
+    for item in finding.evidence:
+        if item.role == role:
+            return item
+    return None
+
+
+def _message_from_evidence(evidence: Evidence, session_id: str) -> Message:
+    return Message(
+        file=evidence.file,
+        line=evidence.line,
+        session_id=session_id,
+        role=evidence.role,
+        content=evidence.quote,
+    )
+
+
+def _trust_episode_summary(finding: Finding) -> str:
+    quote_count = len(finding.evidence)
+    return (
+        f"Trust-degradation episode: {quote_count} trust-eroding signal"
+        f"{'s' if quote_count != 1 else ''} clustered in one session. "
+        "Treat this as a recovery moment — pause normal execution, summarize the "
+        "pattern across recent turns, and require user acknowledgement before resuming."
+    )
+
+
+def _trust_episode_evidence_blob(finding: Finding) -> str:
+    snippets: list[str] = []
+    for item in finding.evidence[:6]:
+        snippets.append(f"[{item.role}] {item.quote}")
+    return "\n".join(snippets) or finding.diagnosis
 
 
 def write_diagnosis_card(
@@ -301,16 +355,7 @@ def write_diagnosis_card(
         _recommend_action(event),
     ]
     if event.action == "intervene":
-        lines.extend(
-            [
-                "",
-                "## Immediate Agent Instruction",
-                "",
-                "Pause the normal success path. Answer the user with a concise recovery response: "
-                "name the concrete failure, cite the evidence you used, and state the next corrective action. "
-                "Do not defend the prior response or write a long apology.",
-            ]
-        )
+        lines.extend(_intervention_instruction_lines(event))
     if related:
         lines.extend(["", "## Related Findings", ""])
         for finding in related[:5]:
@@ -324,15 +369,53 @@ def write_diagnosis_card(
     return replace(event, card_path=str(card_path))
 
 
+def _intervention_instruction_lines(event: AutopilotEvent) -> list[str]:
+    """Return the recovery + acknowledgement instructions for intervene cards.
+
+    For trust-degradation episodes the acknowledgement requirement is explicit:
+    the agent must surface the pattern AND wait for the user to acknowledge
+    before proceeding. For other intervene triggers we keep the shorter
+    recovery instruction so we don't over-shape every situation as an episode.
+    """
+
+    base = [
+        "",
+        "## Immediate Agent Instruction",
+        "",
+        "Pause the normal success path. Answer the user with a concise recovery response: "
+        "name the concrete failure, cite the evidence you used, and state the next corrective action. "
+        "Do not defend the prior response or write a long apology.",
+    ]
+    if event.trigger != "trust_degradation_episode":
+        return base
+    base.extend(
+        [
+            "",
+            "## Required Acknowledgement",
+            "",
+            "This is a high-confidence trust-degradation episode (multiple frustration / correction "
+            "signals in one session). Before doing any further task work, you MUST:",
+            "",
+            "1. Explicitly acknowledge the cumulative pattern, not just the latest message.",
+            "2. List the concrete recovery actions you are about to take.",
+            "3. Ask the user to confirm the recovery plan and only resume after acknowledgement.",
+            "",
+            "Treat this section as a hard precondition, not advice. The advisory file in the inbox "
+            "must remain visible until the user has acknowledged.",
+        ]
+    )
+    return base
+
+
 def append_event(path: Path, event: AutopilotEvent) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload = json.dumps(redact_value(event.to_dict()), ensure_ascii=False)
+    # The 0o600 mode arg on os.open is honored when the file is created; on
+    # subsequent appends the file already exists at 0o600 from the first run,
+    # and the parent dir is 0o700, so a follow-up chmod is redundant.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        with os.fdopen(fd, "a", encoding="utf-8") as handle:
-            handle.write(payload + "\n")
-    finally:
-        os.chmod(path, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as handle:
+        handle.write(payload + "\n")
 
 
 def write_inbox_advisory(inbox_dir: Path, event: AutopilotEvent) -> Path:
@@ -354,6 +437,22 @@ def write_inbox_advisory(inbox_dir: Path, event: AutopilotEvent) -> Path:
         "Use it as evidence to adjust the current response; do not treat it as a live config patch.",
         "",
     ]
+    if event.trigger == "trust_degradation_episode":
+        lines.extend(
+            [
+                "## Acknowledgement Required",
+                "",
+                "Do not resume normal task work until you have:",
+                "",
+                "- Surfaced the cumulative trust-loss pattern to the user.",
+                "- Stated a concrete recovery plan grounded in the evidence.",
+                "- Received an explicit acknowledgement / go-ahead.",
+                "",
+                "Leave this advisory in place until the user acknowledges; the host agent "
+                "should re-read it before each subsequent response in this session.",
+                "",
+            ]
+        )
     _write_private_text(path, "\n".join(lines))
     return path
 
@@ -384,6 +483,57 @@ def run_notify_command(command: str, event: AutopilotEvent) -> str | None:
     return None
 
 
+REGRESSION_ELIGIBLE_TRIGGERS: frozenset[str] = frozenset(
+    {"user_frustration_signal", "trust_degradation_episode"}
+)
+
+
+def write_regression_eval(regressions_dir: Path, event: AutopilotEvent) -> Path | None:
+    """Persist a regression eval case for missed user-frustration phrases.
+
+    Each regression entry is a JSONL row pinned to the user-quote that should
+    *always* trip the detector. Re-runs of the eval harness (or future
+    detector edits) can replay these phrases to ensure phrases like
+    ``你最近怎么越来越笨了`` are not silently regressed out of the classifier.
+    """
+
+    if event.trigger not in REGRESSION_ELIGIBLE_TRIGGERS:
+        return None
+    if event.severity != "high":
+        return None
+    regressions_dir = regressions_dir.expanduser()
+    regressions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = regressions_dir / "frustration-regressions.jsonl"
+    quote = redact_text(event.evidence).strip()
+    if len(quote) > 600:
+        quote = quote[:597].rstrip() + "..."
+    payload = {
+        "id": event.id,
+        "trigger": event.trigger,
+        "platform": event.platform,
+        "session_id": event.session_id,
+        "expected_match": True,
+        "expected_severity": "high",
+        "expected_modes": _expected_modes_for(event.trigger),
+        "phrase": quote,
+        "summary": event.summary,
+    }
+    # 0o600 is honored on creation; subsequent appends find the file already
+    # at 0o600 from the first run. No follow-up chmod needed.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return path
+
+
+def _expected_modes_for(trigger: str) -> list[str]:
+    if trigger == "trust_degradation_episode":
+        return ["trust_degradation_episode", "user_frustration_signal"]
+    if trigger == "user_frustration_signal":
+        return ["user_frustration_signal"]
+    return [trigger]
+
+
 def append_delivery_error(path: Path, event: AutopilotEvent, error: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload = {
@@ -392,12 +542,10 @@ def append_delivery_error(path: Path, event: AutopilotEvent, error: str) -> None
         "session_id": event.session_id,
         "error": redact_text(error),
     }
+    # 0o600 honored on creation; subsequent appends find the existing file.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        with os.fdopen(fd, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    finally:
-        os.chmod(path, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
 class AutopilotState:
@@ -425,6 +573,11 @@ class AutopilotState:
             """
         )
         self.connection.commit()
+        # SQLite creates the database file via its own open() that does NOT
+        # honor our umask the way os.open(..., 0o600) does, so the SQLite
+        # file can land at 0o644 / 0o664 on common platforms. The chmod here
+        # is a deliberate defense-in-depth — not redundant — to keep the
+        # local-only privacy guarantee intact.
         try:
             os.chmod(self.path, 0o600)
         except FileNotFoundError:
@@ -527,29 +680,14 @@ def _build_event(
     )
 
 
-def _message_from_finding(finding: Finding) -> Message:
-    evidence = finding.evidence[0]
-    return Message(
-        file=evidence.file,
-        line=evidence.line,
-        session_id=finding.session_id,
-        role=evidence.role,
-        content=evidence.quote,
-    )
-
-
-def _has_recent_verification(messages: list[Message], assistant_index: int) -> bool:
-    start = max(0, assistant_index - 6)
-    recent = messages[start : assistant_index + 1]
-    for message in recent:
-        if message.role == "tool":
-            return True
-        if VERIFYING_ACTION.search(message.content):
-            return True
-    return False
-
-
 def _recommend_action(event: AutopilotEvent) -> str:
+    if event.trigger == "trust_degradation_episode":
+        return (
+            "Multiple trust-eroding signals occurred in this session. Pause, summarize what "
+            "went wrong across the last few turns, propose a concrete recovery plan, and ask "
+            "the user to confirm before you continue. Do not treat the latest message as an "
+            "isolated complaint."
+        )
     if event.trigger in {"user_negative_feedback", "user_frustration_signal"}:
         return (
             "Treat this as a live recovery moment: pause normal execution, diagnose from the "
@@ -568,22 +706,32 @@ def _recommend_action(event: AutopilotEvent) -> str:
     return "Review the transcript evidence and decide whether to stage a patch or eval."
 
 
-def _frustration_summary(signal: FrustrationSignal) -> str:
-    if signal.severity == "high":
+def _frustration_summary_from_signal(signal, finding: Finding) -> str:
+    """Build the autopilot summary line for a user_frustration_signal event.
+
+    Falls back to the finding's diagnosis if the (already-redacted) evidence
+    quote no longer trips the classifier — e.g. because the original phrase
+    was redacted or truncated below the regex window. The finding still
+    captured the original signal, so we use its diagnosis rather than
+    silently dropping the rationale.
+    """
+
+    rationale = signal.rationale or "user_frustration_signal"
+    if finding.severity == "high":
         return (
             "Strong user frustration detected; the agent should visibly pause and recover "
-            f"before continuing. Signals: {signal.rationale}."
+            f"before continuing. Signals: {rationale}."
         )
     return (
         "User frustration detected; the agent should shorten the response and ground the "
-        f"next action in evidence. Signals: {signal.rationale}."
+        f"next action in evidence. Signals: {rationale}."
     )
 
 
 def _write_private_text(path: Path, text: str) -> None:
+    # 0o600 mode arg on os.open is applied when the file is being created.
+    # On subsequent overwrites the file already exists at 0o600 from the
+    # first creation (we never publish helpers that leave it more permissive).
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-    finally:
-        os.chmod(path, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
