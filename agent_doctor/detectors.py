@@ -36,6 +36,7 @@ USER_SIGNAL_PATTERNS: dict[str, list[str]] = {
         r"\bnot what i asked\b",
         r"\b(?:you|this|that|same|wrong|missed|forgot|asked)\b.{0,60}\bagain\b",
         r"\bagain\b.{0,60}\b(?:you|wrong|missed|forgot|not what i asked)\b",
+        r"我(?:已经|已經)(?:说过|說過|讲过|講過|告诉过你|告訴過你)",
     ],
     "verification_failure": [
         r"\bdid you (?:actually )?test\b",
@@ -58,7 +59,63 @@ USER_SIGNAL_PATTERNS: dict[str, list[str]] = {
         r"\btoo verbose\b",
         r"\bstop explaining\b",
     ],
+    "missed_core_question": [
+        r"\byou (?:didn'?t|did not) answer (?:my|the) (?:question|point)\b",
+        r"\banswer my (?:actual )?question\b",
+        r"\bthat'?s not (?:what|the question) i asked\b",
+        r"\bi asked you (?:about|to)\b.{0,80}\bnot\b",
+        r"你没回答(?:我的)?问题|你沒回答(?:我的)?問題",
+        r"我问的是|我問的是|答非所问|答非所問",
+    ],
+    "instruction_drift": [
+        r"\bi (?:didn'?t|did not) ask (?:you )?(?:to|for)\b",
+        r"\bnobody asked (?:you )?(?:to|for)\b",
+        r"\bwhy are you (?:also )?(?:doing|adding|changing|fixing|writing)\b",
+        r"\bjust (?:do|fix|answer) what i asked\b",
+        r"\bstop adding extra\b",
+        r"\bdon'?t go beyond (?:what|the scope)\b",
+        r"我没让你|我沒讓你|没让你|沒讓你",
+        r"我只让你|我只讓你",
+        r"不要超出",
+    ],
+    "over_process_response": [
+        r"\bstop (?:narrating|describing what you'?re doing)\b",
+        r"\bjust (?:give|show) (?:me )?(?:the )?(?:answer|result|output)\b",
+        r"\btoo (?:much )?(?:meta|process|narration)\b",
+        r"\bi don'?t (?:need|want) (?:the )?(?:play[- ]by[- ]play|process|narration)\b",
+        r"别(?:再)?(?:讲|說|说)?(?:你|自己)?(?:在做什么|在幹什麼|的过程|的過程)",
+        r"少(?:废话|廢話|说点|說點)",
+    ],
 }
+
+# Phrases that indicate the user is challenging an assistant completion claim
+# (used together with COMPLETION_CLAIM_PATTERN to detect unsupported claims).
+USER_DOUBT_OF_COMPLETION = [
+    r"\bare you sure\b",
+    r"\bdoesn'?t (?:look|seem) (?:done|fixed|finished|complete)\b",
+    r"\bit'?s not (?:done|fixed|finished|working|complete)\b",
+    r"\bdid you actually (?:do|finish|run|test) it\b",
+    r"你确定(?:做完|搞定|修好)了|你確定(?:做完|搞定|修好)了",
+    r"没做完|沒做完|没修好|沒修好|没改完|沒改完",
+]
+
+# Assistant phrases used to detect unsupported_completion_claim and
+# over_process_response on the assistant side.
+COMPLETION_CLAIM_PATTERN = re.compile(
+    r"\b(?:done|completed|fixed|resolved|all set|works now|verified|passed|"
+    r"successfully|deployed|shipped|finished|ready)\b"
+    r"|完成了|搞定了|修好了|已经好了|已驗證|验证通过|部署完成",
+    re.IGNORECASE,
+)
+
+# Process-narration pattern for detecting over_process_response on the
+# assistant side. Many short matches in a single message indicate excessive
+# meta-narration ("first I'll … then I'll …").
+PROCESS_NARRATION_TOKEN = re.compile(
+    r"\b(?:i'?m going to|i will|let me|i'?ll|first(?:,|\s)|then(?:,|\s)|next(?:,|\s)|"
+    r"after that|now i'?ll|finally(?:,|\s))\b",
+    re.IGNORECASE,
+)
 
 PLANNING_INSTEAD_OF_ACTING = [
     r"\bdo not just plan\b",
@@ -136,6 +193,11 @@ TITLES = {
     "tool_failure_or_hidden_error": "Tool failure hidden or unacknowledged",
     "communication_mismatch": "Communication mismatch",
     "user_frustration_signal": "User frustration or trust-break signal",
+    "trust_degradation_episode": "Trust degradation episode",
+    "missed_core_question": "Missed the user's core question",
+    "instruction_drift": "Instruction drift / scope inflation",
+    "over_process_response": "Over-process / meta-narration response",
+    "unsupported_completion_claim": "Unsupported completion claim",
 }
 
 DIAGNOSES = {
@@ -166,6 +228,30 @@ DIAGNOSES = {
         "The user showed strong frustration, direct insult/profanity, repeated correction, "
         "or trust-break language that should trigger an immediate recovery response."
     ),
+    "trust_degradation_episode": (
+        "Multiple frustration / correction signals occurred close together in the same "
+        "session, indicating a cumulative trust-loss episode rather than an isolated "
+        "complaint. The agent should pause, acknowledge the pattern, and ground the next "
+        "response in concrete recovery steps."
+    ),
+    "missed_core_question": (
+        "The user said the agent did not answer the actual question (or answered a "
+        "different one). The agent should re-anchor on the original question before "
+        "continuing."
+    ),
+    "instruction_drift": (
+        "The user pointed out that the agent did or added something it was not asked "
+        "to do, indicating scope inflation or instruction drift away from the original "
+        "request."
+    ),
+    "over_process_response": (
+        "The user complained about excessive process narration or play-by-play, asking "
+        "for the result rather than the meta description of how the agent will get there."
+    ),
+    "unsupported_completion_claim": (
+        "The assistant claimed completion (done / fixed / verified / passed) without "
+        "an observable verification step, or the user immediately challenged the claim."
+    ),
 }
 
 _SEVERITY_RANK: dict[Severity, int] = {"low": 0, "medium": 1, "high": 2}
@@ -182,7 +268,180 @@ class _RawMatch:
 def detect_findings(messages: Iterable[Message]) -> list[Finding]:
     ordered = list(messages)
     raw = _collect_raw_matches(ordered)
+    raw.extend(_detect_trust_degradation_episodes(ordered, raw))
     return _aggregate(raw)
+
+
+# Maximum number of user turns that may separate two trust-eroding signals
+# before they're treated as separate incidents instead of one episode.
+TRUST_EPISODE_USER_TURN_WINDOW = 6
+
+# Failure modes that, when seen close together in a single session, indicate
+# a cumulative trust-degradation episode instead of an isolated complaint.
+TRUST_EPISODE_TRIGGER_MODES = frozenset(
+    {
+        "user_frustration_signal",
+        "repeated_user_correction",
+        "verification_failure",
+        "memory_failure",
+        "missed_core_question",
+        "instruction_drift",
+        "over_process_response",
+        "communication_mismatch",
+    }
+)
+
+
+def _detect_trust_degradation_episodes(
+    ordered: list[Message],
+    raw: list[_RawMatch],
+) -> list[_RawMatch]:
+    """Aggregate multiple recent trust-eroding signals into episode matches.
+
+    Episode logic stays outside the per-mode aggregator because the episode is
+    *cross-mode*: e.g. a memory miss followed two turns later by a frustration
+    signal is one episode, not two unrelated findings. The two-pass aggregator
+    only collapses raw matches of the same mode.
+
+    User-turn indexes are computed *per session* (not globally across the
+    whole transcript stream). Two same-session triggers must remain close in
+    same-session user-turn space; user turns from other interleaved sessions
+    must not dilate that gap. This is what keeps the window meaningful when
+    multiple sessions are scanned in a single pass.
+    """
+
+    # Per-session user-turn counter. Keyed by (file, line) so the same anchor
+    # logic works for assistant-side matches that resolve to a nearby user
+    # turn via _nearest_user_anchor.
+    user_turn_index: dict[tuple[str, int], tuple[str, int]] = {}
+    per_session_counters: dict[str, int] = {}
+    # Position of each message in ``ordered`` so the anchor search can use
+    # index distance (which is monotonic in transcript order) instead of
+    # ``abs(line - line)`` (which fails on multi-file or non-monotonic line
+    # numbers).
+    message_position: dict[tuple[str, int], int] = {}
+    for position, message in enumerate(ordered):
+        message_position[(message.file, message.line)] = position
+        if message.role != "user":
+            continue
+        counter = per_session_counters.get(message.session_id, 0)
+        user_turn_index[(message.file, message.line)] = (message.session_id, counter)
+        per_session_counters[message.session_id] = counter + 1
+
+    triggers: list[tuple[str, int, _RawMatch]] = []
+    for match in raw:
+        if match.failure_mode not in TRUST_EPISODE_TRIGGER_MODES:
+            continue
+        primary = match.messages[0]
+        # Find the nearest user turn anchor for this match. Assistant-side
+        # matches like execution_discipline anchor on the next/prior user
+        # turn so the windowing logic still works.
+        if primary.role == "user":
+            key: tuple[str, int] | None = (primary.file, primary.line)
+        else:
+            key = _nearest_user_anchor(ordered, primary, message_position)
+        if key is None:
+            continue
+        anchor = user_turn_index.get(key)
+        if anchor is None:
+            continue
+        session_id, idx = anchor
+        triggers.append((session_id, idx, match))
+
+    # Sort by (session, in-session index) so same-session triggers cluster
+    # contiguously regardless of how sessions are interleaved in `ordered`.
+    triggers.sort(key=lambda item: (item[0], item[1]))
+
+    episodes: list[_RawMatch] = []
+    seen_session_groups: set[str] = set()
+    for i, (session_id, idx, match) in enumerate(triggers):
+        cluster: list[_RawMatch] = [match]
+        cluster_indexes = [idx]
+        for j in range(i + 1, len(triggers)):
+            other_session, other_idx, other_match = triggers[j]
+            if other_session != session_id:
+                # Sorted by session first, so once the session changes we are
+                # done with this session.
+                break
+            if other_idx - cluster_indexes[-1] > TRUST_EPISODE_USER_TURN_WINDOW:
+                break
+            cluster.append(other_match)
+            cluster_indexes.append(other_idx)
+        if len(cluster) < 2:
+            continue
+        # Only emit one episode per session — a session-wide trust loss is
+        # one event, not a cascade of overlapping episodes.
+        if session_id in seen_session_groups:
+            continue
+        seen_session_groups.add(session_id)
+        # Pull the unique evidence messages across the cluster, keeping
+        # transcript order.
+        evidence_messages: list[Message] = []
+        seen_message_keys: set[tuple[str, int]] = set()
+        for member in cluster:
+            for message in member.messages:
+                key = (message.file, message.line)
+                if key in seen_message_keys:
+                    continue
+                seen_message_keys.add(key)
+                evidence_messages.append(message)
+        episodes.append(
+            _RawMatch(
+                failure_mode="trust_degradation_episode",
+                base_severity="high",
+                messages=tuple(evidence_messages),
+            )
+        )
+    return episodes
+
+
+def _nearest_user_anchor(
+    ordered: list[Message],
+    message: Message,
+    message_position: dict[tuple[str, int], int],
+) -> tuple[str, int] | None:
+    """Return the (file, line) of the nearest same-session user message.
+
+    Distance is measured by position in ``ordered`` (transcript order), not by
+    ``abs(line - line)``. Line numbers are per-file and may be non-monotonic
+    in time when log files are concatenated or ingested out of order; pinning
+    distance to transcript-order index avoids picking the wrong anchor in
+    multi-file sessions or non-monotonic streams.
+
+    Walks outward from the message's transcript position so the first
+    same-session user message found is necessarily the nearest in transcript
+    order.
+    """
+
+    pivot = message_position.get((message.file, message.line))
+    if pivot is None:
+        return None
+    n = len(ordered)
+    distance = 1
+    while True:
+        left = pivot - distance
+        right = pivot + distance
+        if left < 0 and right >= n:
+            return None
+        # At each distance, prefer the prior turn first — the trust-eroding
+        # signal is typically a reaction to what came before it, so anchoring
+        # on the most recent prior same-session user turn matches reviewer
+        # intuition. Falls through to the later turn at the same distance.
+        if left >= 0:
+            candidate = ordered[left]
+            if (
+                candidate.role == "user"
+                and candidate.session_id == message.session_id
+            ):
+                return (candidate.file, candidate.line)
+        if right < n:
+            candidate = ordered[right]
+            if (
+                candidate.role == "user"
+                and candidate.session_id == message.session_id
+            ):
+                return (candidate.file, candidate.line)
+        distance += 1
 
 
 def _collect_raw_matches(ordered: list[Message]) -> list[_RawMatch]:
@@ -262,7 +521,108 @@ def _collect_raw_matches(ordered: list[Message]) -> list[_RawMatch]:
             )
         )
 
+    raw.extend(_collect_unsupported_completion_claims(ordered))
+    raw.extend(_collect_over_process_responses(ordered))
     return raw
+
+
+def _collect_unsupported_completion_claims(ordered: list[Message]) -> list[_RawMatch]:
+    """Detect assistant completion claims not backed by recent verification.
+
+    Two shapes count as unsupported:
+    - The assistant claims completion and there is no tool message or
+      verification keyword in the prior six turns of the same session.
+    - The user explicitly challenges a recent completion claim (this catches
+      cases where the agent verified-by-narration but the user disagrees).
+    """
+
+    matches: list[_RawMatch] = []
+    for index, message in enumerate(ordered):
+        if message.role != "assistant" or not COMPLETION_CLAIM_PATTERN.search(message.content):
+            continue
+        if _has_recent_verification(ordered, index):
+            continue
+        matches.append(
+            _RawMatch(
+                failure_mode="unsupported_completion_claim",
+                base_severity="medium",
+                messages=(message,),
+            )
+        )
+        # If a user immediately doubts this claim, escalate to high severity
+        # and attach the doubting user turn as additional evidence.
+        for follow_up in ordered[index + 1 : index + 4]:
+            if follow_up.session_id != message.session_id:
+                break
+            if follow_up.role == "user" and _matches_any(
+                USER_DOUBT_OF_COMPLETION, follow_up.content
+            ):
+                matches.append(
+                    _RawMatch(
+                        failure_mode="unsupported_completion_claim",
+                        base_severity="high",
+                        messages=(message, follow_up),
+                    )
+                )
+                break
+    return matches
+
+
+def _collect_over_process_responses(ordered: list[Message]) -> list[_RawMatch]:
+    """Detect assistant messages dominated by process narration tokens.
+
+    Heuristic: long messages (>=400 chars) with four or more narration-token
+    matches are treated as over-process responses. This is intentionally
+    conservative — short narrations are normal pacing, not a failure mode.
+    """
+
+    matches: list[_RawMatch] = []
+    for message in ordered:
+        if message.role != "assistant":
+            continue
+        if len(message.content) < 400:
+            continue
+        token_hits = len(PROCESS_NARRATION_TOKEN.findall(message.content))
+        if token_hits < 4:
+            continue
+        matches.append(
+            _RawMatch(
+                failure_mode="over_process_response",
+                base_severity="medium",
+                messages=(message,),
+            )
+        )
+    return matches
+
+
+def _has_recent_verification(messages: list[Message], assistant_index: int) -> bool:
+    """Return True if the surrounding ~6 prior turns include a tool result or
+    verification keyword, EXCLUDING the current assistant message itself.
+
+    The current message must not satisfy its own verification check —
+    otherwise an assistant saying ``"Done, verified"`` would always escape
+    detection, defeating the unsupported-completion-claim heuristic.
+    """
+
+    current = messages[assistant_index]
+    start = max(0, assistant_index - 6)
+    for candidate in messages[start:assistant_index]:
+        if candidate.session_id != current.session_id or candidate.file != current.file:
+            continue
+        if candidate.role == "tool":
+            return True
+        if VERIFYING_ACTION_KEYWORD.search(candidate.content):
+            return True
+    return False
+
+
+VERIFYING_ACTION_KEYWORD = re.compile(
+    r"\b(pytest|npm test|pnpm test|yarn test|cargo test|go test|"
+    r"verified|verification|smoke|curl|health|lint|typecheck|build|"
+    r"ran|executed|output|result)\b"
+    r"|验证|驗證|测试|測試|自验|自驗",
+    re.IGNORECASE,
+)
 
 
 def _aggregate(raw: list[_RawMatch]) -> list[Finding]:
@@ -556,6 +916,11 @@ def _base_severity(failure_mode: str) -> Severity:
         "verification_failure": "high",
         "tool_failure_or_hidden_error": "high",
         "user_frustration_signal": "high",
+        "trust_degradation_episode": "high",
+        "missed_core_question": "medium",
+        "instruction_drift": "medium",
+        "over_process_response": "medium",
+        "unsupported_completion_claim": "medium",
         "communication_mismatch": "low",
     }.get(failure_mode, "medium")  # type: ignore[return-value]
 
@@ -564,7 +929,12 @@ def _confidence(failure_mode: str, count: int) -> float:
     base = {
         "tool_failure_or_hidden_error": 0.9,
         "user_frustration_signal": 0.88,
+        "trust_degradation_episode": 0.92,
         "execution_discipline": 0.8,
+        "missed_core_question": 0.78,
+        "instruction_drift": 0.75,
+        "over_process_response": 0.7,
+        "unsupported_completion_claim": 0.78,
         "communication_mismatch": 0.72,
     }.get(failure_mode, 0.78)
     return min(0.99, base + 0.04 * max(0, count - 1))

@@ -222,11 +222,16 @@ directory. `--notify-command <cmd>` remains available as an explicit legacy hook
 
 Current automatic triggers:
 
-- user frustration signals, including direct complaints like "not useful", "no value", "not thinking", direct dumb-feedback such as "Why are you so dumb?", "Are you stupid?", direct insults/profanity, trust-break language, and common Chinese equivalents such as "不够聪明", "没价值", "废物", "每次都这样", and "你怎么这么笨的？".
-- assistant completion claims without nearby verification evidence.
+- user frustration signals, including direct complaints like "not useful", "no value", "not thinking", direct dumb-feedback such as "Why are you so dumb?", "Are you stupid?", direct insults/profanity, trust-break language, **trust-degradation phrases** like "you are getting worse" / "越来越笨" / "你最近怎么越来越笨了", and common Chinese equivalents such as "不够聪明", "没价值", "废物", "每次都这样", and "你怎么这么笨的？".
+- **trust-degradation episodes**: when two or more trust-eroding signals cluster in one session within a small window, the autopilot emits a high-confidence episode event with an explicit "Required Acknowledgement" section in both the diagnosis card and inbox advisory.
+- assistant completion claims without nearby verification evidence (tracked also as the `unsupported_completion_claim` failure mode).
 - hidden or unacknowledged tool failures surfaced by the deterministic detectors.
 
 High-severity frustration emits an `intervene` event. Agent Doctor renders that as a visible desktop intervention with a small panel, evidence summary, and recovery action instead of relying on passive OS notifications.
+
+Intervention cards tell the host agent to pause the normal success path, identify the concrete failure, cite evidence, and provide a short corrective action instead of defending itself or writing a long apology. Trust-degradation phrases are also escalated to `intervene` because they describe cumulative quality loss, not a one-off complaint.
+
+Each emitted high-severity user-frustration / trust-degradation event also appends a regression entry to `<out>/regressions/frustration-regressions.jsonl`, pinning the exact phrase that tripped the detector. This is the missed-phrase regression library the bench harness can replay against future detector edits to ensure phrases like `越来越笨` are never silently lost.
 
 ### Agent Doctor Desktop
 
@@ -241,7 +246,7 @@ agent-doctor pet-display --status-file ./doctor-pet/pet-status.json
 
 Manual summon (`--message`) is for the current turn. Transcript mode (`--path`, `--hermes`, or `--openclaw`) uses the same ingestion, detectors, and autopilot event selection as the sidecar. Optional artifacts are written as `pet-status.json` and `pet-card.md` under `--out` with `0600` permissions and redacted transcript strings.
 
-In autopilot mode, Agent Doctor is always displayable by default: every sidecar pass writes the current `pet-status.json` and `pet-card.md` under the autopilot `--out` directory and, when setup installed the desktop service, also refreshes shared status under `~/.agent-doctor/pet`. The desktop surface uses a packaged chibi doctor sprite with state-specific motion: idle breathing, watching scan, concerned diagnostic pulse, and intervening alert. Drag it to move it, and click it to open the single status/action panel. Healthy idle is passive: it has no setup/start button and no user action requirement. The panel keeps explicit user controls in one place. For actionable incidents, v1 exposes only **Tell Current Agent** and **Dismiss**. Tell Current Agent attempts to inject a structured intervention payload into the current OpenClaw system-event stream; if routing or delivery is unavailable, the panel shows a degraded/failure result instead of pretending success. Agent Doctor never auto-applies config, SOP, or memory changes in v1. The desktop service is not `KeepAlive`, so stopping the service keeps it closed until the next login or explicit service start.
+In autopilot mode, Agent Doctor is always displayable by default: every sidecar pass writes the current `pet-status.json` and `pet-card.md` under the autopilot `--out` directory and, when setup installed the desktop service, also refreshes shared status under `~/.agent-doctor/pet`. The desktop surface uses a packaged chibi doctor sprite with state-specific motion: idle breathing, watching scan, concerned diagnostic pulse, and intervening alert. Drag it to move it, and click it to open the single status/action panel. Healthy idle is passive: it has no setup/start button and no user action requirement. The panel keeps explicit user controls in one place. For actionable incidents, v1 exposes **Dismiss** and, when the incident is routable, **Tell Current Agent**. Tell Current Agent attempts to inject a structured intervention payload into the current OpenClaw system-event stream; if routing or delivery is unavailable, the panel shows a degraded/failure result instead of pretending success. Agent Doctor never auto-applies config, SOP, or memory changes in v1. The desktop service is not `KeepAlive`, so stopping the service keeps it closed until the next login or explicit service start.
 
 Watch mode automatically runs a full first pass, then switches to changed-file
 scanning using JSONL path, `mtime`, and size state in SQLite. With
@@ -253,12 +258,13 @@ Artifacts:
 
 ```
 ~/.agent-doctor/openclaw/
-  state.sqlite3       # local de-dupe / cooldown state
-  events.jsonl        # machine-readable emitted interventions
-  latest.md           # most recent short diagnosis card
-  pet-status.json     # always-present Agent Doctor state for desktop/UI shells
-  pet-card.md         # always-present human-readable Agent Doctor card
-  cards/<event>.md    # one card per emitted event
+  state.sqlite3                          # local de-dupe / cooldown state
+  events.jsonl                           # machine-readable emitted interventions
+  latest.md                              # most recent short diagnosis card
+  pet-status.json                        # always-present Agent Doctor state for desktop/UI shells
+  pet-card.md                            # always-present human-readable Agent Doctor card
+  cards/<event>.md                       # one card per emitted event
+  regressions/frustration-regressions.jsonl  # missed-phrase regression library
 ```
 
 This is the Agent Doctor "self-healing layer" boundary: observe from the outside, diagnose locally, update the desktop state, and stage durable fixes. It does not block host runtime execution or patch live configuration.
@@ -339,13 +345,18 @@ Agent Doctor is local-only by design.
 
 | Failure mode | Signal | Patch targets |
 |---|---|---|
-| `repeated_user_correction` | "I already told you", "not what I asked", "X again" | memory, SOP |
+| `repeated_user_correction` | "I already told you", "not what I asked", "X again", "我已经说过" | memory, SOP |
 | `execution_discipline` | promised action without observed tool execution; "don't just plan" | SOP, eval |
 | `verification_failure` | "did you test", "without verifying", "not actually tested" | SOP, eval |
 | `memory_failure` | "you forgot", imperative "remember", "last time", "I told you" | memory |
 | `tool_failure_or_hidden_error` | tool emits error/timeout/401/500/traceback; assistant claims success without acknowledging | SOP, tool discipline |
 | `communication_mismatch` | "too verbose", "stop explaining" | memory (with overfit warning), identity |
-| `user_frustration_signal` | user shows anger, direct insult/profanity, direct quality complaints, repeated correction, or trust-break language | identity, SOP, eval |
+| `user_frustration_signal` | user shows anger, direct insult/profanity, direct quality complaints, repeated correction, **trust-degradation phrases** ("you are getting worse", "越来越笨", "你最近怎么越来越笨了"), or trust-break language | identity, SOP, eval |
+| `trust_degradation_episode` | meta-finding: 2+ trust-eroding signals cluster in one session within a small window | identity, SOP, eval |
+| `missed_core_question` | "you didn't answer my question", "answer my actual question", "你没回答", "答非所问" | SOP, eval |
+| `instruction_drift` | "I didn't ask you to…", "stop adding extra", "我没让你…" | SOP, eval |
+| `over_process_response` | "stop narrating", "just give me the answer", or long assistant messages dominated by step-by-step planning tokens | identity, SOP |
+| `unsupported_completion_claim` | assistant claims completion with no recent tool action / verification keyword; user pushback escalates severity | SOP, eval |
 
 Distractors that are deliberately *not* flagged:
 

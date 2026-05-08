@@ -21,6 +21,12 @@ class FrustrationSignal:
     labels: tuple[str, ...] = field(default_factory=tuple)
     rationale: str = ""
 
+    @property
+    def is_trust_degradation(self) -> bool:
+        """True when the signal expresses cumulative trust loss over time."""
+
+        return "trust_degradation" in self.labels
+
 
 PROFANITY_OR_INSULT = re.compile(
     r"\b("
@@ -48,7 +54,9 @@ DIRECT_QUALITY_COMPLAINT = re.compile(
     r"\b("
     r"not smart|less smart|not intelligent|not useful|no value|"
     r"not thinking|haven'?t thought|didn'?t think|"
-    r"what are you doing|what the hell|same mistake|wrong again"
+    r"what are you doing|what the hell|same mistake|wrong again|"
+    r"getting (?:worse|dumber|stupider)|"
+    r"(?:more|increasingly) (?:dumb|stupid|useless|incompetent)"
     r")\b"
     r"|不够聪明|不夠聰明|不聪明|不聰明|没用|沒有用|没价值|沒有价值|"
     r"有没有想清楚|有沒有想清楚|你到底|为什么没有用|為什麼沒有用|"
@@ -57,8 +65,8 @@ DIRECT_QUALITY_COMPLAINT = re.compile(
     r"|(?:完全)?没(?:有)?任何(?:的)?反应|(?:完全)?沒(?:有)?任何(?:的)?反應|没反应|沒反應|我.{0,20}骂你|我.{0,20}罵你"
     r"|(?:交互|互动|互動|体验|體驗|界面|UI|页面|頁面|产品|產品|流程).{0,18}(?:一坨屎|坨屎|屎一样|屎一樣|烂|爛|很差|太差|糟糕|垃圾)"
     r"|(?:一坨屎|坨屎|屎一样|屎一樣)"
-    r"|你(?:怎么|怎麼)?(?:这么|這麼|那么|那麼|很|好)?笨(?!重)"
-    r"|(?:这么|這麼|那么|那麼|太|真|很|好)笨(?!重)|笨蛋|笨死"
+    r"|你(?:最近|今天|这次|這次)?(?:怎么|怎麼)?(?:越来越|越來越|这么|這麼|那么|那麼|很|好)?笨(?!重)"
+    r"|(?:越来越|越來越|这么|這麼|那么|那麼|太|真|很|好)笨(?!重)|笨蛋|笨死"
     r"|你(?:怎么|怎麼)?(?:这么|這麼|那么|那麼|很|好)?蠢(?!动|動)"
     r"|(?:这么|這麼|那么|那麼|太|真|真是|很|好)蠢(?!动|動)|蠢蛋|蠢死"
     # 傻 (sha = dumb): same shape as 笨/蠢. Exclude common compounds where
@@ -70,6 +78,22 @@ DIRECT_QUALITY_COMPLAINT = re.compile(
     # 越来越X / 越來越X — escalation form. Strong frustration signal:
     # the user is asserting quality is degrading over time.
     r"|越[来來]越(?:笨|蠢|傻|差|烂|爛|糟|垃圾)",
+    re.IGNORECASE,
+)
+
+TRUST_DEGRADATION = re.compile(
+    r"\b("
+    r"you are getting (?:worse|dumber|stupider|more useless)|"
+    r"you('|’)?re getting (?:worse|dumber|stupider|more useless)|"
+    r"keep getting worse|keep getting it wrong|"
+    r"used to (?:work|be smart|be better)|"
+    r"(?:lately|recently),? (?:you|things) (?:are|seem) (?:worse|getting worse|dumber)"
+    r")\b"
+    r"|越来越笨|越來越笨|越来越蠢|越來越蠢"
+    r"|越来越(?:差|糟|没用|沒用|不行)|越來越(?:差|糟|沒用|不行)"
+    r"|越来越(?:傻|烂|爛|垃圾)|越來越(?:傻|烂|爛|垃圾)"
+    r"|你最近(?:怎么|怎麼)?(?:越来越|越來越)"
+    r"|最近(?:总是|總是|老是|一直)(?:出错|出錯|搞错|搞錯|不对|不對)",
     re.IGNORECASE,
 )
 
@@ -110,6 +134,9 @@ def classify_user_frustration(text: str) -> FrustrationSignal:
         score += 3
     if TRUST_BREAK.search(text):
         labels.append("trust_break")
+        score += 3
+    if TRUST_DEGRADATION.search(text):
+        labels.append("trust_degradation")
         score += 3
     if DIRECT_QUALITY_COMPLAINT.search(text):
         labels.append("direct_quality_complaint")

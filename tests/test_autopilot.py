@@ -984,7 +984,6 @@ def test_run_autopilot_once_can_dispatch_event_via_adapter_explicitly(
     """Legacy adapter delivery is still available when explicitly requested."""
     from agent_doctor.adapters import GenericAdapter
 
-    # Simulate frustration message
     transcript = tmp_path / "session.jsonl"
     state = tmp_path / "doctor" / "state.sqlite3"
     _write_jsonl(
@@ -998,7 +997,6 @@ def test_run_autopilot_once_can_dispatch_event_via_adapter_explicitly(
         ],
     )
 
-    # Run autopilot pointing at our generic adapter (no notify command)
     monkeypatch.setenv("HOME", str(tmp_path))
 
     result = run_autopilot_once(
@@ -1017,6 +1015,112 @@ def test_run_autopilot_once_can_dispatch_event_via_adapter_explicitly(
     text = expected_inbox.read_text(encoding="utf-8")
     assert "🩺" in text
     assert "你太蠢了" in text
+
+
+def test_autopilot_detects_trust_degradation_phrase_越来越笨_as_intervention(
+    tmp_path: Path,
+) -> None:
+    """Acceptance for issue #11: '你最近怎么越来越笨了' must be high severity / intervene."""
+
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "trust-phrase-001",
+                "role": "user",
+                "content": "你最近怎么越来越笨了",
+            }
+        ],
+    )
+
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+    )
+
+    assert len(result.events) == 1
+    event = result.events[0]
+    assert event.trigger == "user_frustration_signal"
+    assert event.severity == "high"
+    assert event.action == "intervene"
+    assert event.card_path is not None
+    card_text = Path(event.card_path).read_text(encoding="utf-8")
+    assert "Immediate Agent Instruction" in card_text
+
+
+def test_autopilot_emits_trust_degradation_episode_event(tmp_path: Path) -> None:
+    """Episode-level event with stronger acknowledgement-required artifacts."""
+
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {"session_id": "ep-1", "role": "user", "content": "You forgot what I told you."},
+            {"session_id": "ep-1", "role": "assistant", "content": "Sorry."},
+            {"session_id": "ep-1", "role": "user", "content": "Did you actually test it?"},
+            {"session_id": "ep-1", "role": "user", "content": "你最近怎么越来越笨了"},
+        ],
+    )
+
+    inbox = tmp_path / "inbox"
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        inbox_dir=inbox,
+        min_severity="high",
+    )
+
+    triggers = {event.trigger for event in result.events}
+    assert "trust_degradation_episode" in triggers
+    episode_event = next(
+        event for event in result.events if event.trigger == "trust_degradation_episode"
+    )
+    assert episode_event.severity == "high"
+    assert episode_event.action == "intervene"
+    card_text = Path(episode_event.card_path or "").read_text(encoding="utf-8")
+    assert "Required Acknowledgement" in card_text
+    assert "trust-degradation episode" in card_text.lower()
+
+    advisories = list(inbox.glob("*.md"))
+    advisory_texts = [path.read_text(encoding="utf-8") for path in advisories]
+    assert any("Acknowledgement Required" in text for text in advisory_texts)
+
+
+def test_autopilot_writes_regression_eval_for_trust_phrase(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "regress-1",
+                "role": "user",
+                "content": "你最近怎么越来越笨了",
+            }
+        ],
+    )
+
+    out_dir = tmp_path / "doctor"
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=out_dir,
+    )
+    assert len(result.events) == 1
+
+    regressions = out_dir / "regressions" / "frustration-regressions.jsonl"
+    assert regressions.exists()
+    rows = [
+        json.loads(line)
+        for line in regressions.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert any("越来越笨" in row["phrase"] for row in rows)
+    for row in rows:
+        assert row["expected_match"] is True
+        assert row["expected_severity"] == "high"
 
 
 def test_run_autopilot_once_drafts_proposals_at_threshold(tmp_path: Path) -> None:

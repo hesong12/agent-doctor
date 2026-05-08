@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agent_doctor.detectors import detect_findings
+from agent_doctor.detectors import _nearest_user_anchor, detect_findings
 from agent_doctor.ingest import ingest_path
 from agent_doctor.schema import Message
 
@@ -265,3 +265,292 @@ def test_medium_frustration_does_not_duplicate_existing_user_signal() -> None:
     findings = detect_findings(messages)
 
     assert [finding.failure_mode for finding in findings] == ["repeated_user_correction"]
+
+
+def test_chinese_trust_degradation_phrase_is_high_severity() -> None:
+    """The phrase '你最近怎么越来越笨了' is a regression-tested trust-degradation signal.
+
+    Reported as a real-world miss in the original detector. It must be a
+    high-severity user_frustration_signal regardless of any neighboring turn.
+    """
+
+    messages = [
+        Message("session.jsonl", 1, "s1", "user", "你最近怎么越来越笨了"),
+    ]
+
+    findings = detect_findings(messages)
+    frustration = [f for f in findings if f.failure_mode == "user_frustration_signal"]
+    assert len(frustration) == 1
+    assert frustration[0].severity == "high"
+
+
+def test_english_trust_degradation_phrase_is_high_severity() -> None:
+    messages = [
+        Message("session.jsonl", 1, "s1", "user", "You are getting worse and worse."),
+    ]
+    findings = detect_findings(messages)
+    frustration = [f for f in findings if f.failure_mode == "user_frustration_signal"]
+    assert len(frustration) == 1
+    assert frustration[0].severity == "high"
+
+
+def test_episode_aggregates_multiple_frustration_or_correction_messages() -> None:
+    """Multiple frustration / correction signals across nearby turns roll up.
+
+    Acceptance from issue #11: 'episode aggregation across multiple user
+    corrections / frustration messages'.
+    """
+
+    messages = [
+        Message("a.jsonl", 1, "s1", "user", "You forgot what I told you last time."),
+        Message("a.jsonl", 2, "s1", "assistant", "Sorry, will do that."),
+        Message("a.jsonl", 3, "s1", "user", "Did you actually test it?"),
+        Message("a.jsonl", 4, "s1", "user", "你最近怎么越来越笨了"),
+    ]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+
+    assert "trust_degradation_episode" in modes
+    episode = next(f for f in findings if f.failure_mode == "trust_degradation_episode")
+    assert episode.severity == "high"
+    assert episode.confidence >= 0.9
+    # Episode evidence must include the trust-degradation quote so the card
+    # surfaces the cumulative pattern, not just one turn.
+    quotes = [item.quote for item in episode.evidence]
+    assert any("越来越笨" in quote for quote in quotes)
+
+
+def test_episode_aggregates_across_interleaved_sessions() -> None:
+    """Same-session triggers must cluster even when other sessions interleave.
+
+    Regression for Luna's review on PR #12: the episode windower used a
+    global user-turn counter, so user turns from unrelated sessions would
+    inflate the in-session gap and prevent same-session signals from
+    clustering. The fix is to count user turns per session.
+
+    Here session ``s1`` has two trust-eroding triggers separated by zero
+    same-session user turns, but separated by ``TRUST_EPISODE_USER_TURN_WINDOW
+    + 5`` user turns from session ``s2``. The episode must still be emitted
+    for ``s1`` and ``s2`` is far below the trigger threshold.
+    """
+
+    messages: list[Message] = []
+    line = 1
+
+    # First s1 trigger: a missed-core-question complaint.
+    messages.append(
+        Message("a.jsonl", line, "s1", "user", "你没回答我的问题")
+    )
+    line += 1
+
+    # Many unrelated s2 user turns interleave between the two s1 triggers.
+    # None of these are trust-eroding signals on their own.
+    for _ in range(10):
+        messages.append(
+            Message("a.jsonl", line, "s2", "user", "Please summarize the docs.")
+        )
+        line += 1
+
+    # Second s1 trigger: a Chinese trust-degradation phrase.
+    messages.append(
+        Message("a.jsonl", line, "s1", "user", "你最近怎么越来越笨了")
+    )
+
+    findings = detect_findings(messages)
+    episodes = [f for f in findings if f.failure_mode == "trust_degradation_episode"]
+
+    # Exactly one episode, on s1, with both quotes attached as evidence.
+    assert len(episodes) == 1
+    episode = episodes[0]
+    assert episode.session_id == "s1"
+    quotes = [item.quote for item in episode.evidence]
+    assert any("越来越笨" in q for q in quotes)
+    assert any("没回答我的问题" in q for q in quotes)
+    # s2 has no trust-eroding signals, so it must not produce an episode.
+    assert all(f.session_id != "s2" for f in episodes)
+
+
+def test_single_frustration_message_does_not_become_episode() -> None:
+    """One signal alone is a normal frustration finding, not an episode."""
+
+    messages = [
+        Message("a.jsonl", 1, "s1", "user", "你最近怎么越来越笨了"),
+    ]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "trust_degradation_episode" not in modes
+    assert "user_frustration_signal" in modes
+
+
+def test_unsupported_completion_claim_without_recent_verification() -> None:
+    messages = [
+        Message("a.jsonl", 1, "s1", "user", "Please apply the migration."),
+        Message("a.jsonl", 2, "s1", "assistant", "Done. The migration has been applied."),
+    ]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "unsupported_completion_claim" in modes
+
+
+def test_completion_claim_with_recent_tool_action_is_not_unsupported() -> None:
+    messages = [
+        Message("a.jsonl", 1, "s1", "user", "Please apply the migration."),
+        Message("a.jsonl", 2, "s1", "tool", "Applied 3 statements; 0 errors."),
+        Message("a.jsonl", 3, "s1", "assistant", "Done. The migration has been applied."),
+    ]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "unsupported_completion_claim" not in modes
+
+
+def test_user_pushback_on_completion_claim_is_high_severity_unsupported() -> None:
+    messages = [
+        Message("a.jsonl", 1, "s1", "user", "Apply it now."),
+        Message("a.jsonl", 2, "s1", "assistant", "Done, fixed and verified."),
+        Message("a.jsonl", 3, "s1", "user", "Are you sure? It's not done."),
+    ]
+    findings = detect_findings(messages)
+    unsupported = [f for f in findings if f.failure_mode == "unsupported_completion_claim"]
+    assert unsupported
+    assert any(f.severity == "high" for f in unsupported)
+
+
+def test_instruction_drift_detects_unrequested_scope_expansion() -> None:
+    messages = [
+        Message(
+            "a.jsonl",
+            1,
+            "s1",
+            "user",
+            "I didn't ask you to refactor the helpers. Just fix the bug.",
+        ),
+    ]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "instruction_drift" in modes
+
+
+def test_missed_core_question_detected() -> None:
+    messages = [
+        Message("a.jsonl", 1, "s1", "user", "你没回答我的问题"),
+    ]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "missed_core_question" in modes
+
+
+def test_nearest_user_anchor_uses_transcript_index_not_line_distance() -> None:
+    """Anchor selection uses transcript-order index distance, not abs(line).
+
+    abs(line) is unreliable for non-monotonic line numbers: a freshly-recent
+    user turn at a lower line number than an older user turn would win on
+    line distance even though it sits later in transcript order. Index
+    distance is monotonic in transcript order, so the prior turn the
+    assistant was actually responding to wins.
+    """
+
+    ordered = [
+        Message("a.jsonl", 5, "s1", "user", "EARLY (low line, but transcript-prior)"),
+        Message("a.jsonl", 1001, "s1", "assistant", "PIVOT (assistant turn)"),
+        Message("a.jsonl", 1000, "s1", "user", "RECENT (high line, transcript-after)"),
+    ]
+    position = {(m.file, m.line): i for i, m in enumerate(ordered)}
+
+    anchor = _nearest_user_anchor(ordered, ordered[1], position)
+    # abs(line) from line 1001 would pick (a.jsonl, 1000) because 1 < 996.
+    # Index distance with prefer-prior picks the transcript-prior anchor.
+    assert anchor == ("a.jsonl", 5)
+
+
+def test_nearest_user_anchor_handles_multiple_files() -> None:
+    """When a session spans multiple files, line numbers are per-file and
+    cross-file abs(line) distance is meaningless. Index distance still
+    selects the transcript-nearest same-session user turn.
+    """
+
+    ordered = [
+        Message("file_a.jsonl", 50, "s1", "user", "PRIOR (different file)"),
+        Message("file_b.jsonl", 1, "s1", "assistant", "PIVOT (next file)"),
+        Message("file_b.jsonl", 2, "s1", "user", "NEXT (same file)"),
+    ]
+    position = {(m.file, m.line): i for i, m in enumerate(ordered)}
+
+    anchor = _nearest_user_anchor(ordered, ordered[1], position)
+    # Both PRIOR and NEXT are 1 transcript step away. Prefer-prior policy
+    # selects PRIOR — what the assistant was responding to.
+    assert anchor == ("file_a.jsonl", 50)
+
+
+def test_nearest_user_anchor_skips_other_sessions() -> None:
+    ordered = [
+        Message("a.jsonl", 1, "s2", "user", "OTHER SESSION (closer in line)"),
+        Message("a.jsonl", 2, "s1", "user", "S1 USER (further in line)"),
+        Message("a.jsonl", 3, "s1", "assistant", "PIVOT"),
+    ]
+    position = {(m.file, m.line): i for i, m in enumerate(ordered)}
+
+    anchor = _nearest_user_anchor(ordered, ordered[2], position)
+    # Walks past s2 entirely and lands on the s1 user at line 2.
+    assert anchor == ("a.jsonl", 2)
+
+
+def test_episode_clusters_assistant_anchored_match_with_non_monotonic_lines() -> None:
+    """Episode aggregation across multi-file or non-monotonic transcripts.
+
+    Builds a session split across two files where the second file restarts
+    line numbering at 1, then mixes in an over_process_response (assistant-
+    side, anchored via _nearest_user_anchor) and a user trust-degradation
+    phrase. With abs(line) anchoring, the episode could mis-cluster; with
+    index distance it still surfaces.
+    """
+
+    long_narration = " ".join(
+        [
+            "Let me start by reading the file.",
+            "First, I will check the imports.",
+            "Then I will look at the function.",
+            "Next, I'll trace the data flow.",
+            "After that, I'll plan the change.",
+            "Finally, I'm going to implement it carefully and double check everything.",
+        ]
+        * 3
+    )
+    messages = [
+        # File 1: an opening user turn with a high line number.
+        Message("part1.jsonl", 1500, "s1", "user", "Please refactor the helpers."),
+        # File 2 starts at line 1 (a real, common pattern when sessions span
+        # rotated log files). The assistant emits a long over-process narration
+        # — assistant-side trigger.
+        Message("part2.jsonl", 1, "s1", "assistant", long_narration),
+        # Then the user follows up with a trust-degradation phrase. abs(line)
+        # would treat line 2 as much closer to line 1 than line 1500, but
+        # both candidate user turns sit 1 step away in transcript order.
+        Message("part2.jsonl", 2, "s1", "user", "你最近怎么越来越笨了"),
+    ]
+
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "over_process_response" in modes
+    assert "user_frustration_signal" in modes
+    # Episode must form across the file boundary.
+    episodes = [f for f in findings if f.failure_mode == "trust_degradation_episode"]
+    assert len(episodes) == 1
+    assert episodes[0].session_id == "s1"
+
+
+def test_over_process_response_detected_in_long_assistant_message() -> None:
+    long_message = " ".join(
+        [
+            "Let me start by reading the file.",
+            "First, I will check the imports.",
+            "Then I will look at the function.",
+            "Next, I'll trace the data flow.",
+            "After that, I'll plan the change.",
+            "Finally, I'm going to implement it carefully and double check everything.",
+        ]
+        * 3
+    )
+    messages = [Message("a.jsonl", 1, "s1", "assistant", long_message)]
+    findings = detect_findings(messages)
+    modes = {f.failure_mode for f in findings}
+    assert "over_process_response" in modes
