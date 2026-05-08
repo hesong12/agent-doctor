@@ -329,6 +329,37 @@ def test_ingest_autodetects_uuid_openclaw_nested_message_rows(tmp_path: Path) ->
     assert {message.source_format for message in messages} == {"openclaw"}
 
 
+def test_ingest_openclaw_trajectory_prompt_submitted_as_user_message(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.trajectory.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "traceSchema": "openclaw-trajectory",
+                "type": "prompt.submitted",
+                "sessionId": "openclaw-live-001",
+                "data": {
+                    "prompt": (
+                        "Sender (untrusted metadata):\n"
+                        "```json\n{\"label\":\"openclaw-tui\"}\n```\n\n"
+                        "[Wed 2026-05-06 21:12 PDT] agent doctor完全没有任何的反应？"
+                    )
+                },
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    messages = ingest_file(transcript)
+
+    assert len(messages) == 1
+    assert messages[0].role == "user"
+    assert messages[0].session_id == "openclaw-live-001"
+    assert messages[0].source_format == "openclaw"
+    assert "agent doctor完全没有任何的反应" in messages[0].content
+
+
 def test_ingest_normalizes_generic_directory() -> None:
     messages = ingest_path(FIXTURES)
 

@@ -68,6 +68,71 @@ def test_autopilot_detects_negative_feedback_and_writes_card(tmp_path: Path) -> 
     assert "user_frustration_signal" in (tmp_path / "doctor" / "events.jsonl").read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "我们聊一下ai harness的事情，scripts/submit-work.sh 这个东西是我们之前搞的repo scoped的规范，这个是放在了你的skill里面了吗？还是在哪里？这种类似的规范本身是有体现在我们目前的ai harness的设计和实现中吗？我们有什么办法可以做到一个unified submit-work的harness，这样可以更加的规范和确定性一些？",
+        "Can you inspect the trigger conditions??? We need English and Chinese support plus edge-case regression coverage.",
+        "CI is failing!!! Please inspect the traceback, error output, and GitHub check annotations.",
+        "为什么这个 OpenClaw trajectory 有 prompt.submitted？为什么 session JSONL 也有 mirror？这两个都要扫吗？",
+    ],
+)
+def test_autopilot_does_not_intervene_on_normal_high_density_questions(
+    tmp_path: Path,
+    content: str,
+) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "neutral",
+                "role": "user",
+                "content": content,
+            }
+        ],
+    )
+
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        cooldown_seconds=3600,
+    )
+
+    assert result.events == []
+    assert result.pet_state == "idle"
+
+
+def test_autopilot_ignores_agent_doctor_recovery_prompts(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s1",
+                "role": "user",
+                "content": (
+                    "Agent Doctor detected a live quality issue in the current OpenClaw session.\n\n"
+                    "```json\n"
+                    '{"type":"agent_doctor_intervention","evidence":["Why are you so dumb?"]}'
+                    "\n```"
+                ),
+            }
+        ],
+    )
+
+    result = run_autopilot_once(
+        platform="openclaw",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        cooldown_seconds=3600,
+    )
+
+    assert result.events == []
+    assert result.pet_state == "idle"
+
+
 def test_autopilot_uses_state_to_suppress_repeated_events(tmp_path: Path) -> None:
     transcript = tmp_path / "session.jsonl"
     _write_jsonl(
@@ -89,6 +154,41 @@ def test_autopilot_uses_state_to_suppress_repeated_events(tmp_path: Path) -> Non
     assert second.suppressed == 1
     assert second.pet_state == "intervening"
     assert second.pet_status_path is not None
+
+
+def test_autopilot_suppresses_persistently_dismissed_event(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s1",
+                "role": "user",
+                "content": "This is not useful. You keep making the same mistake.",
+            }
+        ],
+    )
+
+    first = run_autopilot_once(platform="generic", path=transcript, out_dir=tmp_path / "doctor")
+
+    from agent_doctor.autopilot import AutopilotState
+
+    state = AutopilotState(tmp_path / "doctor" / "state.sqlite3")
+    try:
+        state.dismiss(first.events[0].id, first.events[0].session_id, first.events[0].trigger)
+    finally:
+        state.close()
+    second = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+        cooldown_seconds=0,
+    )
+
+    assert len(first.events) == 1
+    assert second.events == []
+    assert second.suppressed == 1
+    assert second.pet_state == "idle"
 
 
 def test_autopilot_changed_only_skips_unchanged_files_then_detects_modified_file(tmp_path: Path) -> None:
@@ -139,10 +239,49 @@ def test_autopilot_changed_only_skips_unchanged_files_then_detects_modified_file
     assert len(first.events) == 1
     assert second.messages == 0
     assert second.events == []
-    assert second.pet_state == "idle"
+    assert second.pet_state == "intervening"
     assert (tmp_path / "doctor" / "pet-status.json").exists()
     assert [event.session_id for event in third.events] == ["s2"]
     assert third.events[0].message_line == 2
+
+
+def test_changed_only_empty_poll_preserves_active_pet_status(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    transcript = sessions / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s-live-pet",
+                "role": "user",
+                "content": "你为什么现在这么蠢了？这点事情都做不好",
+            }
+        ],
+    )
+    pet_out = tmp_path / "pet"
+
+    first = run_autopilot_once(
+        platform="generic",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+        pet_out_dir=pet_out,
+    )
+    second = run_autopilot_once(
+        platform="generic",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+        pet_out_dir=pet_out,
+        changed_only=True,
+    )
+
+    payload = json.loads((pet_out / "pet-status.json").read_text(encoding="utf-8"))
+    assert first.pet_state == "intervening"
+    assert second.messages == 0
+    assert second.events == []
+    assert second.pet_state == "intervening"
+    assert payload["state"] == "intervening"
+    assert payload["evidence"][0]["quote"] == "你为什么现在这么蠢了？这点事情都做不好"
 
 
 def test_changed_only_does_not_rescan_historical_tool_failure_on_append(tmp_path: Path) -> None:
@@ -187,6 +326,129 @@ def test_changed_only_does_not_rescan_historical_tool_failure_on_append(tmp_path
     assert result.messages == 1
     assert result.events == []
     assert result.pet_state == "idle"
+
+
+def test_openclaw_changed_only_detects_new_trajectory_prompt_submitted(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    canonical = sessions / "session.jsonl"
+    trajectory = sessions / "session.trajectory.jsonl"
+    _write_jsonl(
+        canonical,
+        [{"session_id": "s-live", "role": "assistant", "content": "Waiting."}],
+    )
+    _write_jsonl(
+        trajectory,
+        [
+            {
+                "traceSchema": "openclaw-trajectory",
+                "type": "session.started",
+                "sessionId": "s-live",
+                "data": {"status": "running"},
+            }
+        ],
+    )
+
+    from agent_doctor.autopilot import baseline_autopilot_state
+
+    baseline_autopilot_state(
+        platform="openclaw",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+    )
+    with trajectory.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "traceSchema": "openclaw-trajectory",
+                    "type": "prompt.submitted",
+                    "sessionId": "s-live",
+                    "data": {
+                        "prompt": (
+                            "Sender (untrusted metadata):\n"
+                            "```json\n{\"label\":\"openclaw-tui\"}\n```\n\n"
+                            "[Wed 2026-05-06 20:59 PDT] "
+                            "你它妈的不能自己用眼睛看你做的是什么鬼吗？页面底下那么多空白你是要干什么？"
+                        )
+                    },
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+
+    result = run_autopilot_once(
+        platform="openclaw",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+        changed_only=True,
+        cooldown_seconds=0,
+    )
+
+    assert len(result.events) == 1
+    event = result.events[0]
+    assert event.trigger == "user_frustration_signal"
+    assert event.session_id == "s-live"
+    assert event.message_file.endswith("session.trajectory.jsonl")
+    assert event.message_line == 2
+    assert event.severity == "high"
+    assert event.action == "intervene"
+    assert result.pet_state == "intervening"
+
+
+def test_openclaw_changed_only_detects_current_reaction_failure_prompt(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    trajectory = sessions / "session.trajectory.jsonl"
+    _write_jsonl(
+        trajectory,
+        [
+            {
+                "traceSchema": "openclaw-trajectory",
+                "type": "session.started",
+                "sessionId": "s-reaction-failure",
+                "data": {"status": "running"},
+            }
+        ],
+    )
+
+    from agent_doctor.autopilot import baseline_autopilot_state
+
+    baseline_autopilot_state(
+        platform="openclaw",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+    )
+    with trajectory.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "traceSchema": "openclaw-trajectory",
+                    "type": "prompt.submitted",
+                    "sessionId": "s-reaction-failure",
+                    "data": {
+                        "prompt": (
+                            "[Wed 2026-05-06 21:12 PDT] "
+                            "而且为什么我刚才那么骂你，agent doctor完全没有任何的反应？"
+                        )
+                    },
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+
+    result = run_autopilot_once(
+        platform="openclaw",
+        path=sessions,
+        out_dir=tmp_path / "doctor",
+        changed_only=True,
+        cooldown_seconds=0,
+    )
+
+    assert len(result.events) == 1
+    assert result.events[0].trigger == "user_frustration_signal"
+    assert result.events[0].message_line == 2
 
 
 def test_openclaw_initial_changed_only_scan_uses_recent_sessions_only(tmp_path: Path) -> None:
@@ -520,6 +782,32 @@ def test_autopilot_detects_common_chinese_dumb_feedback(tmp_path: Path) -> None:
                 "session_id": "s6",
                 "role": "user",
                 "content": "你怎么这么笨的？",
+            }
+        ],
+    )
+
+    result = run_autopilot_once(
+        platform="generic",
+        path=transcript,
+        out_dir=tmp_path / "doctor",
+    )
+
+    assert len(result.events) == 1
+    event = result.events[0]
+    assert event.trigger == "user_frustration_signal"
+    assert event.severity == "high"
+    assert event.action == "intervene"
+
+
+def test_autopilot_detects_chinese_product_interaction_complaint(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "session_id": "s-product-ux",
+                "role": "user",
+                "content": "你去看一下agent doctor的产品，现在的交互做的跟一坨屎一样",
             }
         ],
     )

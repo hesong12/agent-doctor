@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE) [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
 
-Local-first session postmortem and improvement engine for **memoryful AI agent frameworks** — agents that have their own persistent identity, memory, skills, and SOP files. Today: **Hermes, OpenClaw, Claude Code**. Same shape works for any framework that records sessions as JSONL and stores its own configuration files.
+Local-first session postmortem and improvement engine for **memoryful AI agent frameworks** — agents that have their own persistent identity, memory, skills, and SOP files. Transcript tooling still supports Hermes, OpenClaw, and Claude Code; the v1 desktop diagnosis loop is **OpenClaw desktop only**. Same shape works for any framework that records sessions as JSONL and stores its own configuration files.
 
 **Turn frustrating agent sessions into durable fixes.** Read JSONL transcripts → detect failure patterns deterministically → aggregate into one finding per session → stage reviewable patches for memory, SOP, identity, tool discipline, and evals. For productized agent deployments, let the host agent run `agent-doctor setup autopilot` so diagnosis triggers automatically from user frustration, insults/profanity, trust-break language, hidden tool failures, and unverified completion claims. The same local signals power **Agent Doctor**, a small doctor-shaped desktop surface that can be summoned by the user or woken by autopilot. No network calls in the production path. No automatic edits to your agent config.
 
@@ -38,11 +38,12 @@ command instead of asking the user to configure paths or service managers:
 agent-doctor setup autopilot
 ```
 
-That command detects OpenClaw/Hermes from the host home, installs or refreshes
+That command detects local transcript-capable hosts, installs or refreshes
 Agent Doctor skills, baselines existing transcripts, writes launchd/systemd user
 services, starts the sidecars, and installs the desktop Agent Doctor service as
-the default user-facing surface. The sidecars only update local state; Agent
-Doctor is the interaction entry point. It does not edit OpenClaw/Hermes runtime
+the default v1 user-facing surface. The OpenClaw desktop Doctor is the product
+loop in v1; dashboard, mobile, channel-native, Hermes delivery, reaction
+approval, and auto-apply flows are out of scope. It does not edit host runtime
 configuration.
 
 For always-on deployments where the user should not have to remember to ask for diagnosis, run the sidecar:
@@ -240,11 +241,11 @@ agent-doctor pet-display --status-file ./doctor-pet/pet-status.json
 
 Manual summon (`--message`) is for the current turn. Transcript mode (`--path`, `--hermes`, or `--openclaw`) uses the same ingestion, detectors, and autopilot event selection as the sidecar. Optional artifacts are written as `pet-status.json` and `pet-card.md` under `--out` with `0600` permissions and redacted transcript strings.
 
-In autopilot mode, Agent Doctor is always displayable by default: every sidecar pass writes the current `pet-status.json` and `pet-card.md` under the autopilot `--out` directory and, when setup installed the desktop service, also refreshes shared status under `~/.agent-doctor/pet`. The desktop surface uses a packaged chibi doctor sprite with state-specific motion: idle breathing, watching scan, concerned diagnostic pulse, and intervening alert. Drag it to move it, and click it to open the single status/action panel. Healthy idle is passive: it has no setup/start button and no user action requirement. The panel keeps explicit user controls in one place: check the current OpenClaw/Hermes session, hide the current alert, or quit Agent Doctor. For transcript-backed OpenClaw/Hermes incidents, the panel can send the generated recovery suggestion back through the local host adapter; users can also copy it manually or ignore it until the alert quiets itself and Agent Doctor keeps watching. The desktop service is not `KeepAlive`, so stopping the service keeps it closed until the next login or explicit service start.
+In autopilot mode, Agent Doctor is always displayable by default: every sidecar pass writes the current `pet-status.json` and `pet-card.md` under the autopilot `--out` directory and, when setup installed the desktop service, also refreshes shared status under `~/.agent-doctor/pet`. The desktop surface uses a packaged chibi doctor sprite with state-specific motion: idle breathing, watching scan, concerned diagnostic pulse, and intervening alert. Drag it to move it, and click it to open the single status/action panel. Healthy idle is passive: it has no setup/start button and no user action requirement. The panel keeps explicit user controls in one place. For actionable incidents, v1 exposes only **Tell Current Agent** and **Dismiss**. Tell Current Agent attempts to inject a structured intervention payload into the current OpenClaw system-event stream; if routing or delivery is unavailable, the panel shows a degraded/failure result instead of pretending success. Agent Doctor never auto-applies config, SOP, or memory changes in v1. The desktop service is not `KeepAlive`, so stopping the service keeps it closed until the next login or explicit service start.
 
 Watch mode automatically runs a full first pass, then switches to changed-file
 scanning using JSONL path, `mtime`, and size state in SQLite. With
-`--changed-only`, OpenClaw/Hermes first scans are bounded to the most recent
+`--changed-only`, OpenClaw first scans are bounded to the most recent
 ordinary session JSONL files and then snapshot the rest, so live monitoring does
 not replay the whole historical transcript directory on startup.
 
@@ -291,6 +292,11 @@ sidecar does not surface historical findings through Agent Doctor. Pass
 sessions as soon as it starts. Generated launchd/systemd services also include
 a host command PATH (`/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`)
 so optional legacy hooks do not depend on an interactive shell profile.
+
+Agent Doctor's comfort copy uses the user's configured OpenClaw text model by
+default. Set `AGENT_DOCTOR_COMFORT_MODEL=<provider/model>` before installing or
+starting the service only when you intentionally want a dedicated model for the
+desktop comfort surface.
 
 The installer also supports this as an opt-in:
 

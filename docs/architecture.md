@@ -62,10 +62,12 @@ when available, falls back to code-drawn shapes, applies local state-specific
 effects, and opens one click panel for status and actions. Healthy idle status
 is passive and carries no setup/start action; host service setup belongs to
 `setup autopilot`, not to the desktop window itself. The same click panel owns
-active user controls such as Check Session, Hide Alert, and Quit.
-Transcript-backed OpenClaw/Hermes incidents can be routed back through a local
-Agent Doctor action; manual incidents stay copy-only because there is no session path to
-target.
+active user controls. For actionable incidents the only v1 controls are Tell Current Agent and Dismiss.
+Transcript-backed OpenClaw incidents can be routed back through Tell Current Agent,
+which injects the structured intervention payload into the current OpenClaw
+system-event stream when routable. Manual incidents and unroutable sessions show
+a visible degraded/failure state. Hermes delivery, channel-native delivery,
+reaction approval, dashboards, mobile clients, and auto-apply are out of v1.
 
 ### Autopilot Sidecar
 

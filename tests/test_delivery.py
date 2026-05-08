@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from agent_doctor.delivery import (
+    _openclaw_subprocess_env,
     default_openclaw_notify_command,
     notify_openclaw_system_event,
     render_openclaw_system_event_text,
@@ -137,6 +138,86 @@ def test_notify_openclaw_system_event_uses_host_home_for_openclaw_cli(
     assert captured["env"]["AGENT_DOCTOR_HOST_HOME"] == str(tmp_path)  # type: ignore[index]
     assert captured["env"]["AGENT_DOCTOR_EVENT_ID"] == "evt-1"  # type: ignore[index]
     assert "/opt/homebrew/bin" in captured["env"]["PATH"]  # type: ignore[index]
+
+
+def test_openclaw_subprocess_env_loads_host_provider_keys_for_launchd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    dotenv = tmp_path / ".openclaw" / ".env"
+    dotenv.parent.mkdir()
+    dotenv.write_text(
+        "\n".join(
+            [
+                "GEMINI_API_KEY=gemini-from-dotenv",
+                "OPENROUTER_API_KEY='router-from-dotenv'",
+                "UNRELATED_SECRET=do-not-load",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    env = _openclaw_subprocess_env(
+        {
+            "AGENT_DOCTOR_HOST_HOME": str(tmp_path),
+            "PATH": "/usr/bin:/bin",
+        }
+    )
+
+    assert env["HOME"] == str(tmp_path)
+    assert env["GEMINI_API_KEY"] == "gemini-from-dotenv"
+    assert env["OPENROUTER_API_KEY"] == "router-from-dotenv"
+    assert "UNRELATED_SECRET" not in env
+
+
+def test_openclaw_subprocess_env_keeps_existing_provider_keys(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    dotenv = tmp_path / ".openclaw" / ".env"
+    dotenv.parent.mkdir()
+    dotenv.write_text("GEMINI_API_KEY=dotenv-value\n", encoding="utf-8")
+
+    env = _openclaw_subprocess_env(
+        {
+            "AGENT_DOCTOR_HOST_HOME": str(tmp_path),
+            "GEMINI_API_KEY": "existing-value",
+        }
+    )
+
+    assert env["GEMINI_API_KEY"] == "existing-value"
+
+
+def test_notify_openclaw_system_event_derives_host_home_from_sandbox_home(
+    tmp_path: Path, monkeypatch
+) -> None:
+    card = tmp_path / "card.md"
+    card.write_text("card", encoding="utf-8")
+    openclaw = tmp_path / "openclaw"
+    openclaw.write_text("#!/bin/sh\n", encoding="utf-8")
+    sandbox_home = tmp_path / ".openclaw" / "agents" / "main" / "agent" / "codex-home" / "home"
+    sandbox_home.mkdir(parents=True)
+    captured: dict[str, object] = {}
+
+    def fake_run(command, text, capture_output, timeout, env):
+        captured["env"] = env
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setenv("HOME", str(sandbox_home))
+    monkeypatch.delenv("AGENT_DOCTOR_HOST_HOME", raising=False)
+    monkeypatch.setattr("agent_doctor.delivery.subprocess.run", fake_run)
+
+    env = _event_env(card)
+    env.pop("AGENT_DOCTOR_HOST_HOME")
+    env["HOME"] = str(sandbox_home)
+    notify_openclaw_system_event(
+        env=env,
+        openclaw_bin=str(openclaw),
+    )
+
+    expected_home = Path(*sandbox_home.parts[: sandbox_home.parts.index(".openclaw")])
+    assert captured["env"]["HOME"] == str(expected_home)  # type: ignore[index]
+    assert captured["env"]["AGENT_DOCTOR_HOST_HOME"] == str(expected_home)  # type: ignore[index]
 
 
 def test_notify_openclaw_system_event_incorporates_custom_process_env(

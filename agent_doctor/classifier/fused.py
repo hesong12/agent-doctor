@@ -20,6 +20,13 @@ from .tier2 import Tier2Result, tier2_classify
 from .user_dict import UserDict
 
 
+_SEMANTIC_ANCHOR_LABELS = {
+    "profanity_or_insult",
+    "trust_break",
+    "direct_quality_complaint",
+}
+
+
 def fused_classify(
     text: str,
     *,
@@ -42,9 +49,15 @@ def fused_classify(
     rationale_parts: list[str] = []
     if tier1.rationale:
         rationale_parts.append(f"tier1={tier1.rationale}")
+    has_semantic_anchor = _has_semantic_anchor(labels)
 
-    # Signal fusion (always)
-    fusion = fuse_signals(text=text, recent_user_messages=recent_user_messages or [])
+    # Signal fusion (always), but do not let purely contextual fusion
+    # turn neutral acknowledgements ("ok", "好了", "继续") into incidents.
+    if tier1.score == 0 and _is_neutral_acknowledgement(text):
+        recent_for_fusion: list[str] = [text]
+    else:
+        recent_for_fusion = recent_user_messages or []
+    fusion = fuse_signals(text=text, recent_user_messages=recent_for_fusion)
     if fusion.total > 0:
         score += fusion.total
         if fusion.typing_shape:
@@ -62,6 +75,8 @@ def fused_classify(
             score += adj
             labels.append(f"user_dict_{'positive' if adj > 0 else 'negative'}")
             rationale_parts.append(f"user_dict={adj:+d}")
+            if adj > 0:
+                has_semantic_anchor = True
 
     # Tier 2 (borderline only, opt-in by adapter capability)
     if adapter is not None and 1 <= score <= 2:
@@ -82,9 +97,18 @@ def fused_classify(
                         score = t2_severity_score
                     for s in t2.signals:
                         labels.append(f"tier2_{s}")
+                    if t2.severity in {"medium", "high"}:
+                        has_semantic_anchor = True
                     rationale_parts.append(f"tier2={t2.severity}({t2.rationale})")
         except Exception as exc:
             rationale_parts.append(f"tier2_error={exc}")
+
+    # v1 desktop intervention is intentionally precision-first: structural
+    # signals can boost an anchored complaint, but they do not create a live
+    # incident by themselves. This preserves the neutral-message false-positive
+    # fix for turns like "ok", "好了", and "继续" after noisy context.
+    if not has_semantic_anchor:
+        return FrustrationSignal(matched=False)
 
     severity = _score_to_severity(score)
     if severity is None:
@@ -110,3 +134,24 @@ def _score_to_severity(score: int) -> Optional[Severity]:
     if score == 1:
         return "low"
     return None
+
+
+def _is_neutral_acknowledgement(text: str) -> bool:
+    normalized = text.strip().casefold().strip(".!?。！？…~～ ")
+    return normalized in {
+        "ok",
+        "okay",
+        "k",
+        "继续",
+        "繼續",
+        "好了",
+        "好",
+        "行",
+        "可以",
+        "go on",
+        "continue",
+    }
+
+
+def _has_semantic_anchor(labels: list[str]) -> bool:
+    return any(label in _SEMANTIC_ANCHOR_LABELS for label in labels)

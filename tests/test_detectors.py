@@ -55,6 +55,23 @@ def test_standalone_again_is_not_repeated_user_correction() -> None:
     assert detect_findings(messages) == []
 
 
+def test_agent_doctor_recovery_prompt_is_not_user_frustration() -> None:
+    messages = [
+        Message(
+            "session.jsonl",
+            1,
+            "s1",
+            "user",
+            (
+                "Agent Doctor detected a live quality issue in the current OpenClaw session.\n"
+                '{"type":"agent_doctor_intervention","evidence":["Why are you so dumb?"]}'
+            ),
+        )
+    ]
+
+    assert detect_findings(messages) == []
+
+
 def test_i_can_offer_is_not_promised_action() -> None:
     messages = [
         Message("session.jsonl", 1, "s1", "assistant", "I can run the tests if you want."),
@@ -166,6 +183,11 @@ def test_common_chinese_dumb_feedback_is_frustration_signal() -> None:
         "你越来越傻了。",
         "你越来越蠢了。",
         "你越来越笨了。",
+        "你它妈的不能自己用眼睛看你做的是什么鬼吗？页面底下那么多空白你是要干什么？",
+        "而且为什么我刚才那么骂你，agent doctor完全没有任何的反应？",
+        "tmd 这是什么鬼？",
+        "agent doctor 的产品现在交互做的跟一坨屎一样",
+        "这个 UI 体验屎一样",
     ]:
         messages = [
             Message("session.jsonl", 1, "s1", "user", text),
@@ -227,6 +249,7 @@ def test_technical_terms_do_not_trigger_frustration_signal() -> None:
         Message("session.jsonl", 8, "s1", "user", "这个库很笨重，不适合这个项目。"),
         Message("session.jsonl", 9, "s1", "user", "市场蠢蠢欲动，等待信号。"),
         Message("session.jsonl", 10, "s1", "user", "他蠢动了一下就停了。"),
+        Message("session.jsonl", 11, "s1", "user", "妈妈的照片在这个目录里。"),
     ]
 
     findings = detect_findings(messages)

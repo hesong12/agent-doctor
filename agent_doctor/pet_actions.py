@@ -25,11 +25,11 @@ class PetActionResult:
 def send_recovery_from_status_file(status_file: Path) -> PetActionResult:
     payload = _read_status(status_file)
     platform = str(payload.get("platform") or "generic")
-    if platform not in {"openclaw", "hermes"}:
+    if platform != "openclaw":
         return PetActionResult(
             delivered=False,
             mode="unsupported",
-            detail=f"Agent Doctor recovery delivery only supports OpenClaw/Hermes, got {platform}.",
+            detail=f"Tell Current Agent is v1 OpenClaw-only; got {platform}.",
         )
 
     source = _first_evidence_file(payload)
@@ -50,9 +50,7 @@ def send_recovery_from_status_file(status_file: Path) -> PetActionResult:
             detail="No recovery prompt was available for this incident.",
         )
 
-    if platform == "openclaw":
-        return _send_openclaw_recovery(Path(source).expanduser(), prompt, payload)
-    return _send_hermes_recovery(Path(source).expanduser(), prompt, payload)
+    return _send_openclaw_recovery(Path(source).expanduser(), prompt, payload)
 
 
 def diagnose_current_from_status_file(status_file: Path) -> PetActionResult:
@@ -105,6 +103,35 @@ def diagnose_current_from_status_file(status_file: Path) -> PetActionResult:
     )
 
 
+def dismiss_current_from_status_file(status_file: Path) -> PetActionResult:
+    payload = _read_status_if_present(status_file)
+    event_id = str(payload.get("latest_event_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    trigger = str(payload.get("latest_trigger") or "").strip()
+    state_path = _dismiss_state_path(status_file, payload)
+    if event_id and state_path is not None:
+        from .autopilot import AutopilotState
+
+        state = AutopilotState(state_path)
+        try:
+            state.dismiss(event_id, session_id, trigger)
+        finally:
+            state.close()
+
+    _write_dismissed_status(status_file, payload)
+    if not event_id:
+        return PetActionResult(
+            delivered=True,
+            mode="dismissed_local",
+            detail="Dismissed the visible Agent Doctor alert locally.",
+        )
+    return PetActionResult(
+        delivered=True,
+        mode="dismissed",
+        detail=f"Dismissed Agent Doctor event {event_id}.",
+    )
+
+
 def _read_status(path: Path) -> dict[str, Any]:
     data = json.loads(path.expanduser().read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -117,6 +144,44 @@ def _read_status_if_present(path: Path) -> dict[str, Any]:
         return _read_status(path)
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
         return {}
+
+
+def _dismiss_state_path(status_file: Path, payload: dict[str, Any]) -> Path | None:
+    explicit = str(payload.get("dismiss_state_path") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    platform = str(payload.get("platform") or "").strip().casefold()
+    if platform in {"openclaw", "hermes"}:
+        return Path.home() / ".agent-doctor" / platform / "state.sqlite3"
+    sibling = status_file.expanduser().parent / "state.sqlite3"
+    return sibling if sibling.exists() else None
+
+
+def _write_dismissed_status(status_file: Path, payload: dict[str, Any]) -> None:
+    from .pet import PetStatus, write_pet_artifacts
+
+    platform = str(payload.get("platform") or "generic")
+    status = PetStatus(
+        name="Agent Doctor",
+        persona="doctor",
+        state="idle",
+        action="silent",
+        severity="low",
+        session_id=str(payload.get("session_id") or ""),
+        headline="Incident dismissed.",
+        message="Agent Doctor dismissed this incident and will keep watching for new signals.",
+        evidence=(),
+        options=(),
+        messages=0,
+        sessions=0,
+        findings=0,
+        events=0,
+        platform=platform if platform in {"openclaw", "hermes", "generic"} else "generic",
+        phase="ignored",
+        diagnosis="The visible incident was dismissed by the user.",
+        recommendation="Do not show this same incident again unless a new qualifying trigger appears.",
+    )
+    write_pet_artifacts(status_file.expanduser().parent, status)
 
 
 def _current_transcript_target(payload: dict[str, Any]) -> tuple[str, Path | None]:
@@ -181,7 +246,7 @@ def _send_openclaw_recovery(
     prompt: str,
     payload: dict[str, Any],
 ) -> PetActionResult:
-    from .adapters import MessageKind, OpenClawAdapter
+    from .adapters import OpenClawAdapter
     from .channel_router import resolve
 
     adapter = OpenClawAdapter.detect()
@@ -189,62 +254,69 @@ def _send_openclaw_recovery(
         return PetActionResult(
             delivered=False,
             mode="openclaw_missing",
-            detail="OpenClaw was not detected on this machine.",
+            detail="OpenClaw was not detected; Agent Doctor could not route Tell Current Agent.",
         )
 
-    target, _language = resolve(transcript_path, adapter)
-    caps = adapter.capabilities()
-    if target.kind() == "tui" and caps.can_inject_system_event:
-        adapter.inject_system_event(prompt, mode="now")
-        return PetActionResult(
-            delivered=True,
-            mode="openclaw_system_event",
-            detail="Sent recovery suggestion to the active OpenClaw TUI session.",
-        )
-
-    body = _message_body(prompt, payload)
-    message_id = adapter.send_message(target, body, MessageKind.intervene)
-    return PetActionResult(
-        delivered=True,
-        mode=f"openclaw_{target.kind()}",
-        detail=f"Sent recovery suggestion through OpenClaw adapter ({message_id}).",
-    )
-
-
-def _send_hermes_recovery(
-    transcript_path: Path,
-    prompt: str,
-    payload: dict[str, Any],
-) -> PetActionResult:
-    from .adapters import HermesAdapter, MessageKind
-    from .channel_router import resolve
-
-    adapter = HermesAdapter.detect()
-    if adapter is None:
+    try:
+        target, _language = resolve(transcript_path, adapter)
+        caps = adapter.capabilities()
+    except Exception as exc:
         return PetActionResult(
             delivered=False,
-            mode="hermes_missing",
-            detail="Hermes was not detected on this machine.",
+            mode="openclaw_route_failed",
+            detail=f"Could not resolve the current OpenClaw session: {exc}",
         )
-    target, _language = resolve(transcript_path, adapter)
-    message_id = adapter.send_message(target, _message_body(prompt, payload), MessageKind.intervene)
+
+    if target.kind() != "tui":
+        return PetActionResult(
+            delivered=False,
+            mode="openclaw_not_routable",
+            detail="The incident is not routable to an active OpenClaw TUI session.",
+        )
+
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        return PetActionResult(
+            delivered=False,
+            mode="openclaw_session_missing",
+            detail="The incident did not include an OpenClaw session id for targeted delivery.",
+        )
+
+    send_agent_turn = getattr(adapter, "send_agent_turn", None)
+    if callable(send_agent_turn):
+        try:
+            send_agent_turn(session_id, prompt)
+        except Exception as exc:
+            return PetActionResult(
+                delivered=False,
+                mode="openclaw_agent_session_failed",
+                detail=f"OpenClaw targeted session delivery failed: {exc}",
+            )
+
+        return PetActionResult(
+            delivered=True,
+            mode="openclaw_agent_session",
+            detail=f"Tell Current Agent sent the structured intervention to OpenClaw session {session_id}.",
+        )
+
+    if not caps.can_inject_system_event:
+        return PetActionResult(
+            delivered=False,
+            mode="openclaw_not_routable",
+            detail="The OpenClaw adapter cannot deliver a targeted agent turn or system event.",
+        )
+
+    try:
+        adapter.inject_system_event(prompt, mode="now")
+    except Exception as exc:
+        return PetActionResult(
+            delivered=False,
+            mode="openclaw_system_event_failed",
+            detail=f"OpenClaw system-event delivery failed: {exc}",
+        )
+
     return PetActionResult(
         delivered=True,
-        mode=f"hermes_{target.kind()}",
-        detail=f"Wrote recovery suggestion for Hermes ({message_id}).",
-    )
-
-
-def _message_body(prompt: str, payload: dict[str, Any]):
-    from .adapters import MessageBody
-
-    session_id = str(payload.get("session_id") or "current session")
-    card_path = str(payload.get("card_path") or "")
-    footer = f"Session: {session_id}"
-    if card_path:
-        footer += f"\nCard: {card_path}"
-    return MessageBody(
-        header="Agent Doctor recovery suggestion",
-        body=prompt,
-        footer=footer,
+        mode="openclaw_system_event",
+        detail="Tell Current Agent injected the structured intervention into the active OpenClaw system event stream.",
     )

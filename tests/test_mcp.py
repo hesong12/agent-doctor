@@ -238,7 +238,7 @@ def test_tool_doctor_pet_intervene_returns_recovery_options() -> None:
     assert response["ok"] is True
     assert response["should_intervene"] is True
     option_ids = [option["id"] for option in response["intervention"]["options"]]
-    assert "pause_and_diagnose" in option_ids
+    assert option_ids == ["dismiss"]
 
 
 def test_tool_doctor_pet_requires_one_input() -> None:

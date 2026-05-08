@@ -32,6 +32,7 @@ from .ingest import (
 )
 from .redaction import redact_text, redact_value
 from .schema import Finding, Message, Severity
+from .self_messages import is_agent_doctor_recovery_message
 
 Platform = Literal["openclaw", "hermes", "generic"]
 Action = Literal["silent", "notify", "intervene"]
@@ -162,6 +163,8 @@ def run_autopilot_once(
 
     emitted: list[AutopilotEvent] = []
     delivery_errors: list[str] = []
+    dismissed_event_ids: set[str] = set()
+    dismissed_finding_ids: set[str] = set()
     suppressed = 0
     try:
         for event in candidates:
@@ -188,6 +191,9 @@ def run_autopilot_once(
                     state.record(event)
                 emitted.append(event)
             else:
+                if state.is_dismissed(event):
+                    dismissed_event_ids.add(event.id)
+                    dismissed_finding_ids.update(event.finding_ids)
                 suppressed += 1
     finally:
         state.close()
@@ -199,75 +205,42 @@ def run_autopilot_once(
         from .pet import build_pet_status, write_pet_artifacts
 
         event_overrides = {event.id: event for event in emitted}
-        pet_events = [event_overrides.get(event.id, event) for event in candidates]
+        pet_events = [
+            event_overrides.get(event.id, event)
+            for event in candidates
+            if event.id not in dismissed_event_ids
+        ]
+        visible_findings = [
+            finding for finding in findings if finding.id not in dismissed_finding_ids
+        ]
         pet_status = build_pet_status(
             messages,
-            findings,
+            visible_findings,
             platform=platform,
             events=pet_events,
             parse_errors=parse_errors,
         )
-        pet_paths = write_pet_artifacts(out_dir, pet_status)
-        if pet_out_dir is not None and pet_out_dir.expanduser() != out_dir:
-            write_pet_artifacts(pet_out_dir, pet_status)
-        pet_state = pet_status.state
-        pet_status_path = str(pet_paths["status"])
-        pet_card_path = str(pet_paths["card"])
+        pet_status = replace(pet_status, dismiss_state_path=str(state.path))
+        preserve_dir = pet_out_dir.expanduser() if pet_out_dir is not None else out_dir
+        preserved = _preserved_active_pet_paths(preserve_dir, pet_status, messages)
+        if preserved is not None:
+            pet_state = preserved["state"]
+            pet_status_path = str(preserved["status"])
+            pet_card_path = str(preserved["card"])
+        else:
+            pet_paths = write_pet_artifacts(out_dir, pet_status)
+            if pet_out_dir is not None and pet_out_dir.expanduser() != out_dir:
+                write_pet_artifacts(pet_out_dir, pet_status)
+            pet_state = pet_status.state
+            pet_status_path = str(pet_paths["status"])
+            pet_card_path = str(pet_paths["card"])
     except OSError as exc:
         delivery_errors.append(f"pet_status_write_failed: {exc}")
 
-    # Phase 4: drafting proposals from this scan's findings ----------------
-    proposals_path = out_dir / "proposals.jsonl"
-    try:
-        from .proposer import draft_proposals_for_session, save_proposals
-        for session_id in {f.session_id for f in findings}:
-            new_proposals = draft_proposals_for_session(
-                findings=findings, session_id=session_id,
-            )
-            if new_proposals:
-                save_proposals(proposals_path, new_proposals)
-    except ImportError:
-        pass  # proposer not available; legacy path still works
-
-    # Phase 4: poll pending proposals for ✅/❌/💬 reactions ---------------
-    try:
-        from .proposer import load_proposals
-        from .reaction_watcher import poll_pending_proposals
-        from .adapters import GenericAdapter, OpenClawAdapter, HermesAdapter
-        existing = load_proposals(proposals_path)
-        if existing:
-            adapter_classes = {
-                "openclaw": OpenClawAdapter,
-                "hermes": HermesAdapter,
-                "generic": GenericAdapter,
-            }
-            adapter_cls = adapter_classes.get(platform, GenericAdapter)
-            adapter_instance = adapter_cls.detect() or GenericAdapter()
-            transitions = poll_pending_proposals(
-                existing,
-                adapter=adapter_instance,
-                applier=lambda p: _apply_and_log(p, adapter_instance, out_dir),
-            )
-            if transitions:
-                _persist_proposal_transitions(proposals_path, transitions)
-    except ImportError:
-        pass
-
-    # Phase 4 refining: redraft refining proposals using new user messages
-    try:
-        from .refining import redraft_pending
-        from .proposer import load_proposals
-        existing = load_proposals(out_dir / "proposals.jsonl")
-        if existing:
-            new_redrafts = redraft_pending(
-                existing,
-                messages,
-                adapter=adapter_instance if 'adapter_instance' in locals() else None,
-            )
-            if new_redrafts:
-                _replace_proposals_with_redrafts(out_dir / "proposals.jsonl", new_redrafts)
-    except ImportError:
-        pass
+    # v1 boundary: the desktop Doctor/pet can tell the current OpenClaw agent
+    # how to recover, but Agent Doctor must not auto-apply config/SOP/memory or
+    # run reaction-approval loops from autopilot. Durable changes remain
+    # reviewable via explicit scan/apply flows.
 
     return AutopilotResult(
         platform=platform,
@@ -305,6 +278,35 @@ def baseline_autopilot_state(
     finally:
         state.close()
     return len(paths)
+
+
+def _preserved_active_pet_paths(
+    out_dir: Path,
+    next_status,
+    messages: list[Message],
+) -> dict[str, object] | None:
+    """Keep a live pet intervention visible across empty changed-only polls.
+
+    The watch loop often sees an incident on one cycle, then zero new JSONL
+    lines two seconds later. That empty cycle should not immediately overwrite
+    an active desktop Doctor card with idle; the desktop surface already has an
+    expiry window for live incidents.
+    """
+
+    if messages or next_status.state != "idle":
+        return None
+    status_path = out_dir.expanduser() / "pet-status.json"
+    card_path = out_dir.expanduser() / "pet-card.md"
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        state = str(payload.get("state", "idle"))
+        expires_after = float(payload.get("expires_after_seconds", 0) or 0)
+        age = time.time() - status_path.stat().st_mtime
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if state == "idle" or expires_after <= 0 or age >= expires_after:
+        return None
+    return {"state": state, "status": status_path, "card": card_path}
 
 
 def _ingest_paths(paths: list[Path]) -> tuple[list[Message], int]:
@@ -353,7 +355,7 @@ def detect_autopilot_events(
     events: list[AutopilotEvent] = []
     for index, message in enumerate(ordered):
         session_findings = findings_by_session.get(message.session_id, [])
-        if message.role == "user":
+        if message.role == "user" and not is_agent_doctor_recovery_message(message.content):
             frustration = _classify_user_message(message, ordered, index, platform)
         else:
             frustration = FrustrationSignal(matched=False)
@@ -430,7 +432,7 @@ def write_diagnosis_card(
         "",
         "## Evidence",
         "",
-        f"> {redact_text(event.evidence).strip()}",
+        f"> {_card_evidence(event)}",
         "",
         "## Recommended Action",
         "",
@@ -458,6 +460,39 @@ def write_diagnosis_card(
     latest_path = out_dir / "latest.md"
     _write_private_text(latest_path, "\n".join(lines))
     return replace(event, card_path=str(card_path))
+
+
+def _card_evidence(event: AutopilotEvent) -> str:
+    evidence = event.evidence.strip()
+    try:
+        payload = json.loads(evidence)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        content_items = payload.get("contentItems")
+        if isinstance(content_items, list):
+            parts = [
+                str(item.get("text") or item.get("content") or "").strip()
+                for item in content_items
+                if isinstance(item, dict)
+            ]
+            evidence = "\n".join(part for part in parts if part) or evidence
+        else:
+            for key in ("text", "content", "message", "error", "detail"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    evidence = value.strip()
+                    break
+    evidence = re.sub(
+        r"(Conversation info|Sender) \(untrusted metadata\):\s*```json.*?```\s*",
+        "",
+        evidence,
+        flags=re.S,
+    )
+    evidence = re.sub(r"\s+", " ", evidence).strip()
+    if evidence.startswith("{") and evidence.endswith("}"):
+        evidence = "Structured tool output was omitted from the user-facing card."
+    return redact_text(evidence)[:1200]
 
 
 def append_event(path: Path, event: AutopilotEvent) -> None:
@@ -606,7 +641,11 @@ def _classify_user_message(
     # Build recent user messages for the same session
     recent: list[str] = []
     for prior in ordered[: index + 1]:
-        if prior.role == "user" and prior.session_id == message.session_id:
+        if (
+            prior.role == "user"
+            and prior.session_id == message.session_id
+            and not is_agent_doctor_recovery_message(prior.content)
+        ):
             recent.append(prior.content)
     recent = recent[-10:]  # last 10 user messages
 
@@ -775,6 +814,16 @@ class AutopilotState:
         )
         self.connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS dismissed_events (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              trigger TEXT NOT NULL,
+              dismissed_at REAL NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS seen_files (
               path TEXT PRIMARY KEY,
               mtime_ns INTEGER NOT NULL,
@@ -789,6 +838,8 @@ class AutopilotState:
             pass
 
     def should_emit(self, event: AutopilotEvent, *, cooldown_seconds: int) -> bool:
+        if self.is_dismissed(event):
+            return False
         row = self.connection.execute(
             "SELECT emitted_at FROM emitted_events WHERE id = ?", (event.id,)
         ).fetchone()
@@ -806,6 +857,12 @@ class AutopilotState:
             return True
         return (time.time() - float(row[0])) >= cooldown_seconds
 
+    def is_dismissed(self, event: AutopilotEvent) -> bool:
+        row = self.connection.execute(
+            "SELECT dismissed_at FROM dismissed_events WHERE id = ?", (event.id,)
+        ).fetchone()
+        return row is not None
+
     def record(self, event: AutopilotEvent) -> None:
         self.connection.execute(
             """
@@ -813,6 +870,22 @@ class AutopilotState:
             VALUES (?, ?, ?, ?)
             """,
             (event.id, event.session_id, event.trigger, time.time()),
+        )
+        self.connection.commit()
+
+    def dismiss(self, event_id: str, session_id: str, trigger: str) -> None:
+        if not event_id:
+            return
+        self.connection.execute(
+            """
+            INSERT INTO dismissed_events(id, session_id, trigger, dismissed_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              session_id = excluded.session_id,
+              trigger = excluded.trigger,
+              dismissed_at = excluded.dismissed_at
+            """,
+            (event_id, session_id, trigger, time.time()),
         )
         self.connection.commit()
 

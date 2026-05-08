@@ -45,6 +45,31 @@ def test_repeat_theme_detects_repeated_word() -> None:
     assert score_repeat_themes(messages) == 1
 
 
+def test_repeat_theme_detects_repeated_chinese_phrase_across_turns() -> None:
+    messages = [
+        "这个 memory 状态不对。",
+        "memory 同步还是不对。",
+        "先把 memory 状态查清楚。",
+    ]
+    assert score_repeat_themes(messages) == 1
+
+
+def test_repeat_theme_ignores_single_long_chinese_question() -> None:
+    messages = [
+        "我们聊一下ai harness的事情，scripts/submit-work.sh 这个东西是我们之前搞的repo scoped的规范，这个是放在了你的skill里面了吗？还是在哪里？这种类似的规范本身是有体现在我们目前的ai harness的设计和实现中吗？我们有什么办法可以做到一个unified submit-work的harness，这样可以更加的规范和确定性一些？"
+    ]
+    assert score_repeat_themes(messages) == 0
+
+
+def test_repeat_theme_ignores_chinese_stopword_density() -> None:
+    messages = [
+        "这个事情是一个需要整体看的事情。",
+        "这个规范本身是在哪里体现的？",
+        "我们是不是可以用一个统一入口？",
+    ]
+    assert score_repeat_themes(messages) == 0
+
+
 def test_repeat_theme_zero_when_under_threshold() -> None:
     messages = ["alpha beta", "gamma delta"]
     assert score_repeat_themes(messages) == 0
@@ -67,3 +92,18 @@ def test_fuse_signals_works_without_history() -> None:
     assert scores.trajectory == 0
     assert scores.repeat_theme == 0
     assert scores.typing_shape >= 1
+
+def test_repeat_theme_counts_meaningful_single_cjk_tokens() -> None:
+    messages = ["你很笨", "还是笨", "笨"]
+
+    assert score_repeat_themes(messages) == 1
+
+
+def test_repeat_theme_does_not_fire_on_repeated_technical_cjk_nouns() -> None:
+    messages = [
+        "代码运行路径需要看一下",
+        "代码运行日志在哪里",
+        "代码运行环境是 Python 3.12",
+    ]
+
+    assert score_repeat_themes(messages) == 0
