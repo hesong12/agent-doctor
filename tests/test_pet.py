@@ -1117,7 +1117,14 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "Start Monitoring" not in source
     assert "Starting live monitoring" not in source
     assert "setup\", \"autopilot" not in source
-    assert "runModal()" not in source
+    # Modal STATUS panels (the pre-PR-18 pattern) must not come back. We
+    # narrow the assertion to the panel-drawing + recovery-delivery paths
+    # so user-initiated NSAlert input prompts (e.g., the Gemini menu items
+    # added on top of PR #18) remain free to use the standard runModal()
+    # pattern for one-shot text capture.
+    panel_source = source[source.index("func drawPanel") : source.index("override func draw(_ dirtyRect")]
+    assert "runModal()" not in panel_source
+    assert "runModal()" not in send_recovery_source
 
 
 def test_appkit_display_source_has_sprite_context_menu() -> None:

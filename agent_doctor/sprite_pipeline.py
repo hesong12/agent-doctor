@@ -30,9 +30,23 @@ _FLOODFILL_THRESH = 28
 # "took on BOTH values across two passes" rather than "value-equals-A". A
 # pixel that originally already equaled either sentinel can still be
 # unambiguously flagged as filled, because no untouched pixel can equal
-# both sentinels (they differ in every channel).
-_FLOODFILL_SENTINEL = (1, 2, 3)
-_FLOODFILL_SENTINEL_ALT = (254, 253, 252)
+# both sentinels (they differ in every channel by more than _FLOODFILL_THRESH).
+#
+# Sentinel choice constraints:
+# 1. Per-channel diff between A and B exceeds _FLOODFILL_THRESH on every
+#    channel — needed for the "no natural pixel equals both" guarantee.
+#    A=(200,30,30) vs B=(30,200,100) → 170 / 170 / 70.
+# 2. Sum-abs-diff to common background colors exceeds _FLOODFILL_THRESH so
+#    PIL's ImageDraw.floodfill does NOT early-exit on a corner whose value
+#    is within thresh of either sentinel. floodfill returns immediately
+#    when _color_diff(value, seed_color) <= thresh, leaving the pass with
+#    target == original and breaking the AND-of-two-masks step. The pre-
+#    review pair (1,2,3) and (254,253,252) violated this for any near-white
+#    corner (diff to B was as low as 2 for (253,253,253)). The current pair
+#    is sum-abs-diff ≥ 260 from pure black, ≥ 435 from pure white, ≥ 429
+#    from typical near-white (253,253,253).
+_FLOODFILL_SENTINEL = (200, 30, 30)
+_FLOODFILL_SENTINEL_ALT = (30, 200, 100)
 _ALPHA_BLUR_RADIUS = 0.6
 
 
@@ -102,13 +116,24 @@ def _floodfill_alpha(rgba: "PILImage") -> "PILImage":
        pixels.
 
     We sidestep both by floodfilling **twice** with two complementary
-    sentinels (``A = (1,2,3)`` and ``B = (254,253,252)``, no overlap on any
-    channel) and intersecting the per-pass exact-match masks. A pixel is
+    sentinels (``A = (200, 30, 30)`` and ``B = (30, 200, 100)``, with
+    per-channel diff > ``_FLOODFILL_THRESH`` so no natural pixel can equal
+    both) and intersecting the per-pass exact-match masks. A pixel is
     flagged "filled" iff ``target_a[p] == A AND target_b[p] == B``. Since
     a single original pixel cannot simultaneously equal both sentinels, the
     only way both equalities hold is that floodfill painted the pixel in
     both passes — the desired ground truth. Untouched pixels never satisfy
     both equalities even when they happen to equal one sentinel.
+
+    The earlier sentinel pair ``(1,2,3)`` / ``(254,253,252)`` failed
+    silently on white-background images: PIL's ``ImageDraw.floodfill``
+    returns without painting when ``_color_diff(value, seed_color) <=
+    thresh``, so a corner pixel like ``(253,253,253)`` (sum-abs-diff = 2
+    to ``(254,253,252)``) left ``target_b`` untouched, ``match_b = 0``, and
+    therefore ``filled = match_a AND match_b = 0`` — the background stayed
+    fully opaque. The current pair sits ≥ 429 sum-abs-diff away from
+    typical near-white corners and ≥ 260 from pure black, so neither pass
+    short-circuits.
     """
 
     _Image, ImageDraw, ImageFilter = _load_pillow()
