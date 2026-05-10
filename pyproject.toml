@@ -19,6 +19,7 @@ dependencies = []
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 llm = ["anthropic>=0.34"]
 mcp = ["mcp>=1.0"]
+sprite = ["Pillow>=10"]
 
 [project.scripts]
 agent-doctor = "agent_doctor.cli:main"

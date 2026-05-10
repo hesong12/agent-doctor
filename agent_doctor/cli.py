@@ -186,6 +186,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dismiss_current.set_defaults(func=_cmd_pet_action_dismiss)
 
+    pet_set_sprite = subparsers.add_parser(
+        "pet-set-sprite",
+        help="Replace the desktop pet image with your own sprite.",
+    )
+    pet_set_sprite.add_argument(
+        "source",
+        type=Path,
+        help="Path to the source image (JPG/PNG/WEBP).",
+    )
+    pet_set_sprite.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Override output path. Default: ~/.agent-doctor/pet/sprite.png.",
+    )
+    pet_set_sprite.add_argument(
+        "--no-bg-removal",
+        action="store_true",
+        help="Skip the corner floodfill background removal (still resized).",
+    )
+    pet_set_sprite.set_defaults(func=_cmd_pet_set_sprite)
+
     autopilot = subparsers.add_parser(
         "autopilot",
         help="Run the platform-agnostic sidecar trigger engine without host runtime hooks.",
@@ -777,6 +799,36 @@ def _cmd_pet_action_dismiss(args: argparse.Namespace) -> int:
     result = dismiss_current_from_status_file(args.status_file)
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     return 0 if result.delivered else 1
+
+
+def _cmd_pet_set_sprite(args: argparse.Namespace) -> int:
+    source: Path = Path(args.source).expanduser()
+    if not source.exists():
+        print(f"agent-doctor: source image not found: {source}", file=sys.stderr)
+        return 2
+
+    from .pet_display import user_sprite_path
+    from .sprite_pipeline import PillowMissingError, apply_sprite
+
+    destination: Path = (
+        Path(args.out).expanduser() if args.out is not None else user_sprite_path()
+    )
+
+    try:
+        written = apply_sprite(
+            source,
+            destination,
+            remove_background=not args.no_bg_removal,
+        )
+    except PillowMissingError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 3
+    except FileNotFoundError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"agent-doctor: wrote sprite -> {written}")
+    return 0
 
 
 def _cmd_autopilot(args: argparse.Namespace) -> int:

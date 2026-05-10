@@ -12,6 +12,16 @@ let expandedWindowHeight: CGFloat = 560
 let idleExpandedWindowHeight: CGFloat = 430
 let idleNoticeExpandedWindowHeight: CGFloat = 500
 
+enum SpriteWatcher {
+    static func modificationDate(at path: String) -> Date? {
+        if path.isEmpty {
+            return nil
+        }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        return attrs?[.modificationDate] as? Date
+    }
+}
+
 func stringValue(_ dict: [String: Any], _ key: String, _ fallback: String) -> String {
     if let value = dict[key] as? String {
         return value
@@ -269,7 +279,25 @@ class PetView: NSView {
     var runningActionId = ""
     var activeProcesses: [Process] = []
     var statusReloadInFlight = false
-    let petImage: NSImage? = assetPath.isEmpty ? nil : NSImage(contentsOfFile: assetPath)
+    var petImage: NSImage? = assetPath.isEmpty ? nil : NSImage(contentsOfFile: assetPath)
+    var lastSpriteMTime: Date? = SpriteWatcher.modificationDate(at: assetPath)
+
+    func reloadSpriteIfChanged() {
+        if assetPath.isEmpty {
+            return
+        }
+        guard let current = SpriteWatcher.modificationDate(at: assetPath) else {
+            return
+        }
+        if let cached = lastSpriteMTime, cached == current {
+            return
+        }
+        lastSpriteMTime = current
+        if let refreshed = NSImage(contentsOfFile: assetPath) {
+            petImage = refreshed
+            needsDisplay = true
+        }
+    }
 
     override var isOpaque: Bool { false }
 
@@ -1353,6 +1381,7 @@ app.activate(ignoringOtherApps: true)
 
 Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { _ in
     let now = Date()
+    view.reloadSpriteIfChanged()
     if now.timeIntervalSince(view.lastStatusReload) >= max(0.2, pollSeconds) {
         view.requestStatusReload(now)
     } else {

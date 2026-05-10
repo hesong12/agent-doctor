@@ -246,7 +246,19 @@ agent-doctor pet-display --status-file ./doctor-pet/pet-status.json
 
 Manual summon (`--message`) is for the current turn. Transcript mode (`--path`, `--hermes`, or `--openclaw`) uses the same ingestion, detectors, and autopilot event selection as the sidecar. Optional artifacts are written as `pet-status.json` and `pet-card.md` under `--out` with `0600` permissions and redacted transcript strings.
 
-In autopilot mode, Agent Doctor is always displayable by default: every sidecar pass writes the current `pet-status.json` and `pet-card.md` under the autopilot `--out` directory and, when setup installed the desktop service, also refreshes shared status under `~/.agent-doctor/pet`. The desktop surface uses a packaged chibi doctor sprite with state-specific motion: idle breathing, watching scan, concerned diagnostic pulse, and intervening alert. Drag it to move it, and click it to open the single status/action panel. Healthy idle is passive: it has no setup/start button and no user action requirement. The panel keeps explicit user controls in one place. For actionable incidents, v1 exposes **Dismiss** and, when the incident is routable, **Tell Current Agent**. Tell Current Agent attempts to inject a structured intervention payload into the current OpenClaw system-event stream; if routing or delivery is unavailable, the panel shows a degraded/failure result instead of pretending success. Agent Doctor never auto-applies config, SOP, or memory changes in v1. The desktop service is not `KeepAlive`, so stopping the service keeps it closed until the next login or explicit service start.
+In autopilot mode, Agent Doctor is always displayable by default: every sidecar pass writes the current `pet-status.json` and `pet-card.md` under the autopilot `--out` directory and, when setup installed the desktop service, also refreshes shared status under `~/.agent-doctor/pet`. The desktop surface uses a packaged chibi doctor sprite with state-specific motion: idle breathing, watching scan, concerned diagnostic pulse, and intervening alert. Drag it to move it, and click it to open the single status/action panel. Right-click (Control-click on macOS) the pet to pick "Change sprite…" and replace the doctor with any image you like.
+
+#### Custom pet sprite
+
+You can replace the desktop pet image with your own:
+
+```bash
+pip install agent-doctor[sprite]                              # one-time: install Pillow
+agent-doctor pet-set-sprite ~/Downloads/my-cat.jpg            # crop, resize, transparent bg
+agent-doctor pet-set-sprite ~/Downloads/my-cat.png --no-bg-removal  # skip floodfill
+```
+
+The pipeline center-square crops the source, resizes it to 512×512 with LANCZOS, and runs a corner floodfill (`thresh=28`, soft 0.6px alpha blur) to drop a uniform/cream background. The result is written atomically to `~/.agent-doctor/pet/sprite.png` and the running pet hot-reloads within ~2 seconds — no kill/relaunch. The packaged default doctor sprite is left untouched; delete `~/.agent-doctor/pet/sprite.png` to revert. Pillow stays an optional extra; the base install does not require it. Healthy idle is passive: it has no setup/start button and no user action requirement. The panel keeps explicit user controls in one place. For actionable incidents, v1 exposes **Dismiss** and, when the incident is routable, **Tell Current Agent**. Tell Current Agent attempts to inject a structured intervention payload into the current OpenClaw system-event stream; if routing or delivery is unavailable, the panel shows a degraded/failure result instead of pretending success. Agent Doctor never auto-applies config, SOP, or memory changes in v1. The desktop service is not `KeepAlive`, so stopping the service keeps it closed until the next login or explicit service start.
 
 Watch mode automatically runs a full first pass, then switches to changed-file
 scanning using JSONL path, `mtime`, and size state in SQLite. With
