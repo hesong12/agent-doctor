@@ -63,6 +63,34 @@ def test_transform_floodfills_corners_to_transparent(tmp_path: Path) -> None:
         assert alpha == 0, f"corner ({x},{y}) should be transparent, got alpha={alpha}"
 
 
+def test_transform_handles_sentinel_colored_corner_background(tmp_path: Path) -> None:
+    """Regression: the corner-connected background may itself already equal
+    the floodfill sentinel triple ``(1, 2, 3)``. A diff-based mask alone
+    misses those pixels because floodfill leaves them value-unchanged. The
+    two-pass approach (intersect exact-match masks for two complementary
+    sentinels) correctly flags them as filled, so the entire background
+    becomes transparent.
+    """
+
+    # Whole image is exactly the primary sentinel color. Floodfill from any
+    # corner walks the entire image (every pixel is within thresh of every
+    # other), so 100% of pixels should end up transparent.
+    img = Image.new("RGB", (64, 64), sprite_pipeline._FLOODFILL_SENTINEL)
+    src = tmp_path / "all-sentinel.png"
+    img.save(src, "PNG")
+
+    out = sprite_pipeline.transform_image(src)
+    pixels = out.load()
+
+    last = SIZE - 1
+    for x, y in [(0, 0), (last, 0), (0, last), (last, last), (SIZE // 2, SIZE // 2)]:
+        _, _, _, alpha = pixels[x, y]
+        assert alpha == 0, (
+            f"pixel ({x},{y}) should be transparent for an all-sentinel "
+            f"background, got alpha={alpha}"
+        )
+
+
 def test_transform_does_not_punch_out_unfilled_sentinel_colored_pixels(
     tmp_path: Path,
 ) -> None:
@@ -267,6 +295,85 @@ def test_cli_pet_set_sprite_missing_input(tmp_path: Path, capsys: pytest.Capture
     captured = capsys.readouterr()
     assert rc != 0
     assert "not found" in (captured.err + captured.out).lower()
+
+
+def test_cli_pet_set_sprite_directory_input(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A directory as the source must produce a clean message + nonzero exit,
+    not a Python traceback (which would surface as an ugly Tk messagebox
+    when invoked from the right-click flow)."""
+
+    from agent_doctor import cli
+
+    rc = cli.main(["pet-set-sprite", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    text = (captured.err + captured.out).lower()
+    assert rc != 0
+    assert "directory" in text
+    assert "traceback" not in text
+
+
+def test_cli_pet_set_sprite_write_error_is_reported_as_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: an OSError from the WRITE phase (e.g. ENOSPC, read-only
+    destination dir) must be reported as a write failure, not a decode
+    failure. Pre-fix, the broad ``except OSError`` around ``apply_sprite``
+    swallowed both phases and reported every error as ``could not decode
+    image '<source>'``, which sent the user to the wrong root cause.
+    """
+
+    src = tmp_path / "src.jpg"
+    _cream_cat_image().save(src, "JPEG", quality=92)
+    out_path = tmp_path / "dest" / "sprite.png"
+
+    from agent_doctor import sprite_pipeline
+
+    def fake_write(_image: object, _destination: object) -> Path:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(sprite_pipeline, "write_sprite_atomic", fake_write)
+
+    from agent_doctor import cli
+
+    rc = cli.main(["pet-set-sprite", str(src), "--out", str(out_path)])
+
+    captured = capsys.readouterr()
+    text = (captured.err + captured.out).lower()
+
+    assert rc != 0
+    assert "traceback" not in text
+    # Must clearly point at the destination/write side, not the source decode.
+    assert "could not decode" not in text
+    assert "write" in text
+    assert str(out_path).lower() in text
+
+
+def test_cli_pet_set_sprite_corrupt_image(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Non-image files (e.g., a .png that is not actually a PNG) should
+    surface PIL.UnidentifiedImageError as a single clean error line, not
+    a stack trace."""
+
+    src = tmp_path / "not-really.png"
+    src.write_bytes(b"definitely not an image, just some garbage bytes")
+    out = tmp_path / "out.png"
+
+    from agent_doctor import cli
+
+    rc = cli.main(["pet-set-sprite", str(src), "--out", str(out)])
+
+    captured = capsys.readouterr()
+    text = (captured.err + captured.out).lower()
+    assert rc != 0
+    assert "traceback" not in text
+    # Some indication that decoding failed (don't pin the exact PIL phrasing).
+    assert "decode" in text or "image" in text
 
 
 def test_cli_pet_set_sprite_clean_error_when_pillow_missing(

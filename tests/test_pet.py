@@ -1148,7 +1148,12 @@ def test_tk_display_canvas_is_large_enough_for_readable_pet_text() -> None:
     assert pet_display._WINDOW_HEIGHT >= 300
 
 
-def test_pet_display_uses_packaged_sprite_asset() -> None:
+def test_pet_display_uses_packaged_sprite_asset(monkeypatch, tmp_path: Path) -> None:
+    # Force the user-sprite override to a non-existent path so this test
+    # doesn't pick up a leftover ~/.agent-doctor/pet/sprite.png from a dev
+    # box and is hermetic in any environment.
+    monkeypatch.setattr(pet_display, "user_sprite_path", lambda: tmp_path / "absent.png")
+
     path = pet_asset_path()
 
     assert path is not None
