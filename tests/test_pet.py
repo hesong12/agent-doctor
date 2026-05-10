@@ -1108,8 +1108,6 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "Intervention needed" in source
     assert "runningActionId" in source
     assert "NSApplication.shared.terminate(nil)" in source
-    assert "rightMouseDown" not in source
-    assert "NSMenu" not in source
     assert "Dismiss Current Event" not in source
     assert "Diagnose Current Session" not in source
     assert ("Diagnose " + "Now") not in source
@@ -1119,8 +1117,27 @@ def test_appkit_display_source_uses_single_click_panel() -> None:
     assert "Start Monitoring" not in source
     assert "Starting live monitoring" not in source
     assert "setup\", \"autopilot" not in source
-    assert "NSAlert()" not in source
     assert "runModal()" not in source
+
+
+def test_appkit_display_source_has_sprite_context_menu() -> None:
+    source = pet_display._appkit_source()
+
+    assert "rightMouseDown" in source
+    assert "NSMenu" in source
+    assert 'withTitle: "Change sprite..."' in source
+    assert 'withTitle: "Reset to default"' in source
+    assert 'withTitle: "Quit"' in source
+    assert "NSOpenPanel()" in source
+    assert "allowedContentTypes = [.png, .jpeg, .gif, webp]" in source
+    assert '"pet-set-sprite"' in source
+    assert "executableURL = URL(fileURLWithPath: pythonExecutable)" in source
+    assert "DispatchQueue.global(qos: .userInitiated)" in source
+    assert "showSpriteError(stderr)" in source
+    assert "reloadSpriteIfChanged()" in source
+    assert "NSAlert()" in source
+    assert "short(detail, 256)" in source
+    assert "removeItem(atPath: userSpritePath)" in source
 
 
 def test_pet_panel_keeps_idle_controls_to_hide_or_quit_only() -> None:
