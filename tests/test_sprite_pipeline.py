@@ -63,6 +63,48 @@ def test_transform_floodfills_corners_to_transparent(tmp_path: Path) -> None:
         assert alpha == 0, f"corner ({x},{y}) should be transparent, got alpha={alpha}"
 
 
+def test_transform_does_not_punch_out_unfilled_sentinel_colored_pixels(
+    tmp_path: Path,
+) -> None:
+    """Regression: a pixel with RGB == (1,2,3) that floodfill never reached
+    must stay opaque. The mask is keyed on "did floodfill change this pixel?",
+    not on "is this pixel exactly equal to the sentinel triple?", so legit
+    dark details that happen to land on the sentinel after JPEG/resize don't
+    get punched out.
+    """
+
+    # Build a 64×64 image with a cream background that floodfill from a
+    # corner WILL reach, plus a single dark "detail" pixel at (32, 32) that
+    # is exactly the sentinel triple (1, 2, 3). The detail pixel is far
+    # enough from the cream background (color distance ≫ thresh=28) that
+    # floodfill will not flood through it.
+    width, height = 64, 64
+    img = Image.new("RGB", (width, height), (250, 244, 230))
+    img.putpixel((width // 2, height // 2), (1, 2, 3))
+
+    src = tmp_path / "sentinel-detail.png"
+    img.save(src, "PNG")
+
+    out = sprite_pipeline.transform_image(src)
+    pixels = out.load()
+
+    # Corners should be transparent (cream background was filled).
+    last = SIZE - 1
+    for x, y in [(0, 0), (last, 0), (0, last), (last, last)]:
+        _, _, _, alpha = pixels[x, y]
+        assert alpha == 0, f"corner ({x},{y}) should be transparent, got alpha={alpha}"
+
+    # The detail pixel area, scaled up to 512x512, must remain opaque even
+    # though the original RGB matches the floodfill sentinel exactly.
+    cx = SIZE // 2
+    cy = SIZE // 2
+    _, _, _, alpha = pixels[cx, cy]
+    assert alpha == 255, (
+        f"sentinel-colored detail at center ({cx},{cy}) was incorrectly "
+        f"punched out: alpha={alpha}"
+    )
+
+
 def test_transform_no_bg_removal_keeps_corners_opaque(tmp_path: Path) -> None:
     src = tmp_path / "src.jpg"
     _cream_cat_image().save(src, "JPEG", quality=92)
@@ -276,12 +318,19 @@ def test_appkit_display_source_hot_reloads_sprite() -> None:
     assert ".modificationDate" in source
     assert "spriteMTime" in source or "lastSpriteMTime" in source
 
-    # The hot-reload loop must re-resolve "user override exists?" each tick so
-    # a sprite installed AFTER launch is picked up without a restart, even
-    # when the window started on the packaged default.
+    # The hot-reload loop must re-resolve "user override exists?" each tick
+    # via currentSpritePath() so a sprite installed AFTER launch is picked up
+    # without a restart, even when the window started on the packaged default
+    # (and so the pet reverts to packaged when the user sprite is deleted).
     assert "userSpritePath" in source
     assert "packagedSpritePath" in source
+    assert "func currentSpritePath()" in source
     assert "FileManager.default.fileExists(atPath: userSpritePath)" in source
+
+    # The initial paint must also go through the resolver, not the
+    # launch-time assetPath, so a window launched on the packaged sprite
+    # picks up an existing user override on its very first frame.
+    assert "view.reloadSpriteIfChanged()" in source
 
 
 def test_display_pet_appkit_passes_both_sprite_paths(monkeypatch: pytest.MonkeyPatch) -> None:

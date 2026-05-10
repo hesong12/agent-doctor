@@ -1159,7 +1159,10 @@ def test_pet_display_uses_packaged_sprite_asset() -> None:
 def test_appkit_display_source_loads_sprite_and_animates_states() -> None:
     source = pet_display._appkit_source()
 
-    assert "NSImage(contentsOfFile: assetPath)" in source
+    # Sprite is now loaded through the resolver-aware reloadSpriteIfChanged()
+    # path, which calls NSImage(contentsOfFile:) on whichever path
+    # currentSpritePath() picks (user override → packaged → legacy assetPath).
+    assert "NSImage(contentsOfFile: chosen)" in source
     assert "drawEffects" in source
     assert "drawOverlays" in source
     assert "state == \"watching\"" in source

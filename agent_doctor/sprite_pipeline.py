@@ -59,14 +59,18 @@ def _floodfill_alpha(rgba: "PILImage") -> "PILImage":
     """Replace cream/uniform corners with transparency.
 
     Mirrors the manual swap pipeline: floodfill an RGB copy from each corner
-    with a sentinel color, derive a binary alpha from "is sentinel?", then
-    soften with a small Gaussian blur to avoid hard fringes.
+    with a sentinel color, derive a binary alpha from "did floodfill actually
+    change this pixel?", then soften with a small Gaussian blur to avoid
+    hard fringes.
 
-    The alpha mask is built with vectorized Pillow ops (``Image.split``,
-    ``Image.point``, ``ImageChops.lighter``) instead of a Python pixel loop:
-    each channel becomes a 0/255 mask of "this channel matches the sentinel
-    byte", and ``lighter`` (per-pixel max) gives 0 only when **all three**
-    channel masks are 0 — i.e. the pixel equals the exact sentinel triple.
+    The mask is keyed on **changed-vs-original** rather than
+    **pixel-equals-sentinel**: keying on equality would punch out any
+    legitimate dark detail that happens to quantize to the sentinel triple
+    `(1, 2, 3)` after JPEG compression + LANCZOS resize, even when floodfill
+    never touched it. ``ImageChops.difference(target, rgb)`` is zero exactly
+    on untouched pixels, so the per-channel max of the difference (via
+    ``ImageChops.lighter``) gives a vectorized "was this pixel filled?"
+    signal without a Python pixel loop.
     """
 
     _Image, ImageDraw, ImageFilter = _load_pillow()
@@ -79,12 +83,12 @@ def _floodfill_alpha(rgba: "PILImage") -> "PILImage":
     for seed in [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)]:
         ImageDraw.floodfill(target, seed, _FLOODFILL_SENTINEL, thresh=_FLOODFILL_THRESH)
 
-    r, g, b = target.split()
-    sentinel_r, sentinel_g, sentinel_b = _FLOODFILL_SENTINEL
-    rmask = r.point(lambda p, s=sentinel_r: 0 if p == s else 255)
-    gmask = g.point(lambda p, s=sentinel_g: 0 if p == s else 255)
-    bmask = b.point(lambda p, s=sentinel_b: 0 if p == s else 255)
-    alpha = ImageChops.lighter(ImageChops.lighter(rmask, gmask), bmask)
+    diff = ImageChops.difference(target, rgb)
+    rd, gd, bd = diff.split()
+    max_diff = ImageChops.lighter(ImageChops.lighter(rd, gd), bd)
+    # alpha = 0 where any channel changed (pixel was floodfilled),
+    # 255 where every channel matches the original (pixel was untouched).
+    alpha = max_diff.point(lambda p: 0 if p > 0 else 255)
 
     alpha = alpha.filter(ImageFilter.GaussianBlur(radius=_ALPHA_BLUR_RADIUS))
 

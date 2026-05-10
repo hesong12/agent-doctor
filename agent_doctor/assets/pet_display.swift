@@ -281,16 +281,22 @@ class PetView: NSView {
     var runningActionId = ""
     var activeProcesses: [Process] = []
     var statusReloadInFlight = false
-    var petImage: NSImage? = assetPath.isEmpty ? nil : NSImage(contentsOfFile: assetPath)
-    var lastSpritePath: String = assetPath
-    var lastSpriteMTime: Date? = SpriteWatcher.modificationDate(at: assetPath)
+    // Initial sprite load happens via reloadSpriteIfChanged() right after the
+    // view is created, so the very first paint already uses currentSpritePath()
+    // (prefer user override → packaged → legacy launch-time assetPath) instead
+    // of trusting whichever single path Python resolved at launch.
+    var petImage: NSImage? = nil
+    var lastSpritePath: String = ""
+    var lastSpriteMTime: Date? = nil
 
     /// Pick the sprite path to use right now: prefer the user override if it
     /// exists on disk, otherwise fall back to the packaged sprite, otherwise
     /// the legacy launch-time ``assetPath``. This lets the AppKit pet pick up
     /// a freshly-installed user sprite without a restart, even when the
-    /// window launched before ``~/.agent-doctor/pet/sprite.png`` existed.
-    func resolveCurrentSpritePath() -> String {
+    /// window launched before ``~/.agent-doctor/pet/sprite.png`` existed —
+    /// and lets it revert to the packaged default when the user sprite is
+    /// deleted at runtime.
+    func currentSpritePath() -> String {
         if !userSpritePath.isEmpty,
            FileManager.default.fileExists(atPath: userSpritePath) {
             return userSpritePath
@@ -302,13 +308,14 @@ class PetView: NSView {
     }
 
     func reloadSpriteIfChanged() {
-        let chosen = resolveCurrentSpritePath()
+        let chosen = currentSpritePath()
         if chosen.isEmpty {
             return
         }
-        guard let current = SpriteWatcher.modificationDate(at: chosen) else {
-            return
-        }
+        let current = SpriteWatcher.modificationDate(at: chosen)
+        // A path change must force a reload even when mtime would otherwise
+        // tie (e.g. switching back to the packaged default after the user
+        // sprite is deleted), so we cache (path, mtime) as a tuple.
         if chosen == lastSpritePath, lastSpriteMTime == current {
             return
         }
@@ -1397,6 +1404,10 @@ view.wantsLayer = true
 view.layer?.backgroundColor = NSColor.clear.cgColor
 view.autoresizingMask = [.width, .height]
 window.contentView = view
+// Initial sprite load goes through currentSpritePath() so the first paint
+// already reflects the user override when present, rather than trusting
+// whichever single path Python resolved at launch.
+view.reloadSpriteIfChanged()
 window.makeKeyAndOrderFront(nil)
 app.activate(ignoringOtherApps: true)
 
