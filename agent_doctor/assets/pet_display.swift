@@ -404,6 +404,7 @@ class PetView: NSView {
     @objc func resetSprite(_ sender: Any?) {
         if !userSpritePath.isEmpty {
             try? FileManager.default.removeItem(atPath: userSpritePath)
+            reloadSpriteIfChanged()
         }
     }
 
@@ -434,9 +435,11 @@ class PetView: NSView {
                 return
             }
             let stderr = errorCollector.finish()
-            if process.terminationStatus != 0 {
-                DispatchQueue.main.async {
+            DispatchQueue.main.async {
+                if process.terminationStatus != 0 {
                     self?.showSpriteError(stderr)
+                } else {
+                    self?.reloadSpriteIfChanged()
                 }
             }
         }
@@ -448,7 +451,7 @@ class PetView: NSView {
         alert.messageText = "Could not change sprite"
         alert.informativeText = detail.isEmpty
             ? "agent-doctor pet-set-sprite failed."
-            : detail
+            : short(detail, 256)
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         if let window = self.window {

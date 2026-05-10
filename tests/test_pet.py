@@ -1134,7 +1134,9 @@ def test_appkit_display_source_has_sprite_context_menu() -> None:
     assert "executableURL = URL(fileURLWithPath: pythonExecutable)" in source
     assert "DispatchQueue.global(qos: .userInitiated)" in source
     assert "showSpriteError(stderr)" in source
+    assert "reloadSpriteIfChanged()" in source
     assert "NSAlert()" in source
+    assert "short(detail, 256)" in source
     assert "removeItem(atPath: userSpritePath)" in source
 
 
