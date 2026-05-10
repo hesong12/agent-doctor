@@ -61,9 +61,17 @@ def _floodfill_alpha(rgba: "PILImage") -> "PILImage":
     Mirrors the manual swap pipeline: floodfill an RGB copy from each corner
     with a sentinel color, derive a binary alpha from "is sentinel?", then
     soften with a small Gaussian blur to avoid hard fringes.
+
+    The alpha mask is built with vectorized Pillow ops (``Image.split``,
+    ``Image.point``, ``ImageChops.lighter``) instead of a Python pixel loop:
+    each channel becomes a 0/255 mask of "this channel matches the sentinel
+    byte", and ``lighter`` (per-pixel max) gives 0 only when **all three**
+    channel masks are 0 — i.e. the pixel equals the exact sentinel triple.
     """
 
-    Image, ImageDraw, ImageFilter = _load_pillow()
+    _Image, ImageDraw, ImageFilter = _load_pillow()
+    from PIL import ImageChops  # PIL is already importable per _load_pillow()
+
     rgb = rgba.convert("RGB")
     width, height = rgb.size
 
@@ -71,13 +79,12 @@ def _floodfill_alpha(rgba: "PILImage") -> "PILImage":
     for seed in [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)]:
         ImageDraw.floodfill(target, seed, _FLOODFILL_SENTINEL, thresh=_FLOODFILL_THRESH)
 
-    sentinel_pixels = target.load()
-    alpha = Image.new("L", (width, height), 255)
-    alpha_pixels = alpha.load()
-    for y in range(height):
-        for x in range(width):
-            if sentinel_pixels[x, y] == _FLOODFILL_SENTINEL:
-                alpha_pixels[x, y] = 0
+    r, g, b = target.split()
+    sentinel_r, sentinel_g, sentinel_b = _FLOODFILL_SENTINEL
+    rmask = r.point(lambda p, s=sentinel_r: 0 if p == s else 255)
+    gmask = g.point(lambda p, s=sentinel_g: 0 if p == s else 255)
+    bmask = b.point(lambda p, s=sentinel_b: 0 if p == s else 255)
+    alpha = ImageChops.lighter(ImageChops.lighter(rmask, gmask), bmask)
 
     alpha = alpha.filter(ImageFilter.GaussianBlur(radius=_ALPHA_BLUR_RADIUS))
 

@@ -269,9 +269,46 @@ def test_cli_pet_set_sprite_clean_error_when_pillow_missing(
 def test_appkit_display_source_hot_reloads_sprite() -> None:
     source = pet_display._appkit_source()
 
-    # The Swift source must watch the sprite mtime inside the existing 15fps
-    # timer and re-load NSImage when it changes.
+    # The Swift source must watch the sprite mtime and re-load NSImage when
+    # it changes. The check must be throttled to the status-poll cadence
+    # (called from inside the poll-interval branch) rather than every tick.
     assert "attributesOfItem" in source
     assert ".modificationDate" in source
-    # A cached last-mtime variable lives on the view so we don't reload every tick.
     assert "spriteMTime" in source or "lastSpriteMTime" in source
+
+    # The hot-reload loop must re-resolve "user override exists?" each tick so
+    # a sprite installed AFTER launch is picked up without a restart, even
+    # when the window started on the packaged default.
+    assert "userSpritePath" in source
+    assert "packagedSpritePath" in source
+    assert "FileManager.default.fileExists(atPath: userSpritePath)" in source
+
+
+def test_display_pet_appkit_passes_both_sprite_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The AppKit launcher must pass both the user-override and packaged paths."""
+
+    captured: dict[str, list[str]] = {}
+
+    class _FakeCompleted:
+        returncode = 0
+
+    def fake_run(command: list[str], check: bool = False) -> _FakeCompleted:  # type: ignore[no-untyped-def]
+        captured["command"] = list(command)
+        return _FakeCompleted()
+
+    monkeypatch.setattr(pet_display.subprocess, "run", fake_run)
+
+    pet_display._display_pet_appkit(
+        Path("/tmp/agent-doctor-fake-status.json"),
+        poll_seconds=1.0,
+        topmost=True,
+        asset_path=None,
+    )
+
+    command = captured["command"]
+    user_sprite = str(pet_display.user_sprite_path())
+    packaged = pet_display.packaged_sprite_path()
+
+    assert user_sprite in command, command
+    if packaged is not None:
+        assert str(packaged) in command, command

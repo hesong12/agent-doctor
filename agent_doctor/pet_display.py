@@ -87,16 +87,22 @@ def user_sprite_path() -> Path:
     return Path("~/.agent-doctor/pet/sprite.png").expanduser()
 
 
+def packaged_sprite_path() -> Path | None:
+    """Path to the packaged default doctor sprite, or ``None`` if missing."""
+
+    path = Path(__file__).with_name("assets") / _ASSET_NAME
+    if path.exists():
+        return path
+    return None
+
+
 def pet_asset_path() -> Path | None:
     """Resolve the sprite to display, preferring the user's custom override."""
 
     custom = user_sprite_path()
     if custom.exists():
         return custom
-    path = Path(__file__).with_name("assets") / _ASSET_NAME
-    if path.exists():
-        return path
-    return None
+    return packaged_sprite_path()
 
 
 def read_status_payload(status_file: Path) -> dict[str, Any]:
@@ -886,11 +892,13 @@ def display_pet(
         if now - float(status_cache["read_at"]) >= poll_interval:
             status_cache["snapshot"] = snapshot_from_payload(read_status_payload(status_path))
             status_cache["read_at"] = now
-        current_pet_image = _reload_pet_image_if_changed()
+            # Sprite changes are user-driven and rare; only stat() at the
+            # status-poll cadence (default 1 s) instead of every animation tick.
+            _reload_pet_image_if_changed()
         raw_snapshot = status_cache["snapshot"]
         snapshot = _visible_snapshot(raw_snapshot, interaction, now)
         canvas.delete("all")
-        _draw_pet(canvas, snapshot, phase=now, pet_image=current_pet_image)
+        _draw_pet(canvas, snapshot, phase=now, pet_image=sprite_state["image"])
         _draw_tk_state_chip(canvas, snapshot)
         auto_show = (
             snapshot.state in ("concerned", "intervening")
@@ -1151,6 +1159,10 @@ def _display_pet_appkit(
 ) -> None:
     source_path = Path(gettempdir()) / "agent_doctor_pet_display.swift"
     source_path.write_text(_appkit_source(), encoding="utf-8")
+
+    user_sprite = user_sprite_path()
+    packaged_sprite = packaged_sprite_path()
+
     command = [
         "swift",
         str(source_path),
@@ -1159,6 +1171,11 @@ def _display_pet_appkit(
         "1" if topmost else "0",
         str(asset_path.expanduser()) if asset_path is not None else "",
         sys.executable,
+        # Pass both candidate sprite paths so the AppKit hot-reload loop can
+        # re-resolve "user override exists?" each tick and switch from the
+        # packaged sprite to a freshly-installed user sprite without restart.
+        str(user_sprite),
+        str(packaged_sprite) if packaged_sprite is not None else "",
     ]
     completed = subprocess.run(command, check=False)
     if completed.returncode != 0:
