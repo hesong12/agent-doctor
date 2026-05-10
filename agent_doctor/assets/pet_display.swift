@@ -5,12 +5,24 @@ let pollSeconds = CommandLine.arguments.count > 2 ? (Double(CommandLine.argument
 let topmost = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] == "1" : true
 let assetPath = CommandLine.arguments.count > 4 ? CommandLine.arguments[4] : ""
 let pythonExecutable = CommandLine.arguments.count > 5 ? CommandLine.arguments[5] : "/usr/bin/python3"
+let userSpritePath = CommandLine.arguments.count > 6 ? CommandLine.arguments[6] : ""
+let packagedSpritePath = CommandLine.arguments.count > 7 ? CommandLine.arguments[7] : ""
 let compactWindowWidth: CGFloat = 260
 let compactWindowHeight: CGFloat = 310
 let expandedWindowWidth: CGFloat = 360
 let expandedWindowHeight: CGFloat = 560
 let idleExpandedWindowHeight: CGFloat = 430
 let idleNoticeExpandedWindowHeight: CGFloat = 500
+
+enum SpriteWatcher {
+    static func modificationDate(at path: String) -> Date? {
+        if path.isEmpty {
+            return nil
+        }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        return attrs?[.modificationDate] as? Date
+    }
+}
 
 func stringValue(_ dict: [String: Any], _ key: String, _ fallback: String) -> String {
     if let value = dict[key] as? String {
@@ -269,7 +281,51 @@ class PetView: NSView {
     var runningActionId = ""
     var activeProcesses: [Process] = []
     var statusReloadInFlight = false
-    let petImage: NSImage? = assetPath.isEmpty ? nil : NSImage(contentsOfFile: assetPath)
+    // Initial sprite load happens via reloadSpriteIfChanged() right after the
+    // view is created, so the very first paint already uses currentSpritePath()
+    // (prefer user override → packaged → legacy launch-time assetPath) instead
+    // of trusting whichever single path Python resolved at launch.
+    var petImage: NSImage? = nil
+    var lastSpritePath: String = ""
+    var lastSpriteMTime: Date? = nil
+
+    /// Pick the sprite path to use right now: prefer the user override if it
+    /// exists on disk, otherwise fall back to the packaged sprite, otherwise
+    /// the legacy launch-time ``assetPath``. This lets the AppKit pet pick up
+    /// a freshly-installed user sprite without a restart, even when the
+    /// window launched before ``~/.agent-doctor/pet/sprite.png`` existed —
+    /// and lets it revert to the packaged default when the user sprite is
+    /// deleted at runtime.
+    func currentSpritePath() -> String {
+        if !userSpritePath.isEmpty,
+           FileManager.default.fileExists(atPath: userSpritePath) {
+            return userSpritePath
+        }
+        if !packagedSpritePath.isEmpty {
+            return packagedSpritePath
+        }
+        return assetPath
+    }
+
+    func reloadSpriteIfChanged() {
+        let chosen = currentSpritePath()
+        if chosen.isEmpty {
+            return
+        }
+        let current = SpriteWatcher.modificationDate(at: chosen)
+        // A path change must force a reload even when mtime would otherwise
+        // tie (e.g. switching back to the packaged default after the user
+        // sprite is deleted), so we cache (path, mtime) as a tuple.
+        if chosen == lastSpritePath, lastSpriteMTime == current {
+            return
+        }
+        lastSpritePath = chosen
+        lastSpriteMTime = current
+        if let refreshed = NSImage(contentsOfFile: chosen) {
+            petImage = refreshed
+            needsDisplay = true
+        }
+    }
 
     override var isOpaque: Bool { false }
 
@@ -1348,12 +1404,19 @@ view.wantsLayer = true
 view.layer?.backgroundColor = NSColor.clear.cgColor
 view.autoresizingMask = [.width, .height]
 window.contentView = view
+// Initial sprite load goes through currentSpritePath() so the first paint
+// already reflects the user override when present, rather than trusting
+// whichever single path Python resolved at launch.
+view.reloadSpriteIfChanged()
 window.makeKeyAndOrderFront(nil)
 app.activate(ignoringOtherApps: true)
 
 Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { _ in
     let now = Date()
     if now.timeIntervalSince(view.lastStatusReload) >= max(0.2, pollSeconds) {
+        // Sprite changes are user-driven and rare; check at the status-poll
+        // cadence (default 1 s) instead of every animation tick.
+        view.reloadSpriteIfChanged()
         view.requestStatusReload(now)
     } else {
         view.needsDisplay = true

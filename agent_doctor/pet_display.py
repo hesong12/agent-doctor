@@ -81,11 +81,28 @@ def default_status_file() -> Path:
     return Path("~/.agent-doctor/pet/pet-status.json").expanduser()
 
 
-def pet_asset_path() -> Path | None:
+def user_sprite_path() -> Path:
+    """Where ``pet-set-sprite`` writes the user's custom sprite."""
+
+    return Path("~/.agent-doctor/pet/sprite.png").expanduser()
+
+
+def packaged_sprite_path() -> Path | None:
+    """Path to the packaged default doctor sprite, or ``None`` if missing."""
+
     path = Path(__file__).with_name("assets") / _ASSET_NAME
     if path.exists():
         return path
     return None
+
+
+def pet_asset_path() -> Path | None:
+    """Resolve the sprite to display, preferring the user's custom override."""
+
+    custom = user_sprite_path()
+    if custom.exists():
+        return custom
+    return packaged_sprite_path()
 
 
 def read_status_payload(status_file: Path) -> dict[str, Any]:
@@ -519,7 +536,7 @@ def display_pet(
 
     try:
         import tkinter as tk
-        from tkinter import messagebox
+        from tkinter import filedialog, messagebox
     except ImportError as exc:  # pragma: no cover - environment-specific
         if platform.system() == "Darwin" and shutil.which("swift"):
             _display_pet_appkit(
@@ -535,7 +552,6 @@ def display_pet(
         ) from exc
 
     status_path = (status_file or default_status_file()).expanduser()
-    asset_path = pet_asset_path()
     poll_interval = max(0.2, poll_seconds)
 
     root = tk.Tk()
@@ -559,13 +575,46 @@ def display_pet(
         highlightthickness=0,
     )
     canvas.pack(fill="both", expand=True)
-    pet_image = None
-    if asset_path is not None:
+
+    # Hot-reload state: re-resolve the sprite path on every tick so a fresh
+    # `pet-set-sprite` is reflected without restarting the window.
+    sprite_state: dict[str, Any] = {
+        "path": None,
+        "mtime": 0.0,
+        "image": None,
+    }
+
+    def _reload_pet_image_if_changed() -> Any:
+        path = pet_asset_path()
+        if path is None:
+            sprite_state["path"] = None
+            sprite_state["mtime"] = 0.0
+            sprite_state["image"] = None
+            return None
         try:
-            raw_image = tk.PhotoImage(file=str(asset_path))
-            pet_image = raw_image.subsample(3, 3)
+            mtime = path.stat().st_mtime
+        except OSError:
+            return sprite_state["image"]
+        if (
+            sprite_state["image"] is not None
+            and sprite_state["path"] == path
+            and sprite_state["mtime"] == mtime
+        ):
+            return sprite_state["image"]
+        try:
+            raw_image = tk.PhotoImage(file=str(path))
+            scaled = raw_image.subsample(3, 3)
         except Exception:
-            pet_image = None
+            sprite_state["path"] = path
+            sprite_state["mtime"] = mtime
+            sprite_state["image"] = None
+            return None
+        sprite_state["path"] = path
+        sprite_state["mtime"] = mtime
+        sprite_state["image"] = scaled
+        return scaled
+
+    _reload_pet_image_if_changed()
     drag = {"x": 0, "y": 0}
     interaction = {
         "moved": False,
@@ -778,9 +827,57 @@ def display_pet(
                 command=lambda item=action: perform_dialog_action(item, snapshot, popup),
             ).pack(side=side, padx=padx)
 
+    def change_sprite() -> None:
+        path = filedialog.askopenfilename(
+            parent=root,
+            title="Choose a sprite for Agent Doctor",
+            filetypes=[
+                ("Image files", "*.png *.jpg *.jpeg *.webp *.gif *.bmp"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+
+        command = [
+            sys.executable,
+            "-m",
+            "agent_doctor.cli",
+            "pet-set-sprite",
+            path,
+        ]
+
+        def worker() -> None:
+            result = subprocess.run(command, text=True, capture_output=True, check=False)
+
+            def finish() -> None:
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout or "").strip()
+                    show_message(
+                        "Could not set sprite",
+                        detail or "agent-doctor pet-set-sprite failed.",
+                    )
+
+            root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    context_menu = tk.Menu(root, tearoff=0)
+    context_menu.add_command(label="Change sprite…", command=change_sprite)
+
+    def show_context_menu(event: Any) -> None:
+        try:
+            context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            context_menu.grab_release()
+
     canvas.bind("<ButtonPress-1>", start_drag)
     canvas.bind("<B1-Motion>", move_drag)
     canvas.bind("<ButtonRelease-1>", finish_click)
+    # Right-click: macOS sends Button-2, Linux/Windows send Button-3.
+    canvas.bind("<Button-2>", show_context_menu)
+    canvas.bind("<Button-3>", show_context_menu)
+    canvas.bind("<Control-Button-1>", show_context_menu)
 
     status_cache: dict[str, Any] = {
         "read_at": 0.0,
@@ -795,10 +892,13 @@ def display_pet(
         if now - float(status_cache["read_at"]) >= poll_interval:
             status_cache["snapshot"] = snapshot_from_payload(read_status_payload(status_path))
             status_cache["read_at"] = now
+            # Sprite changes are user-driven and rare; only stat() at the
+            # status-poll cadence (default 1 s) instead of every animation tick.
+            _reload_pet_image_if_changed()
         raw_snapshot = status_cache["snapshot"]
         snapshot = _visible_snapshot(raw_snapshot, interaction, now)
         canvas.delete("all")
-        _draw_pet(canvas, snapshot, phase=now, pet_image=pet_image)
+        _draw_pet(canvas, snapshot, phase=now, pet_image=sprite_state["image"])
         _draw_tk_state_chip(canvas, snapshot)
         auto_show = (
             snapshot.state in ("concerned", "intervening")
@@ -1059,6 +1159,10 @@ def _display_pet_appkit(
 ) -> None:
     source_path = Path(gettempdir()) / "agent_doctor_pet_display.swift"
     source_path.write_text(_appkit_source(), encoding="utf-8")
+
+    user_sprite = user_sprite_path()
+    packaged_sprite = packaged_sprite_path()
+
     command = [
         "swift",
         str(source_path),
@@ -1067,6 +1171,11 @@ def _display_pet_appkit(
         "1" if topmost else "0",
         str(asset_path.expanduser()) if asset_path is not None else "",
         sys.executable,
+        # Pass both candidate sprite paths so the AppKit hot-reload loop can
+        # re-resolve "user override exists?" each tick and switch from the
+        # packaged sprite to a freshly-installed user sprite without restart.
+        str(user_sprite),
+        str(packaged_sprite) if packaged_sprite is not None else "",
     ]
     completed = subprocess.run(command, check=False)
     if completed.returncode != 0:
