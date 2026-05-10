@@ -621,3 +621,19 @@ def test_appkit_menu_has_gemini_items() -> None:
     # NSSecureTextField for the key entry, regular NSTextField for the prompt.
     assert "NSSecureTextField" in source
     assert "NSTextField" in source
+
+    # Edit menu must be installed at app bootstrap so Cmd-V works inside the
+    # NSAlert text fields under the .accessory activation policy.
+    assert "NSText.paste(_:)" in source
+    assert "NSText.cut(_:)" in source
+    assert "NSText.copy(_:)" in source
+    assert "NSText.selectAll(_:)" in source
+    assert "app.mainMenu = mainMenu" in source
+
+    # Generation activity HUD — spinning indicator while the Gemini
+    # subprocess runs, started on the main thread before dispatch and
+    # always stopped before the success/error branch on the way back.
+    assert "NSProgressIndicator" in source
+    assert "startGenerationIndicator()" in source
+    assert "stopGenerationIndicator()" in source
+    assert ".isIndeterminate = true" in source
