@@ -94,21 +94,20 @@ def test_transform_handles_sentinel_colored_corner_background(tmp_path: Path) ->
 def test_transform_does_not_punch_out_unfilled_sentinel_colored_pixels(
     tmp_path: Path,
 ) -> None:
-    """Regression: a pixel with RGB == (1,2,3) that floodfill never reached
-    must stay opaque. The mask is keyed on "did floodfill change this pixel?",
-    not on "is this pixel exactly equal to the sentinel triple?", so legit
-    dark details that happen to land on the sentinel after JPEG/resize don't
-    get punched out.
+    """Regression: a pixel that exactly equals the primary sentinel and
+    that floodfill never reached must stay opaque. The mask is keyed on
+    "did floodfill change this pixel?" (intersection of two complementary
+    sentinel masks), not on "is this pixel exactly equal to one sentinel
+    triple?", so legit details that happen to land on the sentinel after
+    JPEG/resize don't get punched out.
+
+    Targets the *current* primary sentinel value so the regression keeps
+    moving with the constant rather than rusting.
     """
 
-    # Build a 64×64 image with a cream background that floodfill from a
-    # corner WILL reach, plus a single dark "detail" pixel at (32, 32) that
-    # is exactly the sentinel triple (1, 2, 3). The detail pixel is far
-    # enough from the cream background (color distance ≫ thresh=28) that
-    # floodfill will not flood through it.
     width, height = 64, 64
     img = Image.new("RGB", (width, height), (250, 244, 230))
-    img.putpixel((width // 2, height // 2), (1, 2, 3))
+    img.putpixel((width // 2, height // 2), sprite_pipeline._FLOODFILL_SENTINEL)
 
     src = tmp_path / "sentinel-detail.png"
     img.save(src, "PNG")
@@ -123,7 +122,7 @@ def test_transform_does_not_punch_out_unfilled_sentinel_colored_pixels(
         assert alpha == 0, f"corner ({x},{y}) should be transparent, got alpha={alpha}"
 
     # The detail pixel area, scaled up to 512x512, must remain opaque even
-    # though the original RGB matches the floodfill sentinel exactly.
+    # though the original RGB matches the primary floodfill sentinel exactly.
     cx = SIZE // 2
     cy = SIZE // 2
     _, _, _, alpha = pixels[cx, cy]
@@ -131,6 +130,132 @@ def test_transform_does_not_punch_out_unfilled_sentinel_colored_pixels(
         f"sentinel-colored detail at center ({cx},{cy}) was incorrectly "
         f"punched out: alpha={alpha}"
     )
+
+
+def test_transform_floodfills_white_background_to_transparent(tmp_path: Path) -> None:
+    """Regression for the live smoke that blocked PR #19 acceptance #2.
+
+    Gemini ``gemini-3-pro-image-preview`` outputs are typically pure-white
+    background sticker-style PNGs. The pre-fix sentinel pair
+    ``(1,2,3) / (254,253,252)`` collided with near-white via PIL's
+    ``ImageDraw.floodfill`` early-exit (``_color_diff(value, seed_color) <=
+    thresh`` returns immediately without painting). target_b stayed at the
+    original near-white, ``match_b = 0`` at corners, ``filled = 0``, and
+    the corner ended up fully opaque. This test fails on the old sentinels
+    and passes on the new pair.
+    """
+
+    width, height = 64, 64
+    img = Image.new("RGB", (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    cx, cy = width // 2, height // 2
+    radius = min(width, height) // 4
+    draw.ellipse(
+        (cx - radius, cy - radius, cx + radius, cy + radius),
+        fill=(120, 80, 50),
+    )
+
+    src = tmp_path / "white-bg.png"
+    img.save(src, "PNG")
+
+    out = sprite_pipeline.transform_image(src)
+    pixels = out.load()
+
+    last = SIZE - 1
+    for x, y in [(0, 0), (last, 0), (0, last), (last, last)]:
+        _, _, _, alpha = pixels[x, y]
+        assert alpha == 0, (
+            f"white-background corner ({x},{y}) should be transparent, "
+            f"got alpha={alpha}"
+        )
+    # The colored disc in the middle must stay opaque — we did not just
+    # nuke the whole alpha channel.
+    _, _, _, center_alpha = pixels[SIZE // 2, SIZE // 2]
+    assert center_alpha == 255, (
+        f"colored detail at image center should stay opaque, got alpha={center_alpha}"
+    )
+
+
+def test_transform_floodfills_near_white_background_to_transparent(
+    tmp_path: Path,
+) -> None:
+    """The exact value Gemini's PNG decoder usually surfaces — JPEG/PNG
+    resizing rarely lands at perfect (255,255,255). The pre-fix sentinel
+    ``(254,253,252)`` was within sum-abs-diff = 2 of (253,253,253), so the
+    second floodfill pass early-exited and the corner stayed opaque. This
+    test exercises that exact failure mode.
+    """
+
+    width, height = 64, 64
+    img = Image.new("RGB", (width, height), (253, 253, 253))
+    draw = ImageDraw.Draw(img)
+    cx, cy = width // 2, height // 2
+    radius = min(width, height) // 4
+    draw.ellipse(
+        (cx - radius, cy - radius, cx + radius, cy + radius),
+        fill=(40, 40, 200),
+    )
+
+    src = tmp_path / "near-white-bg.png"
+    img.save(src, "PNG")
+
+    out = sprite_pipeline.transform_image(src)
+    pixels = out.load()
+
+    last = SIZE - 1
+    for x, y in [(0, 0), (last, 0), (0, last), (last, last)]:
+        _, _, _, alpha = pixels[x, y]
+        assert alpha == 0, (
+            f"near-white (253,253,253) corner ({x},{y}) should be transparent, "
+            f"got alpha={alpha}"
+        )
+
+
+def test_floodfill_sentinels_are_safe_for_common_backgrounds() -> None:
+    """Lock in the property that motivated the PR #19 sentinel change:
+    both sentinels must sit far (sum-abs-diff > _FLOODFILL_THRESH) from
+    every common background color we expect Gemini outputs to use.
+
+    Without this guard, swapping the sentinels in the future could
+    silently re-introduce the floodfill early-exit bug the live smoke
+    caught. The check is a property assertion, not a fragile numeric
+    pin — pick any sentinels you want, just not ones that collide with
+    the colors users put behind stickers.
+    """
+
+    a = sprite_pipeline._FLOODFILL_SENTINEL
+    b = sprite_pipeline._FLOODFILL_SENTINEL_ALT
+    thresh = sprite_pipeline._FLOODFILL_THRESH
+
+    def diff(p: tuple[int, int, int], q: tuple[int, int, int]) -> int:
+        return sum(abs(int(p[i]) - int(q[i])) for i in range(3))
+
+    common_backgrounds = [
+        (255, 255, 255),  # pure white
+        (253, 253, 253),  # near-white (typical Gemini output)
+        (250, 250, 250),  # off-white
+        (240, 240, 240),  # light gray
+        (0, 0, 0),  # pure black
+        (10, 10, 10),  # near-black
+    ]
+    for bg in common_backgrounds:
+        assert diff(a, bg) > thresh, (
+            f"sentinel A {a} is within thresh={thresh} of background {bg} "
+            f"(sum-abs-diff={diff(a, bg)}); floodfill will early-exit"
+        )
+        assert diff(b, bg) > thresh, (
+            f"sentinel B {b} is within thresh={thresh} of background {bg} "
+            f"(sum-abs-diff={diff(b, bg)}); floodfill will early-exit"
+        )
+
+    # Per-channel diff between A and B must exceed thresh on every channel
+    # so the "no natural pixel equals both" guarantee holds.
+    for ch in range(3):
+        assert abs(int(a[ch]) - int(b[ch])) > thresh, (
+            f"sentinel pair {a}/{b} per-channel diff on ch{ch} is "
+            f"{abs(int(a[ch]) - int(b[ch]))} ≤ thresh={thresh}; the "
+            f"two-sentinel intersection logic would not be sound"
+        )
 
 
 def test_transform_no_bg_removal_keeps_corners_opaque(tmp_path: Path) -> None:

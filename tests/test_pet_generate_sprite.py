@@ -39,6 +39,34 @@ def _png_bytes(size: tuple[int, int] = (640, 640), color: tuple[int, int, int] =
     return buf.getvalue()
 
 
+def _white_bg_png_bytes(
+    size: tuple[int, int] = (640, 640),
+    bg: tuple[int, int, int] = (255, 255, 255),
+    fg: tuple[int, int, int] = (220, 110, 40),
+) -> bytes:
+    """Synthesize a sticker-style PNG: solid background + colored disc.
+
+    Mirrors what ``gemini-3-pro-image-preview`` actually returns for a
+    "...sticker style, white background" prompt — and is the input shape
+    the live smoke that blocked PR #19 acceptance #2 used to expose the
+    floodfill sentinel bug.
+    """
+
+    from PIL import ImageDraw
+
+    img = Image.new("RGB", size, bg)
+    draw = ImageDraw.Draw(img)
+    cx, cy = size[0] // 2, size[1] // 2
+    radius = min(size) // 3
+    draw.ellipse(
+        (cx - radius, cy - radius, cx + radius, cy + radius),
+        fill=fg,
+    )
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
 class _FakePart:
     def __init__(self, data: bytes) -> None:
         self.inline_data = type("InlineData", (), {"data": data, "mime_type": "image/png"})()
@@ -379,6 +407,108 @@ def test_pet_generate_sprite_no_image_in_response(
     text = captured.err.lower()
     assert "no image" in text or "prompt" in text or "gemini" in text
     assert _FAKE_KEY not in (captured.out + captured.err)
+
+
+def test_pet_generate_sprite_white_background_e2e(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """End-to-end regression for PR #19 acceptance #2.
+
+    Mocks the Gemini SDK to return a sticker-shaped PNG (colored disc on
+    pure-white background) — the deterministic shape that exposed the
+    floodfill sentinel bug in live smoke. Asserts that:
+
+    - `pet-generate-sprite` exits 0 and writes the sprite at `--out`
+    - the four corners of the written 512×512 sprite have alpha=0
+      (background removed)
+    - the colored disc near the center is still opaque
+    - the API key never leaks into stderr/stdout
+
+    Without the sentinel fix in this commit, this test fails with
+    ``corner alpha=255`` for every corner — exactly mirroring the live
+    failure the reviewer reported.
+    """
+
+    _redirect_settings(tmp_path, monkeypatch)
+    _install_fake_keyring(monkeypatch, initial=_FAKE_KEY)
+    _patch_sdk(monkeypatch, _FakeResponse(_white_bg_png_bytes()))
+
+    out = tmp_path / "white-bg-sprite.png"
+
+    from agent_doctor import cli, sprite_pipeline
+
+    rc = cli.main([
+        "pet-generate-sprite",
+        "--prompt",
+        "a cute orange tabby cat astronaut, sticker style, white background",
+        "--out",
+        str(out),
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert out.exists()
+    assert _FAKE_KEY not in (captured.out + captured.err)
+
+    with Image.open(out) as im:
+        assert im.size == (sprite_pipeline.OUTPUT_SIZE, sprite_pipeline.OUTPUT_SIZE)
+        assert im.mode == "RGBA"
+        pixels = im.load()
+        last = sprite_pipeline.OUTPUT_SIZE - 1
+        for x, y in [(0, 0), (last, 0), (0, last), (last, last)]:
+            _, _, _, alpha = pixels[x, y]
+            assert alpha == 0, (
+                f"PR #19 acceptance #2: white-background corner ({x},{y}) "
+                f"must have alpha=0, got alpha={alpha}"
+            )
+        # The colored disc near the center stays opaque — bg removal didn't
+        # nuke the sprite itself.
+        cx = cy = sprite_pipeline.OUTPUT_SIZE // 2
+        _, _, _, center_alpha = pixels[cx, cy]
+        assert center_alpha == 255, (
+            f"colored sprite at center should remain opaque, got alpha={center_alpha}"
+        )
+
+
+def test_pet_generate_sprite_near_white_background_e2e(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same as the white-bg e2e but for the (253,253,253) shape Gemini
+    actually emits after PNG encoding. Was the original repro case in
+    the live smoke that blocked PR #19."""
+
+    _redirect_settings(tmp_path, monkeypatch)
+    _install_fake_keyring(monkeypatch, initial=_FAKE_KEY)
+    _patch_sdk(
+        monkeypatch,
+        _FakeResponse(_white_bg_png_bytes(bg=(253, 253, 253), fg=(60, 90, 200))),
+    )
+
+    out = tmp_path / "near-white-sprite.png"
+
+    from agent_doctor import cli, sprite_pipeline
+
+    rc = cli.main([
+        "pet-generate-sprite",
+        "--prompt",
+        "a tiny blue robot, sticker style",
+        "--out",
+        str(out),
+    ])
+
+    assert rc == 0
+    with Image.open(out) as im:
+        pixels = im.load()
+        last = sprite_pipeline.OUTPUT_SIZE - 1
+        for x, y in [(0, 0), (last, 0), (0, last), (last, last)]:
+            _, _, _, alpha = pixels[x, y]
+            assert alpha == 0, (
+                f"near-white (253,253,253) corner ({x},{y}) must have "
+                f"alpha=0, got alpha={alpha}"
+            )
 
 
 def test_pet_generate_sprite_extracts_from_candidates(
