@@ -90,15 +90,21 @@ def test_keyring_promotion_clears_file_backup(
     assert config.exists()
 
     # Now keyring becomes available; the next write should land in keyring
-    # AND erase the file content.
+    # AND remove the stale key from the file backend. Because the file only
+    # held the [gemini] section, the safe outcome is to unlink it entirely
+    # rather than truncate in place (which would leak an FD and corrupt the
+    # file on a mid-write crash — see the review fix in _file_clear).
     fake = _install_fake_keyring(monkeypatch)
     settings_mod.store_gemini_key(_FAKE_KEY_2)
 
     assert fake.store[(settings_mod._KEYRING_SERVICE, settings_mod._KEYRING_USERNAME)] == _FAKE_KEY_2
-    # File still exists but no longer carries the key (truncated).
-    text = config.read_text(encoding="utf-8")
-    assert _FAKE_KEY not in text
-    assert _FAKE_KEY_2 not in text
+    if config.exists():
+        text = config.read_text(encoding="utf-8")
+        assert _FAKE_KEY not in text
+        assert _FAKE_KEY_2 not in text
+    # Whichever shape the file ended up in, ``load_gemini_key`` must see
+    # the keyring value, not the prior file value.
+    assert settings_mod.load_gemini_key() == _FAKE_KEY_2
 
 
 def test_file_fallback_mode_bits(
@@ -260,6 +266,169 @@ def test_emit_toml_escapes_quotes_and_backslashes() -> None:
 
     parsed = tomllib.loads(body)
     assert parsed["gemini"]["api_key"] == weird
+
+
+def test_file_set_uses_atomic_replace_not_truncate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A ``_file_set`` mid-write failure must NOT empty the existing file
+    (the bug the gemini-code-assist HIGH/MEDIUM review caught).
+
+    We seed an existing config, then make ``os.replace`` fail. The
+    pre-fix code opened the destination ``O_WRONLY | O_TRUNC`` and would
+    have left the file empty. The atomic-write fix writes to a sibling
+    temp file first, so the original survives untouched on failure.
+    """
+
+    home = _redirect_config(tmp_path, monkeypatch)
+    _disable_keyring(monkeypatch)
+
+    # Seed an existing valid config.
+    settings_mod.store_gemini_key(_FAKE_KEY)
+    config = home / "config.toml"
+    original_bytes = config.read_bytes()
+    assert _FAKE_KEY in original_bytes.decode("utf-8")
+
+    # Force os.replace to blow up on the next write.
+    real_replace = os.replace
+
+    def boom(src: str, dst: str) -> None:
+        # Clean up the temp file ourselves so the assertion below isn't
+        # noisy with stray .config-*.toml.tmp entries.
+        try:
+            os.unlink(src)
+        except OSError:
+            pass
+        raise OSError("simulated mid-replace failure")
+
+    monkeypatch.setattr(os, "replace", boom)
+
+    with pytest.raises(settings_mod.SettingsError) as excinfo:
+        settings_mod.store_gemini_key(_FAKE_KEY_2)
+
+    # The original file is intact — same bytes, same mode, same key.
+    assert config.read_bytes() == original_bytes
+    assert stat.S_IMODE(config.stat().st_mode) == 0o600
+    # The new key never landed on disk.
+    assert _FAKE_KEY_2 not in config.read_text(encoding="utf-8")
+    # Error string never echoed the failed-write key.
+    assert _FAKE_KEY_2 not in str(excinfo.value)
+
+    # Restore os.replace and confirm a follow-up write still works (no
+    # state corruption from the failed attempt).
+    monkeypatch.setattr(os, "replace", real_replace)
+    settings_mod.store_gemini_key(_FAKE_KEY_2)
+    assert settings_mod.load_gemini_key() == _FAKE_KEY_2
+
+
+def test_file_set_does_not_leak_temp_files_on_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = _redirect_config(tmp_path, monkeypatch)
+    _disable_keyring(monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    os.chmod(home, 0o700)
+
+    def boom(src: str, dst: str) -> None:
+        raise OSError("simulated")
+
+    monkeypatch.setattr(os, "replace", boom)
+
+    with pytest.raises(settings_mod.SettingsError):
+        settings_mod.store_gemini_key(_FAKE_KEY)
+
+    # No leftover .config-*.toml.tmp in the parent dir.
+    leftovers = [p for p in home.iterdir() if p.name.startswith(".config-")]
+    assert leftovers == [], f"unexpected temp leftovers: {leftovers!r}"
+
+
+def test_file_clear_unlinks_when_only_gemini_section(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = _redirect_config(tmp_path, monkeypatch)
+    _disable_keyring(monkeypatch)
+
+    settings_mod.store_gemini_key(_FAKE_KEY)
+    config = home / "config.toml"
+    assert config.exists()
+
+    cleared = settings_mod.clear_gemini_key()
+
+    assert cleared is True
+    assert not config.exists(), "gemini-only config file should be unlinked, not truncated"
+
+
+def test_file_clear_preserves_unknown_sections(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Forward-compat: a future co-tenant section in config.toml must
+    survive ``clear_gemini_key``. The pre-review implementation truncated
+    the entire file, which would have wiped unrelated settings."""
+
+    home = _redirect_config(tmp_path, monkeypatch)
+    _disable_keyring(monkeypatch)
+
+    settings_mod.store_gemini_key(_FAKE_KEY)
+    config = home / "config.toml"
+    # Append a hypothetical future section with one string field.
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + '\n[future_section]\nendpoint = "https://example.test/api"\n',
+        encoding="utf-8",
+    )
+
+    cleared = settings_mod.clear_gemini_key()
+
+    assert cleared is True
+    assert config.exists(), "file with other sections must remain on disk"
+    surviving = config.read_text(encoding="utf-8")
+    assert _FAKE_KEY not in surviving
+    assert "[future_section]" in surviving
+    assert "https://example.test/api" in surviving
+    # Mode preserved.
+    assert stat.S_IMODE(config.stat().st_mode) == 0o600
+
+
+def test_file_clear_handles_corrupt_toml(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = _redirect_config(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    config = home / "config.toml"
+    config.write_text("this is not = [valid toml at all", encoding="utf-8")
+
+    cleared = settings_mod.clear_gemini_key()
+
+    # Corrupt files get unlinked — better than leaving an unreadable
+    # file on disk that might still contain a raw key.
+    assert cleared is True
+    assert not config.exists()
+
+
+def test_file_set_preserves_existing_sections(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = _redirect_config(tmp_path, monkeypatch)
+    _disable_keyring(monkeypatch)
+
+    home.mkdir(parents=True, exist_ok=True)
+    config = home / "config.toml"
+    config.write_text(
+        '[future_section]\nendpoint = "https://example.test/api"\n',
+        encoding="utf-8",
+    )
+    os.chmod(config, 0o600)
+    os.chmod(home, 0o700)
+
+    settings_mod.store_gemini_key(_FAKE_KEY)
+
+    body = config.read_text(encoding="utf-8")
+    import tomllib
+
+    parsed = tomllib.loads(body)
+    assert parsed["gemini"]["api_key"] == _FAKE_KEY
+    assert parsed["future_section"]["endpoint"] == "https://example.test/api"
+    assert stat.S_IMODE(config.stat().st_mode) == 0o600
 
 
 def test_cli_settings_set_via_env_does_not_print_key(

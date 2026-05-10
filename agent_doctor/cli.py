@@ -1020,6 +1020,10 @@ def _cmd_pet_generate_sprite(args: argparse.Namespace) -> int:
         Path(args.out).expanduser() if args.out is not None else user_sprite_path()
     )
 
+    # Bracket the entire temp-file lifecycle (create → write → decode →
+    # destination write) in one try/finally so the file is always removed,
+    # even if an exception fires between NamedTemporaryFile() and the
+    # outer try (e.g. a MemoryError inside tmp_handle.write).
     tmp_handle = NamedTemporaryFile(
         prefix="agent-doctor-gemini-",
         suffix=".bin",
@@ -1027,12 +1031,12 @@ def _cmd_pet_generate_sprite(args: argparse.Namespace) -> int:
     )
     tmp_path = Path(tmp_handle.name)
     try:
-        tmp_handle.write(image_bytes)
-        tmp_handle.flush()
-    finally:
-        tmp_handle.close()
+        try:
+            tmp_handle.write(image_bytes)
+            tmp_handle.flush()
+        finally:
+            tmp_handle.close()
 
-    try:
         # Phase 2a: decode + transform.
         try:
             image = transform_image(

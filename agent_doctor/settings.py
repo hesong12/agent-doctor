@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import stat
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from enum import Enum
@@ -159,12 +160,54 @@ def _file_get() -> str | None:
     return value
 
 
-def _file_set(key: str) -> None:
-    """Write ``key`` to ``config.toml`` with mode 0600 and parent mode 0700.
+def _atomic_write(dest: Path, body: bytes) -> None:
+    """Write ``body`` to ``dest`` atomically with mode 0600.
 
-    The mode is set BEFORE the secret is written so it never lands on disk
-    world-readable, even briefly. We also ``os.fsync`` the file to make the
-    new mode + content durable before returning.
+    Creates a temp file in the same directory (so ``os.replace`` is atomic
+    on POSIX), chmods it to ``_FILE_MODE`` BEFORE writing the secret so the
+    bytes never live on disk under a looser mode, ``fsync``s, then swaps
+    into place. Any failure unlinks the temp file rather than leaving a
+    stray ``.config-*.toml.tmp`` next to the real config.
+
+    This replaces the pre-review ``O_WRONLY | O_TRUNC`` open-and-truncate
+    pattern, which would empty the destination on a crash mid-write and
+    leak the file descriptor on the error path.
+    """
+
+    parent = dest.parent
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".config-",
+        suffix=".toml.tmp",
+        dir=str(parent),
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        try:
+            os.fchmod(fd, _FILE_MODE)
+            os.write(fd, body)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, dest)
+    except Exception:
+        # Atomic-replace never partially-applies on POSIX, but a chmod /
+        # write / fsync error before the replace leaves the temp file on
+        # disk — clean it up so we don't litter the config dir.
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _file_set(key: str) -> None:
+    """Write ``key`` to ``config.toml`` atomically with mode 0600 (parent 0700).
+
+    Preserves any non-``[gemini]`` top-level tables that already live in the
+    file so a future co-tenant setting doesn't get nuked when we re-write.
+    Today only ``[gemini]`` is ever written, but parsing-then-rewriting is
+    almost the same cost and removes a foot-gun for whoever adds the next
+    section.
     """
 
     parent = _CONFIG_DIR
@@ -176,50 +219,130 @@ def _file_set(key: str) -> None:
             f"Could not lock config dir permissions: {redact_secret(str(exc), key)}"
         ) from None
 
-    fd = os.open(
-        str(_CONFIG_FILE),
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-        _FILE_MODE,
-    )
+    existing_tables: dict[str, dict[str, Any]] = {}
+    if _CONFIG_FILE.exists():
+        try:
+            parsed = tomllib.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            for name, body in parsed.items():
+                if name == "gemini" or not isinstance(body, dict):
+                    continue
+                existing_tables[name] = {
+                    k: v for k, v in body.items() if isinstance(v, str)
+                }
+
+    tables: dict[str, dict[str, str]] = dict(existing_tables)
+    tables["gemini"] = {"api_key": key}
+
+    body = _emit_toml_tables(tables).encode("utf-8")
     try:
-        # Re-chmod after open in case the file already existed with looser
-        # mode (the mode arg to os.open only applies on creation).
-        os.fchmod(fd, _FILE_MODE)
-        body = _emit_toml(key)
-        os.write(fd, body.encode("utf-8"))
-        os.fsync(fd)
+        _atomic_write(_CONFIG_FILE, body)
     except OSError as exc:
         raise SettingsError(
             f"Could not write config file: {redact_secret(str(exc), key)}"
         ) from None
-    finally:
-        os.close(fd)
 
 
 def _file_clear() -> bool:
+    """Remove the ``[gemini]`` section from the config file, atomically.
+
+    Behaviour by file shape:
+    - File missing → ``False`` (nothing to clear).
+    - Parse fails (corrupt TOML) → ``unlink`` the file. We'd rather lose a
+      corrupt config we can't read than leave a key on disk that nothing can
+      load but ``cat`` can still print.
+    - File contains only ``[gemini]`` → ``unlink``.
+    - File contains other tables → atomically rewrite WITHOUT ``[gemini]``,
+      preserving the rest. Uses ``_atomic_write`` so a crash mid-rewrite
+      can never leave the file empty.
+
+    The pre-review implementation opened the file ``O_WRONLY | O_TRUNC`` and
+    leaked the returned file descriptor; both bugs are fixed here.
+    """
+
     path = _CONFIG_FILE
     if not path.exists():
         return False
+
     try:
-        # Re-write with the section absent so a single config.toml that
-        # might pick up other future keys keeps its other contents. Today
-        # the only contents is the gemini key, so this is equivalent to
-        # truncation.
-        os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE)
+        parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        try:
+            path.unlink()
+        except OSError:
+            return False
+        return True
+
+    if not isinstance(parsed, dict):
+        return False
+
+    gemini_section = parsed.get("gemini")
+    has_gemini_key = (
+        isinstance(gemini_section, dict)
+        and isinstance(gemini_section.get("api_key"), str)
+        and gemini_section.get("api_key") != ""
+    )
+    if not has_gemini_key:
+        return False
+
+    remaining_tables: dict[str, dict[str, str]] = {}
+    for name, body in parsed.items():
+        if name == "gemini" or not isinstance(body, dict):
+            continue
+        remaining_tables[name] = {
+            k: v for k, v in body.items() if isinstance(v, str)
+        }
+
+    if not remaining_tables:
+        try:
+            path.unlink()
+        except OSError:
+            return False
+        return True
+
+    body = _emit_toml_tables(remaining_tables).encode("utf-8")
+    try:
+        _atomic_write(path, body)
     except OSError:
         return False
     return True
 
 
-def _emit_toml(key: str) -> str:
-    escaped = (
-        key.replace("\\", "\\\\")
+def _escape_toml_string(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
         .replace('"', '\\"')
         .replace("\n", "\\n")
         .replace("\r", "\\r")
         .replace("\t", "\\t")
     )
-    return '[gemini]\napi_key = "' + escaped + '"\n'
+
+
+def _emit_toml(key: str) -> str:
+    return '[gemini]\napi_key = "' + _escape_toml_string(key) + '"\n'
+
+
+def _emit_toml_tables(tables: dict[str, dict[str, str]]) -> str:
+    """Emit a minimal TOML document of top-level tables of string values.
+
+    Sufficient for our settings file today (``[gemini] api_key = "..."``)
+    and for any near-future addition that follows the same shape. Numbers,
+    booleans, arrays, and nested tables are intentionally omitted — when
+    the first such field shows up, this emitter gets one new branch (and
+    a test) rather than us reaching for a third-party TOML writer.
+    """
+
+    if not tables:
+        return ""
+    parts: list[str] = []
+    for table_name, body in tables.items():
+        parts.append(f"[{table_name}]")
+        for key, value in body.items():
+            parts.append(f'{key} = "{_escape_toml_string(value)}"')
+        parts.append("")
+    return "\n".join(parts).rstrip("\n") + "\n"
 
 
 def load_gemini_key() -> str | None:
