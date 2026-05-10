@@ -806,6 +806,12 @@ def _cmd_pet_set_sprite(args: argparse.Namespace) -> int:
     if not source.exists():
         print(f"agent-doctor: source image not found: {source}", file=sys.stderr)
         return 2
+    if source.is_dir():
+        print(
+            f"agent-doctor: source is a directory, not an image file: {source}",
+            file=sys.stderr,
+        )
+        return 2
 
     from .pet_display import user_sprite_path
     from .sprite_pipeline import PillowMissingError, apply_sprite
@@ -825,6 +831,31 @@ def _cmd_pet_set_sprite(args: argparse.Namespace) -> int:
         return 3
     except FileNotFoundError as exc:
         print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+    except IsADirectoryError:
+        # Defensive: covered by the is_dir() guard above, but a path that
+        # becomes a directory between checks would still land here rather
+        # than throw a raw traceback.
+        print(
+            f"agent-doctor: source is a directory, not an image file: {source}",
+            file=sys.stderr,
+        )
+        return 2
+    except PermissionError as exc:
+        print(
+            f"agent-doctor: cannot read source image (permission denied): {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    except OSError as exc:
+        # Catches PIL.UnidentifiedImageError (a subclass of OSError in
+        # Python 3) for unsupported/corrupt formats, plus generic decode
+        # / I/O failures. Surfaces a single clean line instead of a
+        # traceback so the Tk right-click flow's messagebox is readable.
+        print(
+            f"agent-doctor: could not decode image '{source}': {exc}",
+            file=sys.stderr,
+        )
         return 2
 
     print(f"agent-doctor: wrote sprite -> {written}")

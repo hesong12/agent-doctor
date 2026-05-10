@@ -26,7 +26,13 @@ if TYPE_CHECKING:  # pragma: no cover - type-checking only
 
 OUTPUT_SIZE = 512
 _FLOODFILL_THRESH = 28
+# Two complementary sentinels so we can identify floodfilled pixels by
+# "took on BOTH values across two passes" rather than "value-equals-A". A
+# pixel that originally already equaled either sentinel can still be
+# unambiguously flagged as filled, because no untouched pixel can equal
+# both sentinels (they differ in every channel).
 _FLOODFILL_SENTINEL = (1, 2, 3)
+_FLOODFILL_SENTINEL_ALT = (254, 253, 252)
 _ALPHA_BLUR_RADIUS = 0.6
 
 
@@ -55,22 +61,54 @@ def _center_square_crop(img: "PILImage") -> "PILImage":
     return img.crop((left, top, left + side, top + side))
 
 
+def _exact_match_mask(image: "PILImage", color: tuple[int, int, int]) -> "PILImage":
+    """Return an L-mode mask: 255 where ``image[p] == color`` exactly, else 0.
+
+    Vectorized: builds a same-size solid color image, takes the per-channel
+    ``ImageChops.difference``, collapses to a single per-pixel "max channel
+    diff" via ``ImageChops.lighter``, then maps zero-diff pixels to 255.
+    """
+
+    Image, _ImageDraw, _ImageFilter = _load_pillow()
+    from PIL import ImageChops
+
+    sentinel_image = Image.new(image.mode, image.size, color)
+    diff = ImageChops.difference(image, sentinel_image)
+    channels = diff.split()
+    max_diff = channels[0]
+    for ch in channels[1:]:
+        max_diff = ImageChops.lighter(max_diff, ch)
+    return max_diff.point(lambda p: 255 if p == 0 else 0)
+
+
 def _floodfill_alpha(rgba: "PILImage") -> "PILImage":
     """Replace cream/uniform corners with transparency.
 
-    Mirrors the manual swap pipeline: floodfill an RGB copy from each corner
-    with a sentinel color, derive a binary alpha from "did floodfill actually
-    change this pixel?", then soften with a small Gaussian blur to avoid
-    hard fringes.
+    Mirrors the manual swap pipeline: floodfill from each corner with a
+    sentinel color, derive a binary alpha from "did floodfill reach this
+    pixel?", then soften with a small Gaussian blur to avoid hard fringes.
 
-    The mask is keyed on **changed-vs-original** rather than
-    **pixel-equals-sentinel**: keying on equality would punch out any
-    legitimate dark detail that happens to quantize to the sentinel triple
-    `(1, 2, 3)` after JPEG compression + LANCZOS resize, even when floodfill
-    never touched it. ``ImageChops.difference(target, rgb)`` is zero exactly
-    on untouched pixels, so the per-channel max of the difference (via
-    ``ImageChops.lighter``) gives a vectorized "was this pixel filled?"
-    signal without a Python pixel loop.
+    Identifying the filled region needs care. Two prior approaches were both
+    wrong on different edge cases:
+
+    1. ``pixel == sentinel`` punches out any legitimate detail whose color
+       happens to quantize to the sentinel triple after JPEG + resize, even
+       when floodfill never reached it.
+    2. ``pixel changed vs. original`` (via ``ImageChops.difference``) misses
+       the symmetric case: pixels that floodfill *did* reach but that already
+       equaled the sentinel — those pixels stay value-equal across the
+       operation and look "untouched", so the corner-connected background
+       leaves opaque artifacts when it happens to contain sentinel-colored
+       pixels.
+
+    We sidestep both by floodfilling **twice** with two complementary
+    sentinels (``A = (1,2,3)`` and ``B = (254,253,252)``, no overlap on any
+    channel) and intersecting the per-pass exact-match masks. A pixel is
+    flagged "filled" iff ``target_a[p] == A AND target_b[p] == B``. Since
+    a single original pixel cannot simultaneously equal both sentinels, the
+    only way both equalities hold is that floodfill painted the pixel in
+    both passes — the desired ground truth. Untouched pixels never satisfy
+    both equalities even when they happen to equal one sentinel.
     """
 
     _Image, ImageDraw, ImageFilter = _load_pillow()
@@ -79,17 +117,20 @@ def _floodfill_alpha(rgba: "PILImage") -> "PILImage":
     rgb = rgba.convert("RGB")
     width, height = rgb.size
 
-    target = rgb.copy()
-    for seed in [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)]:
-        ImageDraw.floodfill(target, seed, _FLOODFILL_SENTINEL, thresh=_FLOODFILL_THRESH)
+    target_a = rgb.copy()
+    target_b = rgb.copy()
+    seeds = [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)]
+    for seed in seeds:
+        ImageDraw.floodfill(target_a, seed, _FLOODFILL_SENTINEL, thresh=_FLOODFILL_THRESH)
+        ImageDraw.floodfill(target_b, seed, _FLOODFILL_SENTINEL_ALT, thresh=_FLOODFILL_THRESH)
 
-    diff = ImageChops.difference(target, rgb)
-    rd, gd, bd = diff.split()
-    max_diff = ImageChops.lighter(ImageChops.lighter(rd, gd), bd)
-    # alpha = 0 where any channel changed (pixel was floodfilled),
-    # 255 where every channel matches the original (pixel was untouched).
-    alpha = max_diff.point(lambda p: 0 if p > 0 else 255)
+    match_a = _exact_match_mask(target_a, _FLOODFILL_SENTINEL)
+    match_b = _exact_match_mask(target_b, _FLOODFILL_SENTINEL_ALT)
+    # Per-pixel min: 255 only where both matches hold (= floodfilled).
+    filled = ImageChops.darker(match_a, match_b)
 
+    # alpha: 0 where filled (transparent), 255 where untouched (opaque).
+    alpha = ImageChops.invert(filled)
     alpha = alpha.filter(ImageFilter.GaussianBlur(radius=_ALPHA_BLUR_RADIUS))
 
     out = rgba.copy()
