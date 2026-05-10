@@ -1,4 +1,5 @@
 import Cocoa
+import UniformTypeIdentifiers
 
 let statusPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
 let pollSeconds = CommandLine.arguments.count > 2 ? (Double(CommandLine.arguments[2]) ?? 1.0) : 1.0
@@ -356,6 +357,105 @@ class PetView: NSView {
         bubbleOpen = !bubbleOpen
         noticeText = ""
         needsDisplay = true
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu(title: "Agent Doctor")
+        menu.addItem(
+            withTitle: "Change sprite...",
+            action: #selector(changeSprite(_:)),
+            keyEquivalent: ""
+        ).target = self
+        menu.addItem(
+            withTitle: "Reset to default",
+            action: #selector(resetSprite(_:)),
+            keyEquivalent: ""
+        ).target = self
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(
+            withTitle: "Quit",
+            action: #selector(closePetFromMenu(_:)),
+            keyEquivalent: ""
+        ).target = self
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc func changeSprite(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.title = "Change Agent Doctor Sprite"
+        panel.message = "Choose a PNG, JPEG, GIF, or WebP image."
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if #available(macOS 11.0, *) {
+            let webp = UTType(filenameExtension: "webp") ?? UTType.image
+            panel.allowedContentTypes = [.png, .jpeg, .gif, webp]
+        } else {
+            panel.allowedFileTypes = ["png", "jpg", "jpeg", "gif", "webp"]
+        }
+        panel.begin { [weak self] response in
+            guard response == .OK, let selectedURL = panel.url else {
+                return
+            }
+            self?.setSprite(selectedURL.path)
+        }
+    }
+
+    @objc func resetSprite(_ sender: Any?) {
+        if !userSpritePath.isEmpty {
+            try? FileManager.default.removeItem(atPath: userSpritePath)
+        }
+    }
+
+    @objc func closePetFromMenu(_ sender: Any?) {
+        quitPet()
+    }
+
+    func setSprite(_ selectedPath: String) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: pythonExecutable)
+            process.arguments = [
+                "-m",
+                "agent_doctor.cli",
+                "pet-set-sprite",
+                selectedPath
+            ]
+            let errorPipe = Pipe()
+            let errorCollector = ProcessOutputCollector(errorPipe)
+            process.standardError = errorPipe
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                DispatchQueue.main.async {
+                    self?.showSpriteError(error.localizedDescription)
+                }
+                return
+            }
+            let stderr = errorCollector.finish()
+            if process.terminationStatus != 0 {
+                DispatchQueue.main.async {
+                    self?.showSpriteError(stderr)
+                }
+            }
+        }
+    }
+
+    func showSpriteError(_ stderr: String) {
+        let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        let alert = NSAlert()
+        alert.messageText = "Could not change sprite"
+        alert.informativeText = detail.isEmpty
+            ? "agent-doctor pet-set-sprite failed."
+            : detail
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        if let window = self.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.window.makeKeyAndOrderFront(nil)
+        }
     }
 
     @objc func muteForNow(_ sender: Any?) {
