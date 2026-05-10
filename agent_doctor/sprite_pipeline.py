@@ -160,21 +160,22 @@ def transform_image(source: Path, *, remove_background: bool = True) -> "PILImag
     return rgba
 
 
-def apply_sprite(
-    source: Path,
-    destination: Path,
-    *,
-    remove_background: bool = True,
-) -> Path:
-    """Run the pipeline and atomically write the result to ``destination``.
+def write_sprite_atomic(image: "PILImage", destination: Path) -> Path:
+    """Atomically write a transformed PIL image to ``destination``.
 
-    Returns the destination path on success.
+    Uses ``NamedTemporaryFile`` in the destination's parent directory plus
+    ``Path.replace`` so a concurrent reader of the destination always sees
+    either the previous PNG or the new one — never a partial.
+
+    Errors raised here come from the **write** side of the pipeline (mkdir,
+    PNG encode, atomic rename) — destination permissions, ENOSPC, read-only
+    target dir, and so on — not from decoding the source. CLI callers
+    should handle this exception path separately so they can report the
+    correct root cause.
     """
 
     dest = Path(destination).expanduser()
     dest.parent.mkdir(parents=True, exist_ok=True)
-
-    image = transform_image(source, remove_background=remove_background)
 
     tmp = NamedTemporaryFile(
         prefix=".sprite-",
@@ -192,3 +193,21 @@ def apply_sprite(
         raise
 
     return dest
+
+
+def apply_sprite(
+    source: Path,
+    destination: Path,
+    *,
+    remove_background: bool = True,
+) -> Path:
+    """Run the pipeline and atomically write the result to ``destination``.
+
+    Returns the destination path on success. Convenience wrapper for
+    programmatic callers; the CLI splits decode and write into separate
+    error-handling phases via :func:`transform_image` and
+    :func:`write_sprite_atomic` directly.
+    """
+
+    image = transform_image(source, remove_background=remove_background)
+    return write_sprite_atomic(image, destination)

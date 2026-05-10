@@ -315,6 +315,44 @@ def test_cli_pet_set_sprite_directory_input(
     assert "traceback" not in text
 
 
+def test_cli_pet_set_sprite_write_error_is_reported_as_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: an OSError from the WRITE phase (e.g. ENOSPC, read-only
+    destination dir) must be reported as a write failure, not a decode
+    failure. Pre-fix, the broad ``except OSError`` around ``apply_sprite``
+    swallowed both phases and reported every error as ``could not decode
+    image '<source>'``, which sent the user to the wrong root cause.
+    """
+
+    src = tmp_path / "src.jpg"
+    _cream_cat_image().save(src, "JPEG", quality=92)
+    out_path = tmp_path / "dest" / "sprite.png"
+
+    from agent_doctor import sprite_pipeline
+
+    def fake_write(_image: object, _destination: object) -> Path:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(sprite_pipeline, "write_sprite_atomic", fake_write)
+
+    from agent_doctor import cli
+
+    rc = cli.main(["pet-set-sprite", str(src), "--out", str(out_path)])
+
+    captured = capsys.readouterr()
+    text = (captured.err + captured.out).lower()
+
+    assert rc != 0
+    assert "traceback" not in text
+    # Must clearly point at the destination/write side, not the source decode.
+    assert "could not decode" not in text
+    assert "write" in text
+    assert str(out_path).lower() in text
+
+
 def test_cli_pet_set_sprite_corrupt_image(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

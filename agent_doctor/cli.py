@@ -814,18 +814,20 @@ def _cmd_pet_set_sprite(args: argparse.Namespace) -> int:
         return 2
 
     from .pet_display import user_sprite_path
-    from .sprite_pipeline import PillowMissingError, apply_sprite
+    from .sprite_pipeline import (
+        PillowMissingError,
+        transform_image,
+        write_sprite_atomic,
+    )
 
     destination: Path = (
         Path(args.out).expanduser() if args.out is not None else user_sprite_path()
     )
 
+    # Phase 1: read + decode the source image. Errors here are about the
+    # source — bad format, corrupt file, unreadable permissions, missing.
     try:
-        written = apply_sprite(
-            source,
-            destination,
-            remove_background=not args.no_bg_removal,
-        )
+        image = transform_image(source, remove_background=not args.no_bg_removal)
     except PillowMissingError as exc:
         print(f"agent-doctor: {exc}", file=sys.stderr)
         return 3
@@ -848,12 +850,30 @@ def _cmd_pet_set_sprite(args: argparse.Namespace) -> int:
         )
         return 2
     except OSError as exc:
-        # Catches PIL.UnidentifiedImageError (a subclass of OSError in
-        # Python 3) for unsupported/corrupt formats, plus generic decode
-        # / I/O failures. Surfaces a single clean line instead of a
-        # traceback so the Tk right-click flow's messagebox is readable.
+        # PIL.UnidentifiedImageError (an OSError subclass in Python 3) and
+        # truncated-decode errors land here. Don't conflate this with
+        # write-side I/O failures, which are reported separately below.
         print(
             f"agent-doctor: could not decode image '{source}': {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Phase 2: atomically write the transformed sprite. Errors here are
+    # about the *destination* — full disk, read-only target dir, missing
+    # parent permissions — and must not be reported as a decode failure.
+    try:
+        written = write_sprite_atomic(image, destination)
+    except PermissionError as exc:
+        print(
+            f"agent-doctor: cannot write sprite to {destination} "
+            f"(permission denied): {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    except OSError as exc:
+        print(
+            f"agent-doctor: could not write sprite to {destination}: {exc}",
             file=sys.stderr,
         )
         return 2
