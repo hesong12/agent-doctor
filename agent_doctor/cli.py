@@ -208,6 +208,70 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pet_set_sprite.set_defaults(func=_cmd_pet_set_sprite)
 
+    pet_generate_sprite = subparsers.add_parser(
+        "pet-generate-sprite",
+        help=(
+            "Generate the desktop pet sprite from a text prompt via Gemini "
+            "(Nano Banana 2). Reuses the same transform + atomic write as "
+            "pet-set-sprite."
+        ),
+    )
+    pet_generate_sprite.add_argument(
+        "--prompt",
+        required=True,
+        help="Text description of the pet to generate.",
+    )
+    pet_generate_sprite.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Override output path. Default: ~/.agent-doctor/pet/sprite.png.",
+    )
+    pet_generate_sprite.add_argument(
+        "--no-bg-removal",
+        action="store_true",
+        help="Skip the corner floodfill background removal (still resized).",
+    )
+    pet_generate_sprite.set_defaults(func=_cmd_pet_generate_sprite)
+
+    settings_parser = subparsers.add_parser(
+        "settings",
+        help="Manage Agent Doctor local settings (Gemini API key).",
+    )
+    settings_subs = settings_parser.add_subparsers(dest="settings_cmd", required=True)
+
+    settings_set = settings_subs.add_parser(
+        "set-gemini-key",
+        help=(
+            "Store a Gemini API key (read from stdin or --from-env). "
+            "The key is NEVER taken from a positional argv argument so it "
+            "does not leak into shell history."
+        ),
+    )
+    settings_set.add_argument(
+        "--from-env",
+        dest="from_env",
+        metavar="ENV_VAR",
+        default=None,
+        help=(
+            "Read the key from the named environment variable instead of stdin. "
+            "Typical use: GEMINI_API_KEY=... agent-doctor settings set-gemini-key --from-env GEMINI_API_KEY"
+        ),
+    )
+    settings_set.set_defaults(func=_cmd_settings_set_gemini_key)
+
+    settings_clear = settings_subs.add_parser(
+        "clear-gemini-key",
+        help="Remove the stored Gemini API key from all backends.",
+    )
+    settings_clear.set_defaults(func=_cmd_settings_clear_gemini_key)
+
+    settings_show = settings_subs.add_parser(
+        "show",
+        help="Show which backend stores the key and whether it is configured. Never prints the key.",
+    )
+    settings_show.set_defaults(func=_cmd_settings_show)
+
     autopilot = subparsers.add_parser(
         "autopilot",
         help="Run the platform-agnostic sidecar trigger engine without host runtime hooks.",
@@ -879,6 +943,191 @@ def _cmd_pet_set_sprite(args: argparse.Namespace) -> int:
         return 2
 
     print(f"agent-doctor: wrote sprite -> {written}")
+    return 0
+
+
+def _cmd_pet_generate_sprite(args: argparse.Namespace) -> int:
+    """Generate the pet sprite from a Gemini prompt and run the same
+    pipeline as ``pet-set-sprite``.
+
+    Error handling mirrors ``_cmd_pet_set_sprite`` — separate phases for
+    SDK / decode / write — and adds a redaction phase: any exception that
+    bubbles up here gets the API key scrubbed before we print to stderr,
+    so a noisy SDK traceback can never leak the secret to logs.
+    """
+
+    from tempfile import NamedTemporaryFile
+
+    from .pet_display import user_sprite_path
+    from .settings import SettingsError, load_gemini_key, redact_secret
+    from .sprite_pipeline import (
+        PillowMissingError,
+        transform_image,
+        write_sprite_atomic,
+    )
+
+    prompt: str = (args.prompt or "").strip()
+    if not prompt:
+        print("agent-doctor: --prompt is empty.", file=sys.stderr)
+        return 2
+
+    try:
+        api_key = load_gemini_key()
+    except SettingsError as exc:
+        # SettingsError is already redacted at construction time, but pass
+        # through redact_secret defensively in case a future caller path
+        # supplies the key differently.
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 4
+    if not api_key:
+        print(
+            "agent-doctor: no Gemini API key is configured. "
+            "Run `agent-doctor settings set-gemini-key --from-env GEMINI_API_KEY` first.",
+            file=sys.stderr,
+        )
+        return 4
+
+    # Phase 1: call Gemini. Always redact the key out of any thrown text.
+    from .gemini_image import (
+        GeminiImageError,
+        GeminiSdkMissingError,
+        generate_pet_sprite_bytes,
+    )
+
+    try:
+        image_bytes = generate_pet_sprite_bytes(prompt=prompt, api_key=api_key)
+    except GeminiSdkMissingError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 3
+    except GeminiImageError as exc:
+        print(
+            f"agent-doctor: {redact_secret(str(exc), api_key)}",
+            file=sys.stderr,
+        )
+        return 5
+    except Exception as exc:
+        # Last-resort redaction so an unexpected SDK crash never prints the key.
+        print(
+            f"agent-doctor: unexpected Gemini error: {redact_secret(str(exc), api_key)}",
+            file=sys.stderr,
+        )
+        return 5
+
+    # Phase 2: write the raw bytes to a temp file so the existing pipeline
+    # (which expects a Path) can decode them, then run the unchanged
+    # transform_image() + write_sprite_atomic() pair.
+    destination: Path = (
+        Path(args.out).expanduser() if args.out is not None else user_sprite_path()
+    )
+
+    tmp_handle = NamedTemporaryFile(
+        prefix="agent-doctor-gemini-",
+        suffix=".bin",
+        delete=False,
+    )
+    tmp_path = Path(tmp_handle.name)
+    try:
+        tmp_handle.write(image_bytes)
+        tmp_handle.flush()
+    finally:
+        tmp_handle.close()
+
+    try:
+        # Phase 2a: decode + transform.
+        try:
+            image = transform_image(
+                tmp_path, remove_background=not args.no_bg_removal
+            )
+        except PillowMissingError as exc:
+            print(f"agent-doctor: {exc}", file=sys.stderr)
+            return 3
+        except OSError as exc:
+            # PIL.UnidentifiedImageError + truncated decode land here.
+            print(
+                f"agent-doctor: could not decode image bytes returned by Gemini: {exc}",
+                file=sys.stderr,
+            )
+            return 5
+
+        # Phase 2b: atomically write the transformed sprite.
+        try:
+            written = write_sprite_atomic(image, destination)
+        except PermissionError as exc:
+            print(
+                f"agent-doctor: cannot write sprite to {destination} "
+                f"(permission denied): {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        except OSError as exc:
+            print(
+                f"agent-doctor: could not write sprite to {destination}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    print(f"agent-doctor: wrote sprite -> {written}")
+    return 0
+
+
+def _cmd_settings_set_gemini_key(args: argparse.Namespace) -> int:
+    from .settings import SettingsError, store_gemini_key
+
+    if args.from_env:
+        env_name: str = args.from_env
+        value = os.environ.get(env_name)
+        if value is None or value == "":
+            print(
+                f"agent-doctor: environment variable {env_name} is not set or empty.",
+                file=sys.stderr,
+            )
+            return 2
+    else:
+        if sys.stdin is None or sys.stdin.isatty():
+            print(
+                "agent-doctor: paste the Gemini API key on stdin (no echo guarantee), "
+                "then send EOF (Ctrl-D). For safer entry pass --from-env GEMINI_API_KEY.",
+                file=sys.stderr,
+            )
+        try:
+            value = sys.stdin.read()
+        except KeyboardInterrupt:
+            print("agent-doctor: aborted.", file=sys.stderr)
+            return 2
+
+    cleaned = (value or "").strip()
+    if not cleaned:
+        print("agent-doctor: no key provided.", file=sys.stderr)
+        return 2
+
+    try:
+        backend = store_gemini_key(cleaned)
+    except SettingsError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 5
+
+    # Never echo the key. Confirm only the destination.
+    print(f"agent-doctor: stored Gemini API key (backend: {backend.value}).")
+    return 0
+
+
+def _cmd_settings_clear_gemini_key(_args: argparse.Namespace) -> int:
+    from .settings import clear_gemini_key
+
+    cleared = clear_gemini_key()
+    if cleared:
+        print("agent-doctor: cleared Gemini API key.")
+    else:
+        print("agent-doctor: no Gemini API key was stored.")
+    return 0
+
+
+def _cmd_settings_show(_args: argparse.Namespace) -> int:
+    from .settings import settings_status
+
+    print(settings_status().render())
     return 0
 
 

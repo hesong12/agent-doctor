@@ -373,11 +373,197 @@ class PetView: NSView {
         ).target = self
         menu.addItem(NSMenuItem.separator())
         menu.addItem(
+            withTitle: "Generate sprite from prompt...",
+            action: #selector(generateSpriteFromPrompt(_:)),
+            keyEquivalent: ""
+        ).target = self
+        menu.addItem(
+            withTitle: "Configure Gemini...",
+            action: #selector(configureGemini(_:)),
+            keyEquivalent: ""
+        ).target = self
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(
             withTitle: "Quit",
             action: #selector(closePetFromMenu(_:)),
             keyEquivalent: ""
         ).target = self
         NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    /// Show an NSAlert with an editable text field for the Gemini prompt.
+    /// On confirm, shells `agent-doctor pet-generate-sprite --prompt <text>`
+    /// and refreshes the displayed sprite via the same hot-reload path
+    /// used by `pet-set-sprite` (PR #18).
+    @objc func generateSpriteFromPrompt(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = "Generate sprite from prompt"
+        alert.informativeText = "Describe the pet you want. Example: \"a cute orange tabby cat astronaut, sticker style, white background\"."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Generate")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        field.placeholderString = "Describe the desktop pet"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        let response = alert.runModal()
+        if response != .alertFirstButtonReturn {
+            return
+        }
+        let prompt = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if prompt.isEmpty {
+            let warn = NSAlert()
+            warn.messageText = "Prompt is empty"
+            warn.informativeText = "Type a description, then choose Generate."
+            warn.alertStyle = .warning
+            warn.addButton(withTitle: "OK")
+            warn.runModal()
+            return
+        }
+        runGenerateSpriteProcess(prompt: prompt)
+    }
+
+    func runGenerateSpriteProcess(prompt: String) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: pythonExecutable)
+            process.arguments = [
+                "-m",
+                "agent_doctor.cli",
+                "pet-generate-sprite",
+                "--prompt",
+                prompt
+            ]
+            let errorPipe = Pipe()
+            let errorCollector = ProcessOutputCollector(errorPipe)
+            process.standardError = errorPipe
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                DispatchQueue.main.async {
+                    self?.showSpriteError(error.localizedDescription)
+                }
+                return
+            }
+            let stderr = errorCollector.finish()
+            DispatchQueue.main.async {
+                if process.terminationStatus != 0 {
+                    self?.showSpriteError(stderr)
+                } else {
+                    // Same refresh path as pet-set-sprite (PR #18): the user
+                    // sprite mtime changed, so the next status-poll tick
+                    // (or this explicit call) reloads NSImage in place.
+                    self?.reloadSpriteIfChanged()
+                }
+            }
+        }
+    }
+
+    /// Show a NSSecureTextField NSAlert for the API key, then shell
+    /// `agent-doctor settings set-gemini-key --from-env <ENV>` with the
+    /// key passed via the child process's environment so it never lands
+    /// in argv (and therefore never in shell history or `ps` output).
+    @objc func configureGemini(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = "Configure Gemini"
+        alert.informativeText = "Paste your Gemini API key. It is stored in macOS Keychain (preferred) or ~/.agent-doctor/config.toml (mode 0600)."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        field.placeholderString = "Gemini API key"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        let response = alert.runModal()
+        if response != .alertFirstButtonReturn {
+            return
+        }
+        let key = field.stringValue
+        if key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let warn = NSAlert()
+            warn.messageText = "No key provided"
+            warn.informativeText = "Paste the key, then choose Save."
+            warn.alertStyle = .warning
+            warn.addButton(withTitle: "OK")
+            warn.runModal()
+            return
+        }
+        runSetGeminiKeyProcess(key: key)
+    }
+
+    func runSetGeminiKeyProcess(key: String) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: pythonExecutable)
+            // Use a fixed env-var name and pipe the key through environment,
+            // not argv. CLI reads it via `--from-env AGENT_DOCTOR_GEMINI_API_KEY`.
+            let envName = "AGENT_DOCTOR_GEMINI_API_KEY"
+            process.arguments = [
+                "-m",
+                "agent_doctor.cli",
+                "settings",
+                "set-gemini-key",
+                "--from-env",
+                envName
+            ]
+            var environment = ProcessInfo.processInfo.environment
+            environment[envName] = key
+            process.environment = environment
+            let errorPipe = Pipe()
+            let errorCollector = ProcessOutputCollector(errorPipe)
+            process.standardError = errorPipe
+            let outputPipe = Pipe()
+            let outputCollector = ProcessOutputCollector(outputPipe)
+            process.standardOutput = outputPipe
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                DispatchQueue.main.async {
+                    self?.showGeminiConfigError(error.localizedDescription)
+                }
+                return
+            }
+            let stderr = errorCollector.finish()
+            _ = outputCollector.finish()
+            DispatchQueue.main.async {
+                if process.terminationStatus != 0 {
+                    self?.showGeminiConfigError(stderr)
+                } else {
+                    self?.showGeminiConfigSuccess()
+                }
+            }
+        }
+    }
+
+    func showGeminiConfigError(_ stderr: String) {
+        let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        let alert = NSAlert()
+        alert.messageText = "Could not save Gemini key"
+        alert.informativeText = detail.isEmpty
+            ? "agent-doctor settings set-gemini-key failed."
+            : short(detail, 256)
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        if let window = self.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    func showGeminiConfigSuccess() {
+        let alert = NSAlert()
+        alert.messageText = "Gemini key saved"
+        alert.informativeText = "Use Generate sprite from prompt... to make a new pet."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        if let window = self.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.window.makeKeyAndOrderFront(nil)
+        }
     }
 
     @objc func changeSprite(_ sender: Any?) {
