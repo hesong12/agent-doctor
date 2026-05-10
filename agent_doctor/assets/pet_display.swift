@@ -1663,6 +1663,25 @@ class PetView: NSView {
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
+// Install a minimal main menu so standard Edit shortcuts (Cmd-X / Cmd-C /
+// Cmd-V / Cmd-A) reach the text fields in our NSAlert dialogs. With the
+// `.accessory` activation policy AppKit installs no Edit menu by default,
+// so key equivalents inside modal alerts have nothing to validate against
+// and silently no-op — pasting a Gemini API key into "Configure Gemini..."
+// or a prompt into "Generate sprite from prompt..." fails. Routing through
+// the standard NSText.* selectors lets whichever NSTextField/NSSecureTextField
+// is firstResponder pick them up automatically.
+let editMenu = NSMenu(title: "Edit")
+editMenu.addItem(withTitle: "Cut",        action: #selector(NSText.cut(_:)),       keyEquivalent: "x")
+editMenu.addItem(withTitle: "Copy",       action: #selector(NSText.copy(_:)),      keyEquivalent: "c")
+editMenu.addItem(withTitle: "Paste",      action: #selector(NSText.paste(_:)),     keyEquivalent: "v")
+editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+let mainMenu = NSMenu()
+let editMenuItem = NSMenuItem()
+editMenuItem.submenu = editMenu
+mainMenu.addItem(editMenuItem)
+app.mainMenu = mainMenu
+
 let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
 let startFrame = NSRect(
     x: screenFrame.maxX - compactWindowWidth - 80,

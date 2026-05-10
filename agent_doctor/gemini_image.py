@@ -25,6 +25,42 @@ from .settings import SettingsError, redact_secret
 # future SDK refresh has a single point of edit.
 NANO_BANANA_2_MODEL = "gemini-3-pro-image-preview"
 
+# Wrapping a naive user prompt with these constraints turns "a cute orange tabby
+# cat astronaut" into something the downstream corner-floodfill bg removal can
+# actually cut out. Without it, Gemini happily renders the subject in a
+# photorealistic forest / studio / scene, the corners end up full of detail,
+# and _floodfill_alpha leaves the entire image opaque (live regression seen in
+# review). The constraints are stacked from most-load-bearing (single subject,
+# flat white background) downward so a model that follows only the leading
+# clauses still produces a cuttable sprite.
+STICKER_PROMPT_PREAMBLE = (
+    "Render the requested subject as a single centered character sticker on a "
+    "pure-white background.\n"
+    "\n"
+    "Hard constraints (must follow exactly):\n"
+    "- One subject only, centered, fully visible, no cropping at the edges.\n"
+    "- Plain solid pure-white background (#FFFFFF). No scenery, no environment, "
+    "no props, no foliage, no rim lighting, no shadows on the background.\n"
+    "- Flat illustration / sticker style with clean outlines and simple shading. "
+    "No photographic detail, no painterly textures, no depth-of-field blur.\n"
+    "- Square 1:1 framing with a small even margin between the subject and the "
+    "image edge.\n"
+    "- No text, no watermarks, no signatures, no captions.\n"
+    "\n"
+    "Subject: "
+)
+
+
+def build_sticker_prompt(user_prompt: str) -> str:
+    """Return ``user_prompt`` prefixed with the sticker-style constraints.
+
+    Exported so callers and tests can inspect the exact text sent to Gemini.
+    The user's words are appended verbatim (after stripping surrounding
+    whitespace); the preamble is responsible for the style discipline.
+    """
+
+    return STICKER_PROMPT_PREAMBLE + user_prompt.strip()
+
 
 class GeminiSdkMissingError(RuntimeError):
     """Raised when ``google-genai`` is not installed but the pipeline needs it."""
@@ -131,8 +167,13 @@ def generate_pet_sprite_bytes(
         # image-gen models.
         config = None
 
+    # Wrap the user prompt with sticker-style constraints so the model produces
+    # a clean cut-out-able subject on a flat white background instead of a
+    # photorealistic scene whose corners defeat the downstream floodfill.
+    wrapped_prompt = build_sticker_prompt(prompt)
+
     try:
-        kwargs: dict[str, Any] = {"model": model, "contents": prompt.strip()}
+        kwargs: dict[str, Any] = {"model": model, "contents": wrapped_prompt}
         if config is not None:
             kwargs["config"] = config
         response = client.models.generate_content(**kwargs)
@@ -155,6 +196,8 @@ __all__ = [
     "GeminiImageError",
     "GeminiSdkMissingError",
     "NANO_BANANA_2_MODEL",
+    "STICKER_PROMPT_PREAMBLE",
     "SettingsError",
+    "build_sticker_prompt",
     "generate_pet_sprite_bytes",
 ]
