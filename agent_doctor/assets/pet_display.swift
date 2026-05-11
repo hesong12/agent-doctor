@@ -377,11 +377,11 @@ final class UsageViewController: NSViewController {
             progressLabel: "Week"
         ))
         stack.addArrangedSubview(makeWindowCard(
-            title: "Codex · 5h",
-            window: codex["window_5h"] as? [String: Any],
+            title: "Codex · today",
+            window: codex["window_today"] as? [String: Any],
             error: codex["error"] as? String,
             includeReset: false,
-            progressLabel: "5h window"
+            progressLabel: "Today"
         ))
         stack.addArrangedSubview(makeWindowCard(
             title: "Codex · weekly",
