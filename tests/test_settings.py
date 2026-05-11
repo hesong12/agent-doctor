@@ -24,11 +24,18 @@ _FAKE_KEY_2 = "FAKEKEY-OTHER-NOT-A-REAL-GEMINI-CRED-9876543210"
 
 
 def _redirect_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point the settings module's file backend at a tmp dir."""
+    """Point the settings module's file backend at a tmp dir.
+
+    Also redirects the meta + audit-log file constants so a test that calls
+    ``store_gemini_key`` / ``clear_gemini_key`` (both of which now write to
+    those side channels) never touches the real ``~/.agent-doctor/``.
+    """
 
     home = tmp_path / "agent-doctor-home"
     monkeypatch.setattr(settings_mod, "_CONFIG_DIR", home)
     monkeypatch.setattr(settings_mod, "_CONFIG_FILE", home / "config.toml")
+    monkeypatch.setattr(settings_mod, "_META_FILE", home / ".settings-meta.json")
+    monkeypatch.setattr(settings_mod, "_AUDIT_LOG", home / "audit.log")
     return home
 
 
@@ -505,9 +512,71 @@ def test_cli_settings_clear_removes_key(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Happy path: a script with explicit ``--yes`` clears the key end-to-end.
+
+    Non-TTY-without-yes refusal is exercised separately by
+    ``test_cli_settings_clear_refuses_without_yes_on_non_tty``.
+    """
+
     _redirect_config(tmp_path, monkeypatch)
     _install_fake_keyring(monkeypatch)
     settings_mod.store_gemini_key(_FAKE_KEY)
+
+    from agent_doctor import cli
+
+    rc = cli.main(["settings", "clear-gemini-key", "--yes"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert _FAKE_KEY not in captured.out
+    assert _FAKE_KEY not in captured.err
+    assert settings_mod.load_gemini_key() is None
+
+
+# ---------------------------------------------------------------------------
+# Destructive-op guard: clear-gemini-key now requires --yes (non-TTY) or
+# the literal string "clear" (TTY). The motivation is a real incident where
+# smoke-test scripts accidentally clobbered a user-saved key by running
+# ``settings clear-gemini-key`` at the tail of each diagnostic. The cases
+# below pin every branch of the new confirmation flow.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_settings_clear_refuses_without_yes_on_non_tty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Smoke-test / CI guard: no --yes on non-TTY -> exit 2, key intact."""
+
+    _redirect_config(tmp_path, monkeypatch)
+    _install_fake_keyring(monkeypatch)
+    settings_mod.store_gemini_key(_FAKE_KEY)
+    # capsys captures sys.stdin as a non-TTY by default, but be explicit.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    from agent_doctor import cli
+
+    rc = cli.main(["settings", "clear-gemini-key"])
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "--yes" in captured.err
+    assert "No key was modified" in captured.err
+    # The key must still be readable — that's the whole point of the guard.
+    assert settings_mod.load_gemini_key() == _FAKE_KEY
+
+
+def test_cli_settings_clear_idempotent_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No key configured -> exit 0 without prompting (no key to protect)."""
+
+    _redirect_config(tmp_path, monkeypatch)
+    _install_fake_keyring(monkeypatch)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
 
     from agent_doctor import cli
 
@@ -515,6 +584,238 @@ def test_cli_settings_clear_removes_key(
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert _FAKE_KEY not in captured.out
-    assert _FAKE_KEY not in captured.err
+    assert "no Gemini API key was stored" in captured.out
+
+
+def _tty_stdin(payload: str):
+    """Build a StringIO that *also* claims ``isatty() is True`` so the CLI
+    routes through the interactive-confirm branch instead of the
+    non-TTY refusal branch. Plain ``io.StringIO`` returns False from
+    ``isatty()``, so we shadow that one method.
+    """
+
+    import io
+
+    stream = io.StringIO(payload)
+    stream.isatty = lambda: True  # type: ignore[method-assign]
+    return stream
+
+
+def test_cli_settings_clear_tty_requires_literal_clear(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """TTY path: typing the literal word ``clear`` confirms; anything else aborts.
+
+    Two sub-cases bundled to keep the matrix tight: confirm-then-clear, then a
+    second store + abort-on-blank.
+    """
+
+    _redirect_config(tmp_path, monkeypatch)
+    _install_fake_keyring(monkeypatch)
+    settings_mod.store_gemini_key(_FAKE_KEY)
+
+    from agent_doctor import cli
+
+    # ---- 1. literal "clear" confirms ----
+    monkeypatch.setattr("sys.stdin", _tty_stdin("clear\n"))
+    rc = cli.main(["settings", "clear-gemini-key"])
+    captured = capsys.readouterr()
+    assert rc == 0
     assert settings_mod.load_gemini_key() is None
+    # The prompt must mention which backend will be wiped.
+    assert "keyring" in captured.err
+    # The prompt must include the last-set line from the meta record.
+    assert "last set:" in captured.err.lower() or "Last set:" in captured.err
+
+    # ---- 2. blank input aborts, key intact ----
+    settings_mod.store_gemini_key(_FAKE_KEY_2)
+    monkeypatch.setattr("sys.stdin", _tty_stdin("\n"))
+    rc = cli.main(["settings", "clear-gemini-key"])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "aborted" in captured.err.lower()
+    assert settings_mod.load_gemini_key() == _FAKE_KEY_2
+
+
+# ---------------------------------------------------------------------------
+# Meta file: records last-set timestamp + caller binary so `settings show`
+# can surface "this key was set at T via <python>" and the user can spot a
+# stale entry from a smoke test.
+# ---------------------------------------------------------------------------
+
+
+def test_store_writes_meta_with_iso_timestamp_and_caller(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = _redirect_config(tmp_path, monkeypatch)
+    _install_fake_keyring(monkeypatch)
+
+    settings_mod.store_gemini_key(_FAKE_KEY)
+
+    meta_path = home / ".settings-meta.json"
+    assert meta_path.exists()
+    # Mode 0600 — same lockdown as config.toml.
+    assert stat.S_IMODE(meta_path.stat().st_mode) == 0o600
+
+    import json as _json
+
+    payload = _json.loads(meta_path.read_text(encoding="utf-8"))
+    section = payload["gemini_api_key"]
+    assert section["backend"] == "keyring"
+    # Caller is sys.executable, never user input.
+    import sys as _sys
+
+    assert section["caller_executable"] == (_sys.executable or "<unknown>")
+    # ISO-8601 UTC, seconds precision: e.g. "2026-05-11T03:42:01+00:00".
+    set_at = section["set_at"]
+    assert set_at.endswith("+00:00")
+    assert "T" in set_at
+    # The key value must NEVER appear in the meta file.
+    raw = meta_path.read_text(encoding="utf-8")
+    assert _FAKE_KEY not in raw
+
+
+def test_clear_removes_meta_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = _redirect_config(tmp_path, monkeypatch)
+    _install_fake_keyring(monkeypatch)
+    settings_mod.store_gemini_key(_FAKE_KEY)
+    meta_path = home / ".settings-meta.json"
+    assert meta_path.exists()
+
+    settings_mod.clear_gemini_key()
+
+    assert not meta_path.exists()
+
+
+def test_settings_status_carries_meta_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _redirect_config(tmp_path, monkeypatch)
+    _install_fake_keyring(monkeypatch)
+    settings_mod.store_gemini_key(_FAKE_KEY)
+
+    status = settings_mod.settings_status()
+
+    assert status.configured is True
+    assert status.meta is not None
+    assert status.meta.backend is settings_mod.Backend.KEYRING
+    # render() surfaces both head and a tail line with the timestamp.
+    rendered = status.render()
+    assert "configured (backend: keyring)" in rendered
+    assert "last set:" in rendered
+    # render() must not leak the key.
+    assert _FAKE_KEY not in rendered
+
+
+def test_settings_status_meta_is_none_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _redirect_config(tmp_path, monkeypatch)
+    _install_fake_keyring(monkeypatch)
+
+    status = settings_mod.settings_status()
+
+    assert status.configured is False
+    assert status.meta is None
+
+
+def test_load_meta_returns_none_on_corrupt_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = _redirect_config(tmp_path, monkeypatch)
+    _install_fake_keyring(monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".settings-meta.json").write_text("not json {", encoding="utf-8")
+
+    # Corrupt meta must not crash load — it just returns None and we
+    # gracefully degrade to no last-set info.
+    assert settings_mod._load_meta() is None
+
+
+# ---------------------------------------------------------------------------
+# Audit log: append-only journal for set/clear events. No key content. Used
+# to diagnose "where did my key go" by greppping caller binary + timestamps.
+# ---------------------------------------------------------------------------
+
+
+def test_audit_log_appends_set_and_clear_events(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = _redirect_config(tmp_path, monkeypatch)
+    _install_fake_keyring(monkeypatch)
+
+    settings_mod.store_gemini_key(_FAKE_KEY)
+    settings_mod.clear_gemini_key()
+    settings_mod.store_gemini_key(_FAKE_KEY_2)
+
+    log = home / "audit.log"
+    assert log.exists()
+    # Mode 0600 — locked down like the rest of the settings dir.
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+
+    import json as _json
+
+    lines = [line for line in log.read_text(encoding="utf-8").splitlines() if line]
+    assert len(lines) == 3
+    parsed = [_json.loads(line) for line in lines]
+    assert [e["action"] for e in parsed] == ["set", "clear", "set"]
+    assert all(e["caller"] for e in parsed)
+    assert all(isinstance(e["pid"], int) for e in parsed)
+    # Backends: first set went to keyring, clear cleared keyring, second
+    # set landed in keyring again.
+    assert [e["backend"] for e in parsed] == ["keyring", "keyring", "keyring"]
+    # No fake key content leaks into the journal.
+    raw = log.read_text(encoding="utf-8")
+    assert _FAKE_KEY not in raw
+    assert _FAKE_KEY_2 not in raw
+
+
+def test_audit_log_records_no_op_clear_as_none_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """clear with nothing stored still appends an audit line (backend=none)
+    so the journal records the attempt — useful for diagnosing "did someone
+    try to clear it?" even when there was nothing to clear.
+    """
+
+    home = _redirect_config(tmp_path, monkeypatch)
+    _install_fake_keyring(monkeypatch)
+
+    settings_mod.clear_gemini_key()
+
+    import json as _json
+
+    lines = (home / "audit.log").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    entry = _json.loads(lines[0])
+    assert entry["action"] == "clear"
+    assert entry["backend"] == "none"
+
+
+def test_audit_log_survives_missing_config_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """First-time use: ~/.agent-doctor doesn't exist yet. set must still
+    succeed AND write an audit line — the helper has its own dir-create path.
+    """
+
+    home = _redirect_config(tmp_path, monkeypatch)
+    assert not home.exists()
+    _install_fake_keyring(monkeypatch)
+
+    settings_mod.store_gemini_key(_FAKE_KEY)
+
+    assert (home / "audit.log").exists()
+    assert (home / ".settings-meta.json").exists()

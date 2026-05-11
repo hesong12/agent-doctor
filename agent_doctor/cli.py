@@ -264,6 +264,17 @@ def build_parser() -> argparse.ArgumentParser:
         "clear-gemini-key",
         help="Remove the stored Gemini API key from all backends.",
     )
+    settings_clear.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help=(
+            "Skip interactive confirmation. Required when stdin is not a "
+            "TTY — protects user-set keys from accidental clears in scripts, "
+            "CI, and smoke tests. Has no effect when no key is currently "
+            "configured (clear is a no-op in that case)."
+        ),
+    )
     settings_clear.set_defaults(func=_cmd_settings_clear_gemini_key)
 
     settings_show = settings_subs.add_parser(
@@ -1117,14 +1128,62 @@ def _cmd_settings_set_gemini_key(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_settings_clear_gemini_key(_args: argparse.Namespace) -> int:
-    from .settings import clear_gemini_key
+def _cmd_settings_clear_gemini_key(args: argparse.Namespace) -> int:
+    """Clear-gemini-key with destructive-op guard.
 
-    cleared = clear_gemini_key()
-    if cleared:
-        print("agent-doctor: cleared Gemini API key.")
-    else:
+    Sequence:
+    1. If no key is configured, the call is an idempotent no-op and exits 0.
+    2. If ``--yes`` was passed, clear immediately.
+    3. Otherwise on a TTY, prompt for the literal string ``clear`` to confirm.
+       Anything else aborts with exit 2 and the key intact.
+    4. Otherwise (non-TTY without ``--yes``), refuse with exit 2 and an
+       error pointing at the flag. This is the guard that catches
+       smoke-test / CI / script accidents.
+    """
+
+    from .settings import clear_gemini_key, settings_status
+
+    status = settings_status()
+    if not status.configured:
+        # Idempotent no-op: nothing to confirm, nothing to lose.
         print("agent-doctor: no Gemini API key was stored.")
+        return 0
+
+    if not args.yes:
+        if sys.stdin.isatty():
+            prompt_lines = [
+                f"This will permanently remove the Gemini API key from {status.backend.value}.",
+            ]
+            if status.meta is not None and status.meta.set_at:
+                prompt_lines.append(
+                    f"Last set: {status.meta.set_at} via {status.meta.caller_executable}"
+                )
+            prompt_lines.append("Type 'clear' to confirm (anything else aborts): ")
+            sys.stderr.write("\n".join(prompt_lines))
+            sys.stderr.flush()
+            try:
+                entered = sys.stdin.readline().strip()
+            except KeyboardInterrupt:
+                print("\nagent-doctor: aborted.", file=sys.stderr)
+                return 2
+            if entered != "clear":
+                print(
+                    "agent-doctor: aborted (confirmation not entered). "
+                    "Key unchanged.",
+                    file=sys.stderr,
+                )
+                return 2
+        else:
+            print(
+                "agent-doctor: 'clear-gemini-key' is destructive and requires "
+                "explicit confirmation. Re-run with --yes to clear, or run "
+                "interactively. No key was modified.",
+                file=sys.stderr,
+            )
+            return 2
+
+    clear_gemini_key()
+    print("agent-doctor: cleared Gemini API key.")
     return 0
 
 
