@@ -328,6 +328,79 @@ class PetView: NSView {
         }
     }
 
+    // ------------------------------------------------------------
+    //  Generation activity indicator
+    //
+    //  Gemini image-gen takes several seconds. Without feedback the user
+    //  clicks "Generate sprite from prompt..." and sees nothing happen
+    //  until the sprite swaps. Show a dark translucent pill in the centre
+    //  of the pet with a spinning indeterminate progress indicator while
+    //  the subprocess is running. The pill is sized small (44×44) so it
+    //  obscures the pet's centre only, not the whole sprite, and uses
+    //  rounded corners so it reads as an iOS-style HUD rather than a
+    //  rectangle. Built lazily on first use; reused across invocations.
+    // ------------------------------------------------------------
+
+    var generationHud: NSView? = nil
+    var generationSpinner: NSProgressIndicator? = nil
+
+    private func ensureGenerationHud() -> (NSView, NSProgressIndicator) {
+        if let hud = generationHud, let spin = generationSpinner {
+            // Re-centre in case the view was resized between invocations.
+            hud.frame = generationHudFrame()
+            return (hud, spin)
+        }
+        let hud = NSView(frame: generationHudFrame())
+        hud.wantsLayer = true
+        hud.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
+        hud.layer?.cornerRadius = hud.frame.height / 2.0
+        hud.layer?.masksToBounds = true
+        hud.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+        hud.isHidden = true
+        addSubview(hud)
+
+        let spinSize: CGFloat = 22
+        let spin = NSProgressIndicator(frame: NSRect(
+            x: (hud.frame.width - spinSize) / 2.0,
+            y: (hud.frame.height - spinSize) / 2.0,
+            width: spinSize,
+            height: spinSize
+        ))
+        spin.style = .spinning
+        spin.isIndeterminate = true
+        spin.controlSize = .regular
+        spin.isDisplayedWhenStopped = false
+        // Force the light-on-dark spinner variant so the pinwheel reads
+        // against the dark pill regardless of the user's system appearance.
+        spin.appearance = NSAppearance(named: .darkAqua)
+        hud.addSubview(spin)
+
+        generationHud = hud
+        generationSpinner = spin
+        return (hud, spin)
+    }
+
+    private func generationHudFrame() -> NSRect {
+        let side: CGFloat = 44
+        return NSRect(
+            x: bounds.midX - side / 2.0,
+            y: bounds.midY - side / 2.0,
+            width: side,
+            height: side
+        )
+    }
+
+    func startGenerationIndicator() {
+        let (hud, spin) = ensureGenerationHud()
+        hud.isHidden = false
+        spin.startAnimation(nil)
+    }
+
+    func stopGenerationIndicator() {
+        generationSpinner?.stopAnimation(nil)
+        generationHud?.isHidden = true
+    }
+
     override var isOpaque: Bool { false }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -424,6 +497,11 @@ class PetView: NSView {
     }
 
     func runGenerateSpriteProcess(prompt: String) {
+        // Start the HUD on the main thread BEFORE dispatching so the user
+        // sees the spinner the same frame they dismissed the prompt alert.
+        // Stopping always happens before the success/error branch on the
+        // way back so the HUD never lingers past the subprocess.
+        startGenerationIndicator()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: pythonExecutable)
@@ -442,12 +520,14 @@ class PetView: NSView {
                 process.waitUntilExit()
             } catch {
                 DispatchQueue.main.async {
+                    self?.stopGenerationIndicator()
                     self?.showSpriteError(error.localizedDescription)
                 }
                 return
             }
             let stderr = errorCollector.finish()
             DispatchQueue.main.async {
+                self?.stopGenerationIndicator()
                 if process.terminationStatus != 0 {
                     self?.showSpriteError(stderr)
                 } else {
@@ -1662,6 +1742,25 @@ class PetView: NSView {
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+
+// Install a minimal main menu so standard Edit shortcuts (Cmd-X / Cmd-C /
+// Cmd-V / Cmd-A) reach the text fields in our NSAlert dialogs. With the
+// `.accessory` activation policy AppKit installs no Edit menu by default,
+// so key equivalents inside modal alerts have nothing to validate against
+// and silently no-op — pasting a Gemini API key into "Configure Gemini..."
+// or a prompt into "Generate sprite from prompt..." fails. Routing through
+// the standard NSText.* selectors lets whichever NSTextField/NSSecureTextField
+// is firstResponder pick them up automatically.
+let editMenu = NSMenu(title: "Edit")
+editMenu.addItem(withTitle: "Cut",        action: #selector(NSText.cut(_:)),       keyEquivalent: "x")
+editMenu.addItem(withTitle: "Copy",       action: #selector(NSText.copy(_:)),      keyEquivalent: "c")
+editMenu.addItem(withTitle: "Paste",      action: #selector(NSText.paste(_:)),     keyEquivalent: "v")
+editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+let mainMenu = NSMenu()
+let editMenuItem = NSMenuItem()
+editMenuItem.submenu = editMenu
+mainMenu.addItem(editMenuItem)
+app.mainMenu = mainMenu
 
 let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
 let startFrame = NSRect(

@@ -225,6 +225,43 @@ def test_pet_generate_sprite_happy_path(
     assert recorder["generate_content_kwargs"]["model"] == gemini_image.NANO_BANANA_2_MODEL
 
 
+def test_generate_pet_sprite_wraps_user_prompt_with_sticker_constraints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user's free-text prompt must be wrapped in the sticker preamble before
+    it hits Gemini, otherwise the model returns a photoreal-scene image whose
+    corners defeat the downstream floodfill (live regression: a forest-backed
+    capuchin monkey came back fully opaque). Locks in the wrap so a future
+    refactor cannot quietly drop it.
+    """
+
+    recorder = _patch_sdk(monkeypatch, _FakeResponse(_png_bytes()))
+
+    user_subject = "a cheerful capuchin monkey holding a yellow flower"
+    gemini_image.generate_pet_sprite_bytes(prompt=user_subject, api_key=_FAKE_KEY)
+
+    sent = recorder["generate_content_kwargs"]["contents"]
+    # The user's exact subject string survives verbatim — we wrap, not rewrite.
+    assert user_subject in sent
+    # And the load-bearing constraints from the preamble are present.
+    assert gemini_image.STICKER_PROMPT_PREAMBLE.split("\n", 1)[0] in sent
+    assert "pure-white background" in sent.lower() or "#ffffff" in sent.lower()
+    assert "sticker" in sent.lower()
+    # The wrapped prompt should be substantially longer than the raw subject.
+    assert len(sent) > len(user_subject) + 200
+
+
+def test_build_sticker_prompt_strips_and_appends() -> None:
+    """Helper contract: user words appended verbatim after stripping whitespace,
+    nothing else mutated.
+    """
+
+    wrapped = gemini_image.build_sticker_prompt("  a tiny rocket dog  \n")
+    assert wrapped.startswith(gemini_image.STICKER_PROMPT_PREAMBLE)
+    assert wrapped.endswith("a tiny rocket dog")
+    assert "  a tiny rocket dog" not in wrapped  # leading whitespace was stripped
+
+
 def test_pet_generate_sprite_explicit_out(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -584,3 +621,19 @@ def test_appkit_menu_has_gemini_items() -> None:
     # NSSecureTextField for the key entry, regular NSTextField for the prompt.
     assert "NSSecureTextField" in source
     assert "NSTextField" in source
+
+    # Edit menu must be installed at app bootstrap so Cmd-V works inside the
+    # NSAlert text fields under the .accessory activation policy.
+    assert "NSText.paste(_:)" in source
+    assert "NSText.cut(_:)" in source
+    assert "NSText.copy(_:)" in source
+    assert "NSText.selectAll(_:)" in source
+    assert "app.mainMenu = mainMenu" in source
+
+    # Generation activity HUD — spinning indicator while the Gemini
+    # subprocess runs, started on the main thread before dispatch and
+    # always stopped before the success/error branch on the way back.
+    assert "NSProgressIndicator" in source
+    assert "startGenerationIndicator()" in source
+    assert "stopGenerationIndicator()" in source
+    assert ".isIndeterminate = true" in source
