@@ -225,6 +225,32 @@ func bob(_ state: String, _ t: Double) -> CGFloat {
     return 2.0 + (1.2 * CGFloat(sin(t * 1.8)))
 }
 
+// Background warmup for the two npx packages the usage popover shells out
+// to. ``npx <pkg>@latest --version`` is the cheapest invocation that still
+// resolves + caches the package, so the next click on the pet only pays
+// process startup (~200ms) instead of the ~5s cold install. Errors are
+// intentionally ignored — the real pet-usage subprocess will surface a
+// human message if npx remains unavailable.
+func warmupNpxPackages() {
+    let packages = ["ccusage@latest", "@ccusage/codex@latest"]
+    DispatchQueue.global(qos: .utility).async {
+        for pkg in packages {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["npx", pkg, "--version"]
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                // Swallow: missing npx is recoverable in the real popover.
+                continue
+            }
+        }
+    }
+}
+
 final class ProcessOutputCollector {
     private let pipe: Pipe
     private var data = Data()
@@ -258,6 +284,263 @@ final class ProcessOutputCollector {
     }
 }
 
+// ---------------------------------------------------------------------------
+//  Usage popover view controller — renders 4 cards (Claude 5h, Claude weekly,
+//  Codex 5h, Codex weekly) from the parsed `agent-doctor pet-usage --json`
+//  payload. Stays in this file (rather than a separate .swift) because the
+//  whole desktop pet is loaded via `swift -frontend -interpret` from a
+//  single TMPDIR file written by pet_display.py.
+// ---------------------------------------------------------------------------
+
+final class UsageViewController: NSViewController {
+    private let stack = NSStackView()
+    private let header = NSTextField(labelWithString: "Usage")
+    private let footer = NSTextField(labelWithString: "")
+    private let popoverWidth: CGFloat = 320
+
+    override func loadView() {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: popoverWidth, height: 360))
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        header.font = NSFont.boldSystemFont(ofSize: 13)
+        header.textColor = .labelColor
+        header.maximumNumberOfLines = 1
+
+        footer.font = NSFont.systemFont(ofSize: 10)
+        footer.textColor = .secondaryLabelColor
+        footer.maximumNumberOfLines = 2
+
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(header)
+        container.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            container.widthAnchor.constraint(equalToConstant: popoverWidth)
+        ])
+
+        self.view = container
+    }
+
+    func renderLoading() {
+        loadViewIfNeeded()
+        clearCards()
+        header.stringValue = "Loading usage..."
+        let spinner = NSProgressIndicator(frame: NSRect(x: 0, y: 0, width: 18, height: 18))
+        spinner.style = .spinning
+        spinner.isIndeterminate = true
+        spinner.controlSize = .small
+        spinner.startAnimation(nil)
+        stack.addArrangedSubview(spinner)
+        let hint = NSTextField(wrappingLabelWithString: "Reading ccusage and @ccusage/codex... npx may install on first run.")
+        hint.font = NSFont.systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+        hint.preferredMaxLayoutWidth = popoverWidth - 24
+        stack.addArrangedSubview(hint)
+    }
+
+    func renderError(_ message: String) {
+        loadViewIfNeeded()
+        clearCards()
+        header.stringValue = "Usage unavailable"
+        let card = makeErrorCard(message)
+        stack.addArrangedSubview(card)
+    }
+
+    func render(payload: [String: Any]) {
+        loadViewIfNeeded()
+        clearCards()
+        header.stringValue = "Claude + Codex usage"
+
+        let claude = payload["claude"] as? [String: Any] ?? [:]
+        let codex = payload["codex"] as? [String: Any] ?? [:]
+
+        stack.addArrangedSubview(makeWindowCard(
+            title: "Claude · 5h",
+            window: claude["window_5h"] as? [String: Any],
+            error: claude["error"] as? String,
+            includeReset: true
+        ))
+        stack.addArrangedSubview(makeWindowCard(
+            title: "Claude · weekly",
+            window: claude["window_weekly"] as? [String: Any],
+            error: claude["error"] as? String,
+            includeReset: false
+        ))
+        stack.addArrangedSubview(makeWindowCard(
+            title: "Codex · 5h",
+            window: codex["window_5h"] as? [String: Any],
+            error: codex["error"] as? String,
+            includeReset: false
+        ))
+        stack.addArrangedSubview(makeWindowCard(
+            title: "Codex · weekly",
+            window: codex["window_weekly"] as? [String: Any],
+            error: codex["error"] as? String,
+            includeReset: false
+        ))
+
+        if let generatedAt = payload["generated_at"] as? String {
+            footer.stringValue = "Updated \(generatedAt)"
+            stack.addArrangedSubview(footer)
+        }
+    }
+
+    private func clearCards() {
+        for view in stack.arrangedSubviews where view !== header {
+            stack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+    }
+
+    private func makeWindowCard(
+        title: String,
+        window: [String: Any]?,
+        error: String?,
+        includeReset: Bool
+    ) -> NSView {
+        let card = NSView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.wantsLayer = true
+        card.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.6).cgColor
+        card.layer?.cornerRadius = 6
+
+        let inner = NSStackView()
+        inner.orientation = .vertical
+        inner.alignment = .leading
+        inner.spacing = 2
+        inner.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+        inner.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(inner)
+
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = NSFont.boldSystemFont(ofSize: 12)
+        titleLabel.textColor = .labelColor
+        inner.addArrangedSubview(titleLabel)
+
+        if let window = window {
+            let tokens = window["tokens"] as? [String: Any] ?? [:]
+            let total = tokens["total"] as? Int ?? Int((tokens["total"] as? Double) ?? 0)
+            let cost = window["cost_usd"] as? Double
+                ?? Double(window["cost_usd"] as? Int ?? 0)
+            let models = window["models"] as? [String] ?? []
+            inner.addArrangedSubview(makeRow("Tokens", value: formatTokens(total)))
+            inner.addArrangedSubview(makeRow("Cost", value: formatCost(cost)))
+            if !models.isEmpty {
+                inner.addArrangedSubview(makeRow("Models", value: models.joined(separator: ", ")))
+            }
+            if includeReset, let resetMinutes = window["reset_minutes"] as? Int {
+                inner.addArrangedSubview(makeRow("Resets in", value: formatResetMinutes(resetMinutes)))
+            } else if includeReset, let resetDouble = window["reset_minutes"] as? Double {
+                inner.addArrangedSubview(makeRow("Resets in", value: formatResetMinutes(Int(resetDouble))))
+            }
+        } else {
+            let message = error?.isEmpty == false
+                ? error!
+                : "No data yet — make a request in this window."
+            let label = NSTextField(wrappingLabelWithString: message)
+            label.font = NSFont.systemFont(ofSize: 11)
+            label.textColor = .secondaryLabelColor
+            label.preferredMaxLayoutWidth = popoverWidth - 44
+            inner.addArrangedSubview(label)
+        }
+
+        NSLayoutConstraint.activate([
+            inner.topAnchor.constraint(equalTo: card.topAnchor),
+            inner.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            inner.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            inner.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            card.widthAnchor.constraint(equalToConstant: popoverWidth - 24)
+        ])
+        return card
+    }
+
+    private func makeErrorCard(_ message: String) -> NSView {
+        let card = NSView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.wantsLayer = true
+        card.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.08).cgColor
+        card.layer?.cornerRadius = 6
+        let label = NSTextField(wrappingLabelWithString: message)
+        label.font = NSFont.systemFont(ofSize: 11)
+        label.textColor = .labelColor
+        label.preferredMaxLayoutWidth = popoverWidth - 44
+        label.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            label.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            label.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            label.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+            card.widthAnchor.constraint(equalToConstant: popoverWidth - 24)
+        ])
+        return card
+    }
+
+    private func makeRow(_ key: String, value: String) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let keyLabel = NSTextField(labelWithString: key)
+        keyLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        keyLabel.textColor = .secondaryLabelColor
+
+        let valueLabel = NSTextField(wrappingLabelWithString: value)
+        valueLabel.font = NSFont.systemFont(ofSize: 11)
+        valueLabel.textColor = .labelColor
+        valueLabel.lineBreakMode = .byTruncatingTail
+
+        row.addArrangedSubview(keyLabel)
+        row.addArrangedSubview(valueLabel)
+        return row
+    }
+
+    private func formatTokens(_ total: Int) -> String {
+        if total <= 0 {
+            return "0"
+        }
+        if total >= 1_000_000 {
+            return String(format: "%.2fM", Double(total) / 1_000_000.0)
+        }
+        if total >= 1_000 {
+            return String(format: "%.1fk", Double(total) / 1_000.0)
+        }
+        return "\(total)"
+    }
+
+    private func formatCost(_ cost: Double) -> String {
+        if cost <= 0 {
+            return "$0.00"
+        }
+        return String(format: "$%.2f", cost)
+    }
+
+    private func formatResetMinutes(_ minutes: Int) -> String {
+        if minutes <= 0 {
+            return "now"
+        }
+        if minutes < 60 {
+            return "\(minutes) min"
+        }
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        if remainder == 0 {
+            return "\(hours)h"
+        }
+        return "\(hours)h \(remainder)m"
+    }
+}
+
 class PetView: NSView {
     var status: [String: String] = loadStatus() {
         didSet {
@@ -267,7 +550,20 @@ class PetView: NSView {
     }
     var dragOffset: NSPoint = .zero
     var isDragging = false
+    // Single-click detection: capture the press point + timestamp so mouseUp
+    // can distinguish a true click (small displacement + short hold) from
+    // a drag (>=4pt of motion) or a long-press. The drag path keeps its
+    // existing behavior — only true clicks open the usage popover.
+    var clickStartPoint: NSPoint = .zero
+    var clickStartedAt: TimeInterval = 0
     var bubbleOpen = false
+    // Usage popover (Claude + Codex 5h / weekly). One instance reused
+    // across clicks so it stays visible if the user is still interacting
+    // with it when a new click lands. .transient closes it on outside-
+    // clicks for us; we only need to manage the in-flight CLI subprocess.
+    var usagePopover: NSPopover? = nil
+    var usageViewController: UsageViewController? = nil
+    var usageRequestInFlight = false
     var dismissedEventId = ""
     var activeEventId = ""
     var eventFirstSeenAt = Date()
@@ -409,6 +705,8 @@ class PetView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         dragOffset = event.locationInWindow
+        clickStartPoint = event.locationInWindow
+        clickStartedAt = event.timestamp
         isDragging = false
     }
 
@@ -425,6 +723,19 @@ class PetView: NSView {
         }
         let point = convert(event.locationInWindow, from: nil)
         if performButton(at: point) {
+            return
+        }
+        // Single-click discriminator: displacement < 4pt AND elapsed < 400ms.
+        // Anything slower or larger is treated as the legacy bubble toggle so
+        // long-presses, micro-drags, and any future gesture don't accidentally
+        // open the usage popover. Right-click is handled in rightMouseDown so
+        // it isn't routed here.
+        let dx = event.locationInWindow.x - clickStartPoint.x
+        let dy = event.locationInWindow.y - clickStartPoint.y
+        let displacement = (dx * dx + dy * dy).squareRoot()
+        let elapsed = event.timestamp - clickStartedAt
+        if displacement < 4.0 && elapsed < 0.4 {
+            openUsagePopover()
             return
         }
         bubbleOpen = !bubbleOpen
@@ -706,6 +1017,120 @@ class PetView: NSView {
                     self?.showSpriteError(stderr)
                 } else {
                     self?.reloadSpriteIfChanged()
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------
+    //  Usage popover (single-click) — Claude + Codex 5h / weekly
+    //
+    //  The popover is anchored to the pet view (preferredEdge=.maxX)
+    //  and uses behavior=.transient so AppKit dismisses it on the next
+    //  outside click. We render a loading state synchronously, then run
+    //  `agent-doctor pet-usage --json` on a background queue and hand
+    //  the parsed dict to the UsageViewController on the main queue.
+    //
+    //  A single in-flight guard keeps rapid clicks from spawning a
+    //  process storm — once the subprocess returns, the next click
+    //  triggers a fresh refresh.
+    // ------------------------------------------------------------
+
+    func openUsagePopover() {
+        let popover = ensureUsagePopover()
+        let controller = usageViewController ?? UsageViewController()
+        usageViewController = controller
+        popover.contentViewController = controller
+        controller.renderLoading()
+        if !popover.isShown {
+            popover.show(relativeTo: bounds, of: self, preferredEdge: .maxX)
+        }
+        if usageRequestInFlight {
+            return
+        }
+        usageRequestInFlight = true
+        runUsageCollect { [weak self] payload, errorMessage in
+            guard let self = self else { return }
+            self.usageRequestInFlight = false
+            if let payload = payload {
+                self.usageViewController?.render(payload: payload)
+            } else {
+                self.usageViewController?.renderError(
+                    errorMessage ?? "agent-doctor pet-usage failed."
+                )
+            }
+        }
+    }
+
+    private func ensureUsagePopover() -> NSPopover {
+        if let existing = usagePopover {
+            return existing
+        }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = true
+        usagePopover = popover
+        return popover
+    }
+
+    private func runUsageCollect(
+        completion: @escaping ([String: Any]?, String?) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: pythonExecutable)
+            process.arguments = [
+                "-m",
+                "agent_doctor.cli",
+                "pet-usage",
+                "--json"
+            ]
+            let stdoutPipe = Pipe()
+            let stdoutCollector = ProcessOutputCollector(stdoutPipe)
+            process.standardOutput = stdoutPipe
+            let stderrPipe = Pipe()
+            let stderrCollector = ProcessOutputCollector(stderrPipe)
+            process.standardError = stderrPipe
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                DispatchQueue.main.async {
+                    completion(nil, error.localizedDescription)
+                }
+                return
+            }
+            let stdout = stdoutCollector.finish()
+            let stderr = stderrCollector.finish()
+            if process.terminationStatus != 0 {
+                let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                DispatchQueue.main.async {
+                    completion(nil, detail.isEmpty
+                        ? "agent-doctor pet-usage exited with \(process.terminationStatus)"
+                        : detail)
+                }
+                return
+            }
+            guard let data = stdout.data(using: .utf8) else {
+                DispatchQueue.main.async {
+                    completion(nil, "agent-doctor pet-usage produced no output")
+                }
+                return
+            }
+            do {
+                let parsed = try JSONSerialization.jsonObject(with: data)
+                if let dict = parsed as? [String: Any] {
+                    DispatchQueue.main.async {
+                        completion(dict, nil)
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        completion(nil, "agent-doctor pet-usage returned non-object JSON")
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(nil, "could not parse usage JSON: \(error.localizedDescription)")
                 }
             }
         }
@@ -1798,6 +2223,12 @@ window.contentView = view
 view.reloadSpriteIfChanged()
 window.makeKeyAndOrderFront(nil)
 app.activate(ignoringOtherApps: true)
+
+// Fire-and-forget npx warmup so the first click on the pet doesn't pay
+// the ~5s npx cold-install for ccusage / @ccusage/codex. We don't care
+// about the output, just about populating the npx cache. Failures stay
+// silent — the next pet-usage call will surface them in the popover.
+warmupNpxPackages()
 
 Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { _ in
     let now = Date()
