@@ -14,13 +14,41 @@ timeout and returns a JSON-serializable dict::
     {
       "claude": {
         "window_5h":     {tokens, cost_usd, models, start_iso, end_iso,
-                          reset_minutes} | None,
-        "window_weekly": {tokens, cost_usd, models, start_iso, end_iso} | None,
+                          reset_minutes, elapsed_pct, remaining_minutes,
+                          remaining_human} | None,
+        "window_weekly": {tokens, cost_usd, models, start_iso, end_iso,
+                          elapsed_pct, remaining_minutes, remaining_human} | None,
         "error": str | None,
       },
-      "codex":  { ... },
+      "codex": {
+        "window_today":  {tokens, cost_usd, models, start_iso, end_iso,
+                          elapsed_pct, remaining_minutes, remaining_human} | None,
+        "window_weekly": {tokens, cost_usd, models, start_iso, end_iso,
+                          elapsed_pct, remaining_minutes, remaining_human} | None,
+        "error": str | None,
+      },
       "generated_at": "2026-05-10T20:00:00+00:00",
     }
+
+Calendar anchoring
+------------------
+
+Three of the four windows are pinned to fixed calendar boundaries so
+``elapsed_pct`` is a meaningful "where am I in this period" number:
+
+* ``claude.window_5h`` — active ccusage 5h billing block (intrinsic bounds).
+* ``claude.window_weekly`` — current ISO week (Mon 00:00 UTC → next Mon
+  00:00 UTC), filtered to ccusage's weekly entry for that Monday.
+* ``codex.window_today`` — current calendar day (today 00:00 UTC →
+  24:00 UTC), filtered to ``@ccusage/codex daily``'s entry for today.
+* ``codex.window_weekly`` — current ISO week (same boundaries as Claude's
+  weekly), aggregating every ``@ccusage/codex daily`` entry whose date
+  falls within ``[Mon, next Mon)``.
+
+When a calendar-anchored window has no source rows for the current period
+the window is still returned with all-zero token / cost / model values and
+the calendar bounds, so ``elapsed_pct`` keeps making sense for an
+otherwise-idle day or week.
 
 Failure handling
 ----------------
@@ -48,9 +76,6 @@ from typing import Any
 DEFAULT_TIMEOUT_SECONDS = 15.0
 """Per-call timeout. Each of the four npx queries is bounded independently."""
 
-_FIVE_HOURS_SECONDS = 5 * 60 * 60
-_WEEK_DAYS = 7
-
 CCUSAGE_PACKAGE = "ccusage@latest"
 CODEX_PACKAGE = "@ccusage/codex@latest"
 
@@ -74,7 +99,7 @@ class Window:
     end_iso: str
     reset_minutes: int | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, now_epoch: float | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "tokens": {
                 "input": self.tokens_input,
@@ -89,6 +114,15 @@ class Window:
         }
         if self.reset_minutes is not None:
             payload["reset_minutes"] = int(self.reset_minutes)
+        elapsed_pct, remaining_minutes, remaining_human = _compute_progress(
+            self.start_iso,
+            self.end_iso,
+            now_epoch=now_epoch if now_epoch is not None else _now_epoch(),
+            reset_minutes_override=self.reset_minutes,
+        )
+        payload["elapsed_pct"] = elapsed_pct
+        payload["remaining_minutes"] = remaining_minutes
+        payload["remaining_human"] = remaining_human
         return payload
 
 
@@ -102,32 +136,40 @@ def collect_usage(*, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict[str, Any]
     """
 
     generated_at = _now_iso()
+    # Snapshot "now" once so all four window-progress calculations agree on
+    # the same reference instant — drift between four ``_now_epoch()`` calls
+    # is microseconds, but the unit tests monkey-patch ``_now_epoch`` and
+    # expect a single deterministic value across the payload.
+    now_epoch_snapshot = _now_epoch()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         futures = {
             "claude_5h": pool.submit(_safe_call, _claude_5h, timeout),
             "claude_wk": pool.submit(_safe_call, _claude_weekly, timeout),
-            "codex_5h": pool.submit(_safe_call, _codex_5h, timeout),
+            "codex_today": pool.submit(_safe_call, _codex_today, timeout),
             "codex_wk": pool.submit(_safe_call, _codex_weekly, timeout),
         }
         results = {name: fut.result() for name, fut in futures.items()}
 
     claude_5h_value, claude_5h_err = results["claude_5h"]
     claude_wk_value, claude_wk_err = results["claude_wk"]
-    codex_5h_value, codex_5h_err = results["codex_5h"]
+    codex_today_value, codex_today_err = results["codex_today"]
     codex_wk_value, codex_wk_err = results["codex_wk"]
+
+    def _serialize(window: Window | None) -> dict[str, Any] | None:
+        return window.to_dict(now_epoch=now_epoch_snapshot) if window else None
 
     return {
         "claude": {
-            "window_5h": claude_5h_value.to_dict() if claude_5h_value else None,
-            "window_weekly": claude_wk_value.to_dict() if claude_wk_value else None,
+            "window_5h": _serialize(claude_5h_value),
+            "window_weekly": _serialize(claude_wk_value),
             "error": _combine_errors(claude_5h_err, claude_wk_err, source="ccusage"),
         },
         "codex": {
-            "window_5h": codex_5h_value.to_dict() if codex_5h_value else None,
-            "window_weekly": codex_wk_value.to_dict() if codex_wk_value else None,
+            "window_today": _serialize(codex_today_value),
+            "window_weekly": _serialize(codex_wk_value),
             "error": _combine_errors(
-                codex_5h_err, codex_wk_err, source="@ccusage/codex"
+                codex_today_err, codex_wk_err, source="@ccusage/codex"
             ),
         },
         "generated_at": generated_at,
@@ -267,26 +309,48 @@ def _claude_block_to_window(block: dict[str, Any]) -> Window:
 
 
 def _claude_weekly(timeout: float) -> Window:
+    """Current ISO-week usage for Claude.
+
+    Window bounds are the current Monday 00:00 UTC → next Monday 00:00 UTC,
+    independent of whether ccusage has a row for this week yet. When
+    ccusage's weekly list contains an entry whose ``week`` key equals
+    today's ISO Monday (``YYYY-MM-DD``), aggregate it; otherwise return an
+    empty calendar window so the popover can still report "0 tokens, X%
+    elapsed" for a freshly-started week.
+    """
+
     payload = _run_npx_json(
         [CCUSAGE_PACKAGE, "weekly", "--json", "--offline"],
         timeout=timeout,
     )
     weekly = _list_field(payload, "weekly")
-    if not weekly:
-        raise UsageError("ccusage returned an empty weekly list")
-    latest = _latest_weekly_entry(weekly)
-    return _claude_weekly_to_window(latest)
+    start_iso, end_iso = current_iso_week_window()
+    monday_key = start_iso[:10]
+    matching = _find_weekly_entry(weekly, monday_key)
+    if matching is None:
+        return _empty_window(start_iso=start_iso, end_iso=end_iso)
+    return _claude_weekly_to_window(matching, start_iso=start_iso, end_iso=end_iso)
 
 
-def _latest_weekly_entry(entries: list[dict[str, Any]]) -> dict[str, Any]:
-    sortable = [e for e in entries if isinstance(e, dict) and e.get("week")]
-    if not sortable:
-        return entries[-1] if entries else {}
-    sortable.sort(key=lambda e: str(e.get("week")))
-    return sortable[-1]
+def _find_weekly_entry(
+    entries: list[dict[str, Any]], monday_key: str
+) -> dict[str, Any] | None:
+    """Return the ccusage weekly entry whose ``week`` field matches
+    ``monday_key`` (``YYYY-MM-DD``). Accepts both bare-date weeks
+    (``"2026-05-04"``) and dated weeks with a time/zone suffix
+    (``"2026-05-04T00:00:00Z"``) by prefix-matching the 10-char date.
+    """
+
+    for entry in entries:
+        week = str(entry.get("week") or "").strip()
+        if week.startswith(monday_key):
+            return entry
+    return None
 
 
-def _claude_weekly_to_window(entry: dict[str, Any]) -> Window:
+def _claude_weekly_to_window(
+    entry: dict[str, Any], *, start_iso: str, end_iso: str
+) -> Window:
     total = _coerce_int(entry.get("totalTokens") or 0)
     cost = _coerce_float(entry.get("totalCost") or entry.get("totalCostUSD") or 0.0)
     models = _coerce_str_tuple(entry.get("modelsUsed") or entry.get("models"))
@@ -317,7 +381,6 @@ def _claude_weekly_to_window(entry: dict[str, Any]) -> Window:
     if total == 0:
         total = input_tokens + output_tokens
 
-    start_iso, end_iso = _week_window_iso(entry.get("week"))
     return Window(
         tokens_input=input_tokens,
         tokens_output=output_tokens,
@@ -330,94 +393,66 @@ def _claude_weekly_to_window(entry: dict[str, Any]) -> Window:
     )
 
 
-def _week_window_iso(week: Any) -> tuple[str, str]:
-    """Best-effort ISO bounds for a ``YYYY-MM-DD`` (week-start) value."""
-
-    if isinstance(week, str) and week:
-        try:
-            start = datetime.fromisoformat(_iso_for_fromisoformat(week))
-        except ValueError:
-            start = None
-        if start is not None:
-            if start.tzinfo is None:
-                start = start.replace(tzinfo=timezone.utc)
-            end = start + timedelta(days=_WEEK_DAYS)
-            return start.isoformat(), end.isoformat()
-    now = datetime.now(timezone.utc)
-    return (now - timedelta(days=_WEEK_DAYS)).isoformat(), now.isoformat()
-
-
 # ---------------------------------------------------------------------------
-#  Codex — @ccusage/codex (no blocks / weekly subcommands → synthesize)
+#  Codex — @ccusage/codex (calendar-anchored: today + current ISO week)
 # ---------------------------------------------------------------------------
 
 
-def _codex_5h(timeout: float) -> Window:
-    payload = _run_npx_json(
-        [CODEX_PACKAGE, "session", "--json", "--offline"],
-        timeout=timeout,
-    )
-    sessions = _codex_session_list(payload)
-    cutoff = _now_epoch() - _FIVE_HOURS_SECONDS
-    recent = [s for s in sessions if _codex_session_in_window(s, cutoff_epoch=cutoff)]
-    if not recent:
-        raise UsageError("no Codex sessions in the last 5h")
-    return _aggregate_codex_entries(
-        recent,
-        start_iso=_iso_at(cutoff),
-        end_iso=_now_iso(),
-    )
+def _codex_today(timeout: float) -> Window:
+    """Current-calendar-day usage for Codex.
 
+    Window bounds are today's 00:00 UTC → 24:00 UTC. We query
+    ``@ccusage/codex daily --json`` and pick the entry whose ``date``
+    field parses to today. If no row exists yet (no Codex activity today)
+    we return an empty window so the popover still shows a meaningful
+    "0 tokens, X% elapsed (Y left)" card.
+    """
 
-def _codex_session_list(payload: Any) -> list[dict[str, Any]]:
-    if isinstance(payload, list):
-        return [s for s in payload if isinstance(s, dict)]
-    if isinstance(payload, dict):
-        for key in ("sessions", "session", "data"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return [s for s in value if isinstance(s, dict)]
-    return []
-
-
-def _codex_session_in_window(session: dict[str, Any], *, cutoff_epoch: float) -> bool:
-    last = (
-        session.get("lastActivity")
-        or session.get("last_activity")
-        or session.get("endTime")
-        or session.get("lastUsed")
-    )
-    epoch = _parse_iso_to_epoch(last)
-    if epoch is None:
-        return False
-    # Strict ``>`` (not ``>=``): a session that touched the cutoff to the
-    # second has effectively rolled out of the active window already, so we
-    # exclude it. This matches the desktop-pet contract's "5h rolling" intent
-    # and keeps numbers from briefly ghosting after the window flips.
-    return epoch > cutoff_epoch
-
-
-def _codex_weekly(timeout: float) -> Window:
     payload = _run_npx_json(
         [CODEX_PACKAGE, "daily", "--json", "--offline"],
         timeout=timeout,
     )
     daily = _codex_daily_list(payload)
-    now_epoch = _now_epoch()
-    now_date = datetime.fromtimestamp(now_epoch, tz=timezone.utc).date()
-    recent = [d for d in daily if _codex_daily_in_window(d, now_date=now_date)]
-    if not recent:
-        raise UsageError("no Codex usage in the last 7 days")
-    # "Last 7 days" = today + the 6 days before it, so the window starts
-    # at midnight UTC of (now - 6d). This is the most user-friendly
-    # interpretation: a per-day report card never spans partial days.
-    window_start = datetime(
-        now_date.year, now_date.month, now_date.day, tzinfo=timezone.utc
-    ) - timedelta(days=_WEEK_DAYS - 1)
+    start_iso, end_iso = current_iso_day_window()
+    today_date = datetime.fromisoformat(start_iso).date()
+    matching = [
+        entry
+        for entry in daily
+        if _codex_entry_date(entry) == today_date
+    ]
+    if not matching:
+        return _empty_window(start_iso=start_iso, end_iso=end_iso)
     return _aggregate_codex_entries(
-        recent,
-        start_iso=window_start.isoformat(),
-        end_iso=_now_iso(),
+        matching, start_iso=start_iso, end_iso=end_iso
+    )
+
+
+def _codex_weekly(timeout: float) -> Window:
+    """Current-ISO-week usage for Codex.
+
+    Aggregates every ``@ccusage/codex daily`` entry whose date falls in
+    ``[Monday 00:00 UTC, next Monday 00:00 UTC)``. Mirrors the bounds
+    used by Claude weekly so the two "Week" cards refer to the same
+    seven-day period and ``elapsed_pct`` matches between them.
+    """
+
+    payload = _run_npx_json(
+        [CODEX_PACKAGE, "daily", "--json", "--offline"],
+        timeout=timeout,
+    )
+    daily = _codex_daily_list(payload)
+    start_iso, end_iso = current_iso_week_window()
+    week_start = datetime.fromisoformat(start_iso).date()
+    week_end = datetime.fromisoformat(end_iso).date()  # exclusive
+    matching: list[dict[str, Any]] = []
+    for entry in daily:
+        entry_date = _codex_entry_date(entry)
+        if entry_date is not None and week_start <= entry_date < week_end:
+            matching.append(entry)
+    if not matching:
+        return _empty_window(start_iso=start_iso, end_iso=end_iso)
+    return _aggregate_codex_entries(
+        matching, start_iso=start_iso, end_iso=end_iso
     )
 
 
@@ -432,21 +467,17 @@ def _codex_daily_list(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _codex_daily_in_window(entry: dict[str, Any], *, now_date: Any) -> bool:
-    """Include entries whose calendar date is within the last 7 days.
+def _codex_entry_date(entry: dict[str, Any]) -> Any:
+    """Extract the calendar date from a ``@ccusage/codex daily`` entry.
 
-    The Codex daily endpoint emits per-day buckets keyed by a date
-    string — partial days don't make sense here, so windowing is
-    day-precise: ``now_date - entry_date < 7``.
+    Handles every key (``date`` / ``day`` / ``startTime``) and every
+    upstream format we've seen (``"May 02, 2026"`` / ``"2026-05-02"`` /
+    ISO with time + zone) by delegating to :func:`_parse_codex_date`.
     """
 
-    entry_date = _parse_codex_date(
+    return _parse_codex_date(
         entry.get("date") or entry.get("day") or entry.get("startTime")
     )
-    if entry_date is None:
-        return False
-    delta_days = (now_date - entry_date).days
-    return 0 <= delta_days < _WEEK_DAYS
 
 
 # The Codex daily endpoint emits dates in US human format ("May 02, 2026")
@@ -676,6 +707,138 @@ def _now_iso() -> str:
 
 def _iso_at(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def current_iso_week_window(now: datetime | None = None) -> tuple[str, str]:
+    """Return ``(start_iso, end_iso)`` for the ISO week containing ``now``.
+
+    The window is half-open: Monday 00:00 UTC (inclusive) → next Monday
+    00:00 UTC (exclusive). ``now`` defaults to the live wall clock, derived
+    from ``_now_epoch()`` so tests that monkey-patch the seam see a
+    deterministic week.
+    """
+
+    now_utc = _coerce_now_utc(now)
+    today = now_utc.date()
+    monday = today - timedelta(days=today.isoweekday() - 1)
+    start = datetime(monday.year, monday.month, monday.day, tzinfo=timezone.utc)
+    end = start + timedelta(days=7)
+    return start.isoformat(), end.isoformat()
+
+
+def current_iso_day_window(now: datetime | None = None) -> tuple[str, str]:
+    """Return ``(start_iso, end_iso)`` for the calendar day containing ``now``.
+
+    The window is half-open: today 00:00 UTC (inclusive) → 24:00 UTC
+    (exclusive). Like :func:`current_iso_week_window`, ``now`` defaults
+    to ``_now_epoch()`` so tests can pin the clock.
+    """
+
+    now_utc = _coerce_now_utc(now)
+    today = now_utc.date()
+    start = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    return start.isoformat(), end.isoformat()
+
+
+def _coerce_now_utc(now: datetime | None) -> datetime:
+    if now is None:
+        return datetime.fromtimestamp(_now_epoch(), tz=timezone.utc)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=timezone.utc)
+    return now.astimezone(timezone.utc)
+
+
+def _empty_window(*, start_iso: str, end_iso: str) -> Window:
+    """Return a zero-usage :class:`Window` pinned to a calendar period.
+
+    Used when a source returns successfully but has no rows for the
+    current ISO day / week — the popover still renders the card with
+    real start/end bounds so ``elapsed_pct`` keeps a meaningful value.
+    """
+
+    return Window(
+        tokens_input=0,
+        tokens_output=0,
+        tokens_cache=0,
+        tokens_total=0,
+        cost_usd=0.0,
+        models=(),
+        start_iso=start_iso,
+        end_iso=end_iso,
+    )
+
+
+def _format_remaining(minutes: int) -> str:
+    """Render a non-negative minute count as a compact ``"Xm" / "Hh Mm" /
+    "Dd Hh"`` string for the desktop pet's usage popover.
+
+    Kept in usage.py (rather than the Swift renderer) so the popover
+    layer never has to do time math — it just blits the pre-formatted
+    string and the rendering matches what the CLI emits.
+    """
+
+    if minutes < 0:
+        minutes = 0
+    if minutes < 60:
+        return f"{minutes}m"
+    if minutes < 1440:
+        hours, mins = divmod(minutes, 60)
+        if mins == 0:
+            return f"{hours}h"
+        return f"{hours}h {mins}m"
+    days, remainder = divmod(minutes, 1440)
+    hours = remainder // 60
+    if hours == 0:
+        return f"{days}d"
+    return f"{days}d {hours}h"
+
+
+def _compute_progress(
+    start_iso: str,
+    end_iso: str,
+    *,
+    now_epoch: float,
+    reset_minutes_override: int | None = None,
+) -> tuple[float, int, str]:
+    """Return ``(elapsed_pct, remaining_minutes, remaining_human)`` for a
+    window bounded by ``[start_iso, end_iso]``.
+
+    ``elapsed_pct`` is the float percentage of the window already used,
+    rounded to one decimal and clamped to ``[0, 100]``.
+    ``remaining_minutes`` is ``max(0, round((end - now) / 60))`` unless
+    ``reset_minutes_override`` is supplied — Claude 5h's ccusage payload
+    carries an explicit ``projection.remainingMinutes`` that knows
+    ``actualEndTime`` and is therefore more authoritative than the wall
+    clock against ``endTime``.
+
+    When ``start_iso`` or ``end_iso`` is missing / unparseable / produces a
+    non-positive span, the function returns ``(0.0, 0, "")``. The empty
+    ``remaining_human`` is the signal the Swift popover uses to **suppress**
+    the progress row (so the user never sees ``"0% elapsed (— left)"`` for
+    a window whose bounds we couldn't read).
+    """
+
+    start_epoch = _parse_iso_to_epoch(start_iso)
+    end_epoch = _parse_iso_to_epoch(end_iso)
+    if start_epoch is None or end_epoch is None or end_epoch <= start_epoch:
+        return (0.0, 0, "")
+
+    span = end_epoch - start_epoch
+    elapsed = now_epoch - start_epoch
+    pct = (elapsed / span) * 100.0
+    if pct < 0.0:
+        pct = 0.0
+    elif pct > 100.0:
+        pct = 100.0
+    elapsed_pct = round(pct, 1)
+
+    if reset_minutes_override is not None:
+        remaining_minutes = max(0, int(reset_minutes_override))
+    else:
+        remaining_minutes = max(0, round((end_epoch - now_epoch) / 60.0))
+
+    return (elapsed_pct, remaining_minutes, _format_remaining(remaining_minutes))
 
 
 def _combine_errors(*errors: str | None, source: str) -> str | None:

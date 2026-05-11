@@ -366,25 +366,29 @@ final class UsageViewController: NSViewController {
             title: "Claude · 5h",
             window: claude["window_5h"] as? [String: Any],
             error: claude["error"] as? String,
-            includeReset: true
+            includeReset: true,
+            progressLabel: "5h window"
         ))
         stack.addArrangedSubview(makeWindowCard(
             title: "Claude · weekly",
             window: claude["window_weekly"] as? [String: Any],
             error: claude["error"] as? String,
-            includeReset: false
+            includeReset: false,
+            progressLabel: "Week"
         ))
         stack.addArrangedSubview(makeWindowCard(
-            title: "Codex · 5h",
-            window: codex["window_5h"] as? [String: Any],
+            title: "Codex · today",
+            window: codex["window_today"] as? [String: Any],
             error: codex["error"] as? String,
-            includeReset: false
+            includeReset: false,
+            progressLabel: "Today"
         ))
         stack.addArrangedSubview(makeWindowCard(
             title: "Codex · weekly",
             window: codex["window_weekly"] as? [String: Any],
             error: codex["error"] as? String,
-            includeReset: false
+            includeReset: false,
+            progressLabel: "Week"
         ))
 
         if let generatedAt = payload["generated_at"] as? String {
@@ -404,7 +408,8 @@ final class UsageViewController: NSViewController {
         title: String,
         window: [String: Any]?,
         error: String?,
-        includeReset: Bool
+        includeReset: Bool,
+        progressLabel: String
     ) -> NSView {
         let card = NSView()
         card.translatesAutoresizingMaskIntoConstraints = false
@@ -440,6 +445,18 @@ final class UsageViewController: NSViewController {
                 inner.addArrangedSubview(makeRow("Resets in", value: formatResetMinutes(resetMinutes)))
             } else if includeReset, let resetDouble = window["reset_minutes"] as? Double {
                 inner.addArrangedSubview(makeRow("Resets in", value: formatResetMinutes(Int(resetDouble))))
+            }
+            // Window-progress row: "<label>: X% elapsed (<remaining_human> left)".
+            // Suppressed when the upstream usage payload couldn't supply
+            // parseable start/end bounds — Python emits ``remaining_human: ""``
+            // in that case rather than a misleading "0% elapsed (0m left)".
+            if let remainingHuman = window["remaining_human"] as? String,
+               !remainingHuman.isEmpty,
+               let elapsedPct = readDouble(window["elapsed_pct"]) {
+                inner.addArrangedSubview(makeRow(
+                    progressLabel,
+                    value: "\(formatElapsedPct(elapsedPct)) elapsed (\(remainingHuman) left)"
+                ))
             }
         } else {
             let message = error?.isEmpty == false
@@ -538,6 +555,21 @@ final class UsageViewController: NSViewController {
             return "\(hours)h"
         }
         return "\(hours)h \(remainder)m"
+    }
+
+    private func formatElapsedPct(_ pct: Double) -> String {
+        // Clamp defensively — usage.py already clamps, but a future caller
+        // that hand-rolls a payload shouldn't be able to print "120%".
+        let clamped = max(0.0, min(100.0, pct))
+        return String(format: "%.1f%%", clamped)
+    }
+
+    private func readDouble(_ value: Any?) -> Double? {
+        // Python emits ``elapsed_pct`` as a float (1 decimal), but
+        // JSONSerialization may bridge whole numbers (``50.0``) to NSNumber
+        // backed by an integer CF type. Going through ``doubleValue`` covers
+        // both forms in one cast rather than chaining Double/Int branches.
+        return (value as? NSNumber)?.doubleValue
     }
 }
 
