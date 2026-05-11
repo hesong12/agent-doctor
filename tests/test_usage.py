@@ -608,6 +608,86 @@ def test_normalize_iso_round_trips_zulu() -> None:
     assert usage_mod._normalize_iso("2026-05-10T20:00:00Z").startswith("2026-05-10T20:00:00")
 
 
+def test_parse_codex_date_handles_real_us_format() -> None:
+    """The live ``@ccusage/codex daily`` endpoint emits dates as
+    ``"May 02, 2026"``. Parsing must succeed or the entire 7-day
+    rollup silently returns no entries.
+    """
+
+    parsed = usage_mod._parse_codex_date("May 02, 2026")
+    assert parsed is not None
+    assert parsed.year == 2026 and parsed.month == 5 and parsed.day == 2
+    # ISO fallback still works.
+    iso = usage_mod._parse_codex_date("2026-05-02")
+    assert iso is not None and iso.day == 2
+    # Garbage stays None.
+    assert usage_mod._parse_codex_date(None) is None
+    assert usage_mod._parse_codex_date("not a date") is None
+
+
+def test_codex_real_daily_schema_aggregates(
+    fake_runner: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end against the live ``@ccusage/codex daily`` shape.
+
+    Uses ``"May 02, 2026"`` dates, ``costUSD`` instead of ``totalCost``,
+    and a model *dict* instead of a list — matches the v18.0.11
+    schema that PR #20's follow-up nailed down. Failing this test
+    would mean the popover silently drops the codex weekly window
+    in production.
+    """
+
+    now = datetime(2026, 5, 10, 14, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(usage_mod, "_now_epoch", lambda: now.timestamp())
+    monkeypatch.setattr(usage_mod, "_now_iso", lambda: now.isoformat())
+
+    fake_runner.set(
+        "@ccusage/codex@latest",
+        "daily",
+        _completed(
+            json.dumps(
+                {
+                    "daily": [
+                        {
+                            # Inside the 7-day window.
+                            "date": "May 09, 2026",
+                            "inputTokens": 1000,
+                            "cachedInputTokens": 200,
+                            "outputTokens": 500,
+                            "reasoningOutputTokens": 50,
+                            "totalTokens": 1500,
+                            "costUSD": 0.42,
+                            "models": {"gpt-5.5": {"inputTokens": 1000}},
+                        },
+                        {
+                            # Outside the 7-day window (-14d).
+                            "date": "Apr 26, 2026",
+                            "inputTokens": 9999,
+                            "outputTokens": 9999,
+                            "totalTokens": 19998,
+                            "costUSD": 99.0,
+                            "models": {"gpt-5.4": {}},
+                        },
+                    ]
+                }
+            )
+        ),
+    )
+    fake_runner.set("ccusage@latest", "blocks", _completed("{}"))
+    fake_runner.set("ccusage@latest", "weekly", _completed("{}"))
+    fake_runner.set("@ccusage/codex@latest", "session", _completed("{}"))
+
+    payload = usage_mod.collect_usage(timeout=2.0)
+    weekly = payload["codex"]["window_weekly"]
+    assert weekly is not None
+    assert weekly["cost_usd"] == pytest.approx(0.42)
+    assert weekly["tokens"]["input"] == 1000
+    assert weekly["tokens"]["output"] == 500
+    # ``cachedInputTokens`` (singular) must map to the cache bucket.
+    assert weekly["tokens"]["cache"] == 200
+    assert weekly["models"] == ["gpt-5.5"]
+
+
 def test_parse_iso_to_epoch_accepts_iso_and_epoch_seconds() -> None:
     epoch = usage_mod._parse_iso_to_epoch("2026-05-10T20:00:00Z")
     assert epoch is not None

@@ -435,24 +435,49 @@ def _codex_daily_list(payload: Any) -> list[dict[str, Any]]:
 def _codex_daily_in_window(entry: dict[str, Any], *, now_date: Any) -> bool:
     """Include entries whose calendar date is within the last 7 days.
 
-    The Codex daily endpoint emits per-day buckets keyed by an ISO date
-    string ("YYYY-MM-DD") — partial days don't make sense here, so
-    windowing is day-precise: ``now_date - entry_date < 7``.
+    The Codex daily endpoint emits per-day buckets keyed by a date
+    string — partial days don't make sense here, so windowing is
+    day-precise: ``now_date - entry_date < 7``.
     """
 
-    date_val = entry.get("date") or entry.get("day") or entry.get("startTime")
-    if not isinstance(date_val, str) or not date_val.strip():
+    entry_date = _parse_codex_date(
+        entry.get("date") or entry.get("day") or entry.get("startTime")
+    )
+    if entry_date is None:
         return False
-    text = date_val.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return False
-    entry_date = parsed.date()
     delta_days = (now_date - entry_date).days
     return 0 <= delta_days < _WEEK_DAYS
+
+
+# The Codex daily endpoint emits dates in US human format ("May 02, 2026")
+# rather than ISO ("2026-05-02"). Hold the format strings here so both
+# windowing and tests share one parser.
+_CODEX_DATE_FORMATS = (
+    "%b %d, %Y",   # "May 02, 2026" (real shape from @ccusage/codex daily)
+    "%B %d, %Y",   # "May 02, 2026" with full month name, just in case
+    "%Y-%m-%d",    # ISO date — defensive fallback if upstream switches
+)
+
+
+def _parse_codex_date(value: Any) -> Any:
+    """Best-effort date parser for the Codex daily ``date`` field."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    # ISO with time / zone suffix — let fromisoformat handle it.
+    if "T" in text or text.endswith("Z"):
+        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+        try:
+            return datetime.fromisoformat(normalized).date()
+        except ValueError:
+            pass
+    for fmt in _CODEX_DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def _aggregate_codex_entries(
@@ -480,6 +505,11 @@ def _aggregate_codex_entries(
             or (entry.get("tokenCounts") or {}).get("outputTokens")
             or 0
         )
+        # The real @ccusage/codex schema uses ``cachedInputTokens`` (singular)
+        # for the read-cache field and has no separate creation field, so
+        # check all known names defensively. Both names contribute to the
+        # cache bucket; nothing is double-counted because each key set is
+        # mutually exclusive across the upstream versions we've seen.
         cache_tokens += _coerce_int(
             entry.get("cacheCreationInputTokens")
             or entry.get("cacheCreationTokens")
@@ -488,6 +518,7 @@ def _aggregate_codex_entries(
         ) + _coerce_int(
             entry.get("cacheReadInputTokens")
             or entry.get("cacheReadTokens")
+            or entry.get("cachedInputTokens")
             or (entry.get("tokenCounts") or {}).get("cacheReadInputTokens")
             or 0
         )
@@ -496,13 +527,16 @@ def _aggregate_codex_entries(
             or (entry.get("tokenCounts") or {}).get("totalTokens")
             or 0
         )
+        # The real @ccusage/codex schema uses ``costUSD`` (camelCase, no
+        # "total" prefix). Earlier prototype data used ``totalCost``, so
+        # keep both for forward/backward compatibility.
         cost += _coerce_float(
-            entry.get("totalCost")
-            or entry.get("costUSD")
+            entry.get("costUSD")
+            or entry.get("totalCost")
             or entry.get("totalCostUSD")
             or 0.0
         )
-        for m in _coerce_str_tuple(entry.get("models") or entry.get("modelsUsed")):
+        for m in _codex_models(entry):
             if m and m not in models:
                 models.append(m)
     if total == 0:
@@ -517,6 +551,20 @@ def _aggregate_codex_entries(
         start_iso=start_iso,
         end_iso=end_iso,
     )
+
+
+def _codex_models(entry: dict[str, Any]) -> tuple[str, ...]:
+    """Extract model names from a Codex entry.
+
+    The live ``@ccusage/codex`` payload stores per-model breakdowns as a
+    *dict* keyed by model name (``{"gpt-5.5": {...}}``), not as a list.
+    Older prototype shape was a list of strings, so we accept either.
+    """
+
+    raw = entry.get("models") or entry.get("modelsUsed")
+    if isinstance(raw, dict):
+        return tuple(k for k in raw.keys() if isinstance(k, str) and k.strip())
+    return _coerce_str_tuple(raw)
 
 
 # ---------------------------------------------------------------------------
