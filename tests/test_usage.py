@@ -608,6 +608,39 @@ def test_normalize_iso_round_trips_zulu() -> None:
     assert usage_mod._normalize_iso("2026-05-10T20:00:00Z").startswith("2026-05-10T20:00:00")
 
 
+def test_iso_for_fromisoformat_handles_z_suffix() -> None:
+    """Single helper normalizes the ``Z`` UTC suffix.
+
+    Python 3.10 raised ``ValueError`` for ``"2026-05-10T00:00:00Z"``,
+    and even on 3.11+ keeping all ``fromisoformat`` callers consistent
+    prevents a future caller (e.g. the week-start parser) from quietly
+    rejecting an upstream timestamp that gained a ``Z`` suffix between
+    ccusage releases.
+    """
+
+    assert usage_mod._iso_for_fromisoformat("2026-05-10T00:00:00Z") == "2026-05-10T00:00:00+00:00"
+    # No-op when the value is already ``+00:00``.
+    assert usage_mod._iso_for_fromisoformat("2026-05-10T00:00:00+00:00") == "2026-05-10T00:00:00+00:00"
+    # Whitespace is stripped.
+    assert usage_mod._iso_for_fromisoformat("  2026-05-10  ") == "2026-05-10"
+
+
+def test_week_window_iso_accepts_z_suffix() -> None:
+    """A regression-guard for the week-start parser. If a future
+    ccusage version emits ``"2026-05-04T00:00:00Z"`` instead of the
+    plain ``"2026-05-04"`` date string, the start/end ISO bounds
+    must still come back wrapped to UTC rather than silently falling
+    back to "now - 7d".
+    """
+
+    start_iso, end_iso = usage_mod._week_window_iso("2026-05-04T00:00:00Z")
+    assert start_iso.startswith("2026-05-04T00:00:00")
+    # End is exactly 7 days after start.
+    parsed_start = datetime.fromisoformat(start_iso)
+    parsed_end = datetime.fromisoformat(end_iso)
+    assert (parsed_end - parsed_start) == timedelta(days=7)
+
+
 def test_parse_codex_date_handles_real_us_format() -> None:
     """The live ``@ccusage/codex daily`` endpoint emits dates as
     ``"May 02, 2026"``. Parsing must succeed or the entire 7-day

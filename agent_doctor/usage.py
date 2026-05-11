@@ -335,7 +335,7 @@ def _week_window_iso(week: Any) -> tuple[str, str]:
 
     if isinstance(week, str) and week:
         try:
-            start = datetime.fromisoformat(week)
+            start = datetime.fromisoformat(_iso_for_fromisoformat(week))
         except ValueError:
             start = None
         if start is not None:
@@ -465,11 +465,12 @@ def _parse_codex_date(value: Any) -> Any:
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
-    # ISO with time / zone suffix — let fromisoformat handle it.
+    # ISO with time / zone suffix — let fromisoformat handle it via the
+    # shared Z-suffix normalizer, so behavior stays identical to the
+    # other ISO parsers in this module.
     if "T" in text or text.endswith("Z"):
-        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
         try:
-            return datetime.fromisoformat(normalized).date()
+            return datetime.fromisoformat(_iso_for_fromisoformat(text)).date()
         except ValueError:
             pass
     for fmt in _CODEX_DATE_FORMATS:
@@ -619,14 +620,33 @@ def _list_field(payload: Any, key: str) -> list[dict[str, Any]]:
     return [v for v in value if isinstance(v, dict)]
 
 
+def _iso_for_fromisoformat(text: str) -> str:
+    """Normalize an ISO-8601 string for ``datetime.fromisoformat``.
+
+    Python 3.10 and earlier reject the ``Z`` UTC suffix, and even on
+    3.11+ a few of the time-zone designators we hand off to
+    ``fromisoformat`` start out as ``...Z``. Replacing the trailing
+    ``Z`` with ``+00:00`` makes the value safe for every supported
+    Python version *and* keeps the rest of the module consistent —
+    every parse site goes through this helper rather than each caller
+    re-implementing the same normalization.
+    """
+
+    stripped = text.strip()
+    if stripped.endswith("Z"):
+        return stripped[:-1] + "+00:00"
+    return stripped
+
+
 def _normalize_iso(value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         return ""
-    text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(text).astimezone(timezone.utc).isoformat()
+        return (
+            datetime.fromisoformat(_iso_for_fromisoformat(value))
+            .astimezone(timezone.utc)
+            .isoformat()
+        )
     except ValueError:
         return value
 
@@ -637,11 +657,8 @@ def _parse_iso_to_epoch(value: Any) -> float | None:
         return float(value) / 1000.0 if value > 10_000_000_000 else float(value)
     if not isinstance(value, str) or not value.strip():
         return None
-    text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
     try:
-        parsed = datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(_iso_for_fromisoformat(value))
     except ValueError:
         return None
     if parsed.tzinfo is None:
