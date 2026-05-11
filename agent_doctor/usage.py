@@ -14,8 +14,10 @@ timeout and returns a JSON-serializable dict::
     {
       "claude": {
         "window_5h":     {tokens, cost_usd, models, start_iso, end_iso,
-                          reset_minutes} | None,
-        "window_weekly": {tokens, cost_usd, models, start_iso, end_iso} | None,
+                          reset_minutes, elapsed_pct, remaining_minutes,
+                          remaining_human} | None,
+        "window_weekly": {tokens, cost_usd, models, start_iso, end_iso,
+                          elapsed_pct, remaining_minutes, remaining_human} | None,
         "error": str | None,
       },
       "codex":  { ... },
@@ -74,7 +76,7 @@ class Window:
     end_iso: str
     reset_minutes: int | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, now_epoch: float | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "tokens": {
                 "input": self.tokens_input,
@@ -89,6 +91,15 @@ class Window:
         }
         if self.reset_minutes is not None:
             payload["reset_minutes"] = int(self.reset_minutes)
+        elapsed_pct, remaining_minutes, remaining_human = _compute_progress(
+            self.start_iso,
+            self.end_iso,
+            now_epoch=now_epoch if now_epoch is not None else _now_epoch(),
+            reset_minutes_override=self.reset_minutes,
+        )
+        payload["elapsed_pct"] = elapsed_pct
+        payload["remaining_minutes"] = remaining_minutes
+        payload["remaining_human"] = remaining_human
         return payload
 
 
@@ -102,6 +113,11 @@ def collect_usage(*, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict[str, Any]
     """
 
     generated_at = _now_iso()
+    # Snapshot "now" once so all four window-progress calculations agree on
+    # the same reference instant — drift between four ``_now_epoch()`` calls
+    # is microseconds, but the unit tests monkey-patch ``_now_epoch`` and
+    # expect a single deterministic value across the payload.
+    now_epoch_snapshot = _now_epoch()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         futures = {
@@ -117,15 +133,18 @@ def collect_usage(*, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict[str, Any]
     codex_5h_value, codex_5h_err = results["codex_5h"]
     codex_wk_value, codex_wk_err = results["codex_wk"]
 
+    def _serialize(window: Window | None) -> dict[str, Any] | None:
+        return window.to_dict(now_epoch=now_epoch_snapshot) if window else None
+
     return {
         "claude": {
-            "window_5h": claude_5h_value.to_dict() if claude_5h_value else None,
-            "window_weekly": claude_wk_value.to_dict() if claude_wk_value else None,
+            "window_5h": _serialize(claude_5h_value),
+            "window_weekly": _serialize(claude_wk_value),
             "error": _combine_errors(claude_5h_err, claude_wk_err, source="ccusage"),
         },
         "codex": {
-            "window_5h": codex_5h_value.to_dict() if codex_5h_value else None,
-            "window_weekly": codex_wk_value.to_dict() if codex_wk_value else None,
+            "window_5h": _serialize(codex_5h_value),
+            "window_weekly": _serialize(codex_wk_value),
             "error": _combine_errors(
                 codex_5h_err, codex_wk_err, source="@ccusage/codex"
             ),
@@ -676,6 +695,78 @@ def _now_iso() -> str:
 
 def _iso_at(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def _format_remaining(minutes: int) -> str:
+    """Render a non-negative minute count as a compact ``"Xm" / "Hh Mm" /
+    "Dd Hh"`` string for the desktop pet's usage popover.
+
+    Kept in usage.py (rather than the Swift renderer) so the popover
+    layer never has to do time math — it just blits the pre-formatted
+    string and the rendering matches what the CLI emits.
+    """
+
+    if minutes < 0:
+        minutes = 0
+    if minutes < 60:
+        return f"{minutes}m"
+    if minutes < 1440:
+        hours, mins = divmod(minutes, 60)
+        if mins == 0:
+            return f"{hours}h"
+        return f"{hours}h {mins}m"
+    days, remainder = divmod(minutes, 1440)
+    hours = remainder // 60
+    if hours == 0:
+        return f"{days}d"
+    return f"{days}d {hours}h"
+
+
+def _compute_progress(
+    start_iso: str,
+    end_iso: str,
+    *,
+    now_epoch: float,
+    reset_minutes_override: int | None = None,
+) -> tuple[float, int, str]:
+    """Return ``(elapsed_pct, remaining_minutes, remaining_human)`` for a
+    window bounded by ``[start_iso, end_iso]``.
+
+    ``elapsed_pct`` is the float percentage of the window already used,
+    rounded to one decimal and clamped to ``[0, 100]``.
+    ``remaining_minutes`` is ``max(0, round((end - now) / 60))`` unless
+    ``reset_minutes_override`` is supplied — Claude 5h's ccusage payload
+    carries an explicit ``projection.remainingMinutes`` that knows
+    ``actualEndTime`` and is therefore more authoritative than the wall
+    clock against ``endTime``.
+
+    When ``start_iso`` or ``end_iso`` is missing / unparseable / produces a
+    non-positive span, the function returns ``(0.0, 0, "")``. The empty
+    ``remaining_human`` is the signal the Swift popover uses to **suppress**
+    the progress row (so the user never sees ``"0% elapsed (— left)"`` for
+    a window whose bounds we couldn't read).
+    """
+
+    start_epoch = _parse_iso_to_epoch(start_iso)
+    end_epoch = _parse_iso_to_epoch(end_iso)
+    if start_epoch is None or end_epoch is None or end_epoch <= start_epoch:
+        return (0.0, 0, "")
+
+    span = end_epoch - start_epoch
+    elapsed = now_epoch - start_epoch
+    pct = (elapsed / span) * 100.0
+    if pct < 0.0:
+        pct = 0.0
+    elif pct > 100.0:
+        pct = 100.0
+    elapsed_pct = round(pct, 1)
+
+    if reset_minutes_override is not None:
+        remaining_minutes = max(0, int(reset_minutes_override))
+    else:
+        remaining_minutes = max(0, round((end_epoch - now_epoch) / 60.0))
+
+    return (elapsed_pct, remaining_minutes, _format_remaining(remaining_minutes))
 
 
 def _combine_errors(*errors: str | None, source: str) -> str | None:

@@ -730,3 +730,189 @@ def test_parse_iso_to_epoch_accepts_iso_and_epoch_seconds() -> None:
     assert usage_mod._parse_iso_to_epoch(1_715_000_000) == 1_715_000_000
     assert usage_mod._parse_iso_to_epoch(None) is None
     assert usage_mod._parse_iso_to_epoch("garbage") is None
+
+
+# ---------------------------------------------------------------------------
+#  Window-progress helpers (_format_remaining, _compute_progress)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "minutes, expected",
+    [
+        # < 60 → "Xm"
+        (0, "0m"),
+        (59, "59m"),
+        # 60-1439 → "Hh Mm", suppress trailing " 0m" → just "Hh"
+        (60, "1h"),
+        (61, "1h 1m"),
+        (119, "1h 59m"),
+        (120, "2h"),
+        (1439, "23h 59m"),
+        # >= 1440 → "Dd Hh", suppress trailing " 0h" → just "Dd"
+        (1440, "1d"),
+        (1441, "1d"),    # 1d + 0h + 1m → hours==0, so just "1d"
+        (1500, "1d 1h"),
+    ],
+)
+def test_format_remaining_matrix(minutes: int, expected: str) -> None:
+    """Locked-in formatting contract for the popover's 'T left' string."""
+
+    assert usage_mod._format_remaining(minutes) == expected
+
+
+def test_compute_progress_just_started() -> None:
+    """At ``now == start``, the window is 0% elapsed and the full span is left."""
+
+    start = datetime(2026, 5, 10, 15, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, 20, 0, 0, tzinfo=timezone.utc)  # 5h span = 300 min
+    pct, mins, human = usage_mod._compute_progress(
+        start.isoformat(),
+        end.isoformat(),
+        now_epoch=start.timestamp(),
+    )
+    assert pct == 0.0
+    assert mins == 300
+    assert human == "5h"
+
+
+def test_compute_progress_halfway() -> None:
+    start = datetime(2026, 5, 10, 15, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, 20, 0, 0, tzinfo=timezone.utc)
+    now_epoch = (start + timedelta(minutes=150)).timestamp()
+    pct, mins, human = usage_mod._compute_progress(
+        start.isoformat(), end.isoformat(), now_epoch=now_epoch
+    )
+    assert pct == 50.0
+    assert mins == 150
+    assert human == "2h 30m"
+
+
+def test_compute_progress_almost_done() -> None:
+    start = datetime(2026, 5, 10, 15, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, 20, 0, 0, tzinfo=timezone.utc)
+    now_epoch = (start + timedelta(minutes=297)).timestamp()
+    pct, mins, human = usage_mod._compute_progress(
+        start.isoformat(), end.isoformat(), now_epoch=now_epoch
+    )
+    assert pct == 99.0
+    assert mins == 3
+    assert human == "3m"
+
+
+def test_compute_progress_past_end_clamps_to_100_and_zero() -> None:
+    """A window that has rolled out clamps to ``100.0%`` elapsed + ``0`` remaining
+    rather than reporting ``120%`` or a negative remainder."""
+
+    start = datetime(2026, 5, 10, 15, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, 20, 0, 0, tzinfo=timezone.utc)
+    now_epoch = (end + timedelta(minutes=60)).timestamp()
+    pct, mins, human = usage_mod._compute_progress(
+        start.isoformat(), end.isoformat(), now_epoch=now_epoch
+    )
+    assert pct == 100.0
+    assert mins == 0
+    assert human == "0m"
+
+
+def test_compute_progress_missing_bounds_signals_suppression() -> None:
+    """Missing / unparseable bounds → ``(0.0, 0, '')``. The empty string is the
+    signal the Swift popover uses to *suppress* the progress row entirely
+    (otherwise a stale popover would render "0% elapsed (— left)" for a
+    window whose bounds we couldn't read)."""
+
+    for start_iso, end_iso in [
+        ("", ""),
+        ("not iso", "also not"),
+        ("2026-05-10T15:00:00Z", ""),
+        ("", "2026-05-10T20:00:00Z"),
+        # end <= start collapses to "no usable bounds" too
+        ("2026-05-10T20:00:00Z", "2026-05-10T15:00:00Z"),
+    ]:
+        pct, mins, human = usage_mod._compute_progress(
+            start_iso, end_iso, now_epoch=0.0
+        )
+        assert pct == 0.0
+        assert mins == 0
+        assert human == ""
+
+
+def test_compute_progress_reset_minutes_override_beats_wall_clock() -> None:
+    """Claude 5h carries ccusage's ``projection.remainingMinutes``, which
+    is more authoritative than ``endTime - now`` because ccusage knows
+    ``actualEndTime``. The override applies to ``remaining_minutes`` /
+    ``remaining_human`` only; ``elapsed_pct`` still comes from start/end.
+    """
+
+    start = datetime(2026, 5, 10, 15, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, 20, 0, 0, tzinfo=timezone.utc)
+    now_epoch = (start + timedelta(minutes=150)).timestamp()  # halfway by wall clock
+    pct, mins, human = usage_mod._compute_progress(
+        start.isoformat(),
+        end.isoformat(),
+        now_epoch=now_epoch,
+        reset_minutes_override=132,
+    )
+    assert pct == 50.0          # still computed from start/end
+    assert mins == 132           # override beats the wall-clock 150
+    assert human == "2h 12m"
+
+
+def test_collect_usage_includes_window_progress_on_every_window(
+    fake_runner: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: ``pet-usage --json`` must surface ``elapsed_pct``,
+    ``remaining_minutes``, and ``remaining_human`` on every populated
+    ``(claude|codex) × (window_5h|window_weekly)`` slot when source
+    data is available, and Claude 5h must honor ``reset_minutes``.
+    """
+
+    now = datetime(2026, 5, 10, 20, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(usage_mod, "_now_epoch", lambda: now.timestamp())
+    monkeypatch.setattr(usage_mod, "_now_iso", lambda: now.isoformat())
+    fake_runner.set("ccusage@latest", "blocks", _completed(_claude_5h_payload()))
+    fake_runner.set("ccusage@latest", "weekly", _completed(_claude_weekly_payload()))
+    fake_runner.set(
+        "@ccusage/codex@latest", "session", _completed(_codex_sessions_payload(now))
+    )
+    fake_runner.set(
+        "@ccusage/codex@latest", "daily", _completed(_codex_daily_payload(now))
+    )
+
+    payload = usage_mod.collect_usage(timeout=2.0)
+    for branch_key in ("claude", "codex"):
+        for window_key in ("window_5h", "window_weekly"):
+            window = payload[branch_key][window_key]
+            assert window is not None, f"{branch_key} {window_key} should be populated"
+            assert "elapsed_pct" in window
+            assert "remaining_minutes" in window
+            assert "remaining_human" in window
+            assert isinstance(window["elapsed_pct"], float)
+            assert 0.0 <= window["elapsed_pct"] <= 100.0
+            assert isinstance(window["remaining_minutes"], int)
+            assert window["remaining_minutes"] >= 0
+            assert isinstance(window["remaining_human"], str)
+            assert window["remaining_human"] != ""
+    # Claude 5h must honor ccusage's projection.remainingMinutes (132 from
+    # the fixture) rather than recomputing from endTime.
+    assert payload["claude"]["window_5h"]["remaining_minutes"] == 132
+    assert payload["claude"]["window_5h"]["remaining_human"] == "2h 12m"
+
+
+def test_swift_source_renders_window_progress_row() -> None:
+    """The card-builder reads ``elapsed_pct`` + ``remaining_human`` from the
+    JSON payload, renders them as ``"<label>: X% elapsed (<human> left)"``,
+    and uses ``"5h window"`` / ``"Week"`` as the labels for the two card
+    families. Mirrors the Swift-source assertion pattern used elsewhere in
+    this file.
+    """
+
+    src = SWIFT_SOURCE.read_text(encoding="utf-8")
+    assert "remaining_human" in src, "card must read remaining_human from payload"
+    assert "elapsed_pct" in src, "card must read elapsed_pct from payload"
+    assert "elapsed" in src, "card must render 'elapsed' in the user-visible label"
+    assert '"5h window"' in src, "5h cards must pass the '5h window' progress label"
+    assert '"Week"' in src, "weekly cards must pass the 'Week' progress label"
+    # Card-builder helper takes a progressLabel and renders via formatElapsedPct.
+    assert "progressLabel" in src
+    assert "formatElapsedPct" in src
