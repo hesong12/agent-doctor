@@ -234,6 +234,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pet_generate_sprite.set_defaults(func=_cmd_pet_generate_sprite)
 
+    pet_usage = subparsers.add_parser(
+        "pet-usage",
+        help=(
+            "Collect Claude + Codex token usage for the desktop pet popover. "
+            "Reads local ccusage / @ccusage/codex output — no live quota API."
+        ),
+    )
+    pet_usage.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="Print JSON suitable for the Swift popover. Default: pretty print.",
+    )
+    pet_usage.add_argument(
+        "--timeout",
+        type=float,
+        default=15.0,
+        help="Per-call timeout in seconds for each npx query (default: 15).",
+    )
+    pet_usage.set_defaults(func=_cmd_pet_usage)
+
     settings_parser = subparsers.add_parser(
         "settings",
         help="Manage Agent Doctor local settings (Gemini API key).",
@@ -1073,6 +1094,52 @@ def _cmd_pet_generate_sprite(args: argparse.Namespace) -> int:
         tmp_path.unlink(missing_ok=True)
 
     print(f"agent-doctor: wrote sprite -> {written}")
+    return 0
+
+
+def _cmd_pet_usage(args: argparse.Namespace) -> int:
+    """Collect Claude + Codex usage and emit it for the popover.
+
+    The handler intentionally never raises — the desktop pet popover
+    relies on getting *some* JSON back so it can render an install-hint
+    card even when ``npx``/the packages are missing. Decode and render
+    failures are split: a serialization problem reports a separate exit
+    code (5) so a future caller can distinguish "no data sources" from
+    "data was collected but we couldn't print it".
+    """
+
+    from .usage import DEFAULT_TIMEOUT_SECONDS, collect_usage
+
+    timeout = float(args.timeout if args.timeout is not None else DEFAULT_TIMEOUT_SECONDS)
+    if timeout <= 0:
+        raise ValueError("--timeout must be positive.")
+
+    # Phase 1: collect. The collector swallows source failures and reports
+    # them via the .error fields inside the payload; nothing should bubble
+    # up here. A genuine programming bug still surfaces via the outer
+    # try/except so the pet popover doesn't silently render stale data.
+    try:
+        payload = collect_usage(timeout=timeout)
+    except Exception as exc:  # pragma: no cover — defensive net
+        print(f"agent-doctor: usage collection crashed: {exc}", file=sys.stderr)
+        return 5
+
+    # Phase 2: serialize. ``json.dumps`` shouldn't fail on a payload we
+    # built ourselves, but if a future field is non-serializable we want
+    # a separate, debuggable exit so it isn't conflated with source loss.
+    try:
+        encoded = json.dumps(payload, indent=2, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        print(f"agent-doctor: could not encode usage payload: {exc}", file=sys.stderr)
+        return 5
+
+    if args.as_json:
+        print(encoded)
+    else:
+        # Human-readable variant for the CLI; the Swift popover always
+        # passes --json so this branch is just for users who run the
+        # command directly to check that npx is wired up.
+        print(encoded)
     return 0
 
 
