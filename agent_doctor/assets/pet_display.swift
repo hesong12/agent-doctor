@@ -565,13 +565,11 @@ final class UsageViewController: NSViewController {
     }
 
     private func readDouble(_ value: Any?) -> Double? {
-        // Python emits ``elapsed_pct`` as a float (1 decimal). JSONSerialization
-        // bridges whole numbers like ``50.0`` to NSNumber that casts cleanly to
-        // either Double or Int depending on the underlying CF type, so we
-        // accept both forms rather than silently dropping the row.
-        if let d = value as? Double { return d }
-        if let i = value as? Int { return Double(i) }
-        return nil
+        // Python emits ``elapsed_pct`` as a float (1 decimal), but
+        // JSONSerialization may bridge whole numbers (``50.0``) to NSNumber
+        // backed by an integer CF type. Going through ``doubleValue`` covers
+        // both forms in one cast rather than chaining Double/Int branches.
+        return (value as? NSNumber)?.doubleValue
     }
 }
 
