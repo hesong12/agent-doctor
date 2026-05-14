@@ -455,9 +455,12 @@ def _default_transcribe(
             "  pip install 'agent-doctor[dictate]'"
         ) from exc
 
-    # ``int8`` is the best CPU/Apple-Silicon trade-off; ``compute_type='default'``
-    # lets the library pick CoreML / Metal when available.
-    model = WhisperModel(model_name, compute_type="default")
+    # ``int8`` is the best CPU / Apple-Silicon trade-off for ctranslate2: on
+    # M-series Macs the float16 path falls back to float32 (ctranslate2 does
+    # not yet implement efficient fp16 on Apple Metal), so explicit int8 is
+    # both faster and uses less memory. Callers who need higher precision can
+    # subclass _default_transcribe or pass a custom ``transcriber`` callable.
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
     segments, _info = model.transcribe(
         str(audio_path),
         language=language,
@@ -541,6 +544,19 @@ def _default_llm_call(cfg: LLMConfig, messages: List[Dict[str, str]]) -> str:
     try:
         with urllib.request.urlopen(request, timeout=cfg.timeout) as response:
             raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        # Surface the HTTP status and the response body so users can diagnose
+        # configuration issues (e.g. 401 wrong API key, 404 wrong path,
+        # 422 bad model name) instead of seeing a generic "unreachable".
+        try:
+            err_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 - best-effort, never let logging break the error path
+            err_body = ""
+        snippet = err_body.strip().replace("\n", " ")[:400]
+        raise DictateError(
+            f"LLM enhancement endpoint {cfg.url} returned HTTP {exc.code} {exc.reason}"
+            + (f": {snippet}" if snippet else "")
+        ) from exc
     except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
         raise DictateError(
             f"LLM enhancement endpoint {cfg.url} is unreachable: {exc}"

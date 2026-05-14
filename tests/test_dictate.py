@@ -802,3 +802,57 @@ def test_cli_dictate_stop_cleans_up_audio_on_clipboard_failure(
     assert rc == 2
     assert not audio.exists(), "audio must be cleaned up even on clipboard failure"
     assert read_state(state_dir=tmp_path) is None, "state must be cleared even on clipboard failure"
+
+
+# --------------------------------------------------------------------------- #
+# Regression tests for PR #24 second-round review feedback (Gemini)           #
+# --------------------------------------------------------------------------- #
+
+
+def test_default_llm_call_surfaces_http_error_with_status_and_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gemini medium #2 (round 2): a non-2xx response from the LLM endpoint
+    must surface the HTTP status, reason, and response body so misconfigured
+    URLs / API keys are easy to diagnose."""
+
+    import io
+    import urllib.error
+
+    cfg = LLMConfig(url="http://example/v1/chat/completions", model="ds4", api_key="sk-x")
+    err = urllib.error.HTTPError(
+        url=cfg.url,
+        code=401,
+        msg="Unauthorized",
+        hdrs=None,  # type: ignore[arg-type]
+        fp=io.BytesIO(b'{"error":{"message":"invalid api key"}}'),
+    )
+
+    def fake_urlopen(req, timeout):  # type: ignore[no-untyped-def]
+        raise err
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(DictateError) as exc_info:
+        dictate._default_llm_call(cfg, [{"role": "user", "content": "hi"}])
+    msg = str(exc_info.value)
+    assert "HTTP 401" in msg
+    assert "Unauthorized" in msg
+    assert "invalid api key" in msg
+
+
+def test_default_llm_call_surfaces_url_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sibling test: a generic URLError (e.g. ds4 server not running) still
+    yields the 'unreachable' message — we did not regress the original path."""
+
+    import urllib.error
+
+    cfg = LLMConfig(url="http://localhost:8080/v1/chat/completions", model="ds4")
+
+    def fake_urlopen(req, timeout):  # type: ignore[no-untyped-def]
+        raise urllib.error.URLError("Connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(DictateError, match="unreachable"):
+        dictate._default_llm_call(cfg, [{"role": "user", "content": "hi"}])
