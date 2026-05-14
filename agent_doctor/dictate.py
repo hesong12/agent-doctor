@@ -44,6 +44,7 @@ import os
 import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -77,6 +78,27 @@ ENV_WHISPER_MODEL = "AGENT_DOCTOR_DICTATE_WHISPER_MODEL"
 ENV_BACKEND = "AGENT_DOCTOR_DICTATE_BACKEND"  # auto | faster-whisper | whisper-cpp
 ENV_STATE_DIR = "AGENT_DOCTOR_DICTATE_STATE_DIR"
 ENV_RECORDER = "AGENT_DOCTOR_DICTATE_RECORDER"  # "sox" | "ffmpeg"
+ENV_BUFFER_MS = "AGENT_DOCTOR_DICTATE_BUFFER_MS"           # extra recording tail
+ENV_BEEP = "AGENT_DOCTOR_DICTATE_BEEP"                     # "1" -> play sounds
+ENV_HISTORY_LIMIT = "AGENT_DOCTOR_DICTATE_HISTORY_LIMIT"   # rows to retain
+
+# Extra audio captured AFTER ``dictate stop`` is invoked, in milliseconds.
+# Inspired by Handy's ``extra_recording_buffer_ms`` setting. The user often
+# releases the hotkey while still finishing their final syllable; without a
+# tail buffer that syllable gets cut. 150 ms is enough for a closing
+# consonant or short word without making the user wait perceptibly.
+DEFAULT_BUFFER_MS = 150
+
+# macOS built-in sound files used for start/stop audio feedback.
+DEFAULT_START_SOUND = "/System/Library/Sounds/Pop.aiff"
+DEFAULT_DONE_SOUND = "/System/Library/Sounds/Glass.aiff"
+DEFAULT_FAIL_SOUND = "/System/Library/Sounds/Basso.aiff"
+
+# History database. SQLite file under the same state dir as the recording
+# state. We keep the most recent N rows; older rows are pruned in the same
+# transaction as the insert so the file never grows unbounded.
+DEFAULT_HISTORY_LIMIT = 100
+HISTORY_FILENAME = "dictate-history.sqlite3"
 
 # How long ``stop`` waits for the recorder to exit cleanly after SIGTERM
 # before escalating to SIGKILL.
@@ -781,6 +803,258 @@ def notify(
 def _default_osascript(argv: List[str]) -> int:
     proc = subprocess.run(argv, check=False)
     return proc.returncode
+
+
+# ----------------------------------------------------------------------------- 
+# Tail buffer (extra recording after stop)                                      
+# -----------------------------------------------------------------------------
+
+
+def resolve_buffer_ms(cli_value: Optional[int]) -> int:
+    """Return the active extra-recording-buffer in milliseconds.
+
+    Precedence: explicit CLI value > env var > default. Negative values are
+    clamped to 0 (a negative buffer would shorten the recording, which is
+    never what the user wants).
+    """
+
+    if cli_value is not None:
+        value = cli_value
+    else:
+        env = os.environ.get(ENV_BUFFER_MS)
+        if env is not None and env.strip():
+            try:
+                value = int(env)
+            except ValueError as exc:
+                raise DictateError(
+                    f"{ENV_BUFFER_MS}={env!r} is not a valid integer"
+                ) from exc
+        else:
+            value = DEFAULT_BUFFER_MS
+    return max(0, value)
+
+
+def maybe_sleep_for_buffer(buffer_ms: int, sleeper: Callable[[float], None] = time.sleep) -> None:
+    """Sleep for ``buffer_ms`` to let the recorder capture extra tail audio.
+
+    Factored out so tests can substitute a fake sleeper and observe the call
+    without actually blocking. We accept the buffer in ms (caller-facing
+    unit) and convert to seconds for ``time.sleep``.
+    """
+
+    if buffer_ms <= 0:
+        return
+    sleeper(buffer_ms / 1000.0)
+
+
+# ----------------------------------------------------------------------------- 
+# Audio feedback (optional start/done/fail chime)                               
+# -----------------------------------------------------------------------------
+
+
+def beep_enabled(cli_flag: Optional[bool]) -> bool:
+    """Return whether to play audio feedback. Precedence: CLI > env > off."""
+
+    if cli_flag is True:
+        return True
+    if cli_flag is False:
+        # Explicit --no-beep -> override env.
+        return False
+    raw = os.environ.get(ENV_BEEP, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def play_sound(
+    path: str,
+    *,
+    runner: Optional[Callable[[List[str]], int]] = None,
+) -> None:
+    """Fire-and-forget play of a system sound via ``afplay`` on macOS.
+
+    The ``runner`` seam keeps tests deterministic: they assert the argv
+    instead of actually invoking the audio subsystem. On non-Darwin /
+    missing ``afplay`` the call is a no-op so the import is safe on Linux
+    CI runners.
+    """
+
+    if not path:
+        return
+    if sys.platform != "darwin":
+        return
+    if not shutil.which("afplay"):
+        return
+    if runner is None:
+        runner = _default_afplay
+    try:
+        runner(["afplay", path])
+    except Exception:  # noqa: BLE001 - audio feedback failures must never block dictate
+        pass
+
+
+def _default_afplay(argv: List[str]) -> int:
+    # Spawn detached so the parent does not block on playback.
+    subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return 0
+
+
+# ----------------------------------------------------------------------------- 
+# History (SQLite)                                                              
+# -----------------------------------------------------------------------------
+
+
+def history_path(state_dir: Optional[Path] = None) -> Path:
+    base = state_dir if state_dir is not None else default_state_dir()
+    return base / HISTORY_FILENAME
+
+
+def _ensure_history_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS transcripts (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts              REAL NOT NULL,
+            mode            TEXT NOT NULL,
+            backend         TEXT,
+            whisper_model   TEXT,
+            language        TEXT,
+            transcript      TEXT NOT NULL,
+            prompt          TEXT NOT NULL,
+            enhanced        INTEGER NOT NULL,
+            enhancer_failed INTEGER NOT NULL DEFAULT 0,
+            audio_path      TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS transcripts_ts_idx ON transcripts(ts DESC)")
+
+
+def _resolve_history_limit(override: Optional[int]) -> int:
+    if override is not None:
+        return max(0, override)
+    raw = os.environ.get(ENV_HISTORY_LIMIT)
+    if raw is None or not raw.strip():
+        return DEFAULT_HISTORY_LIMIT
+    try:
+        return max(0, int(raw))
+    except ValueError as exc:
+        raise DictateError(
+            f"{ENV_HISTORY_LIMIT}={raw!r} is not a valid integer"
+        ) from exc
+
+
+def record_history(
+    *,
+    transcript: str,
+    prompt: str,
+    mode: str,
+    enhanced: bool,
+    enhancer_failed: bool = False,
+    audio_path: Optional[Path] = None,
+    backend: Optional[str] = None,
+    whisper_model: Optional[str] = None,
+    language: Optional[str] = None,
+    state_dir: Optional[Path] = None,
+    retention_limit: Optional[int] = None,
+    clock: Callable[[], float] = time.time,
+) -> int:
+    """Insert one transcript into the history DB and prune older rows past
+    the retention limit. Returns the inserted row id.
+
+    Best-effort: any sqlite error is wrapped in a ``DictateError`` so the
+    caller can decide whether to surface or swallow it. We do NOT delete the
+    audio file here; that is the CLI's responsibility.
+    """
+
+    limit = _resolve_history_limit(retention_limit)
+    if limit == 0:
+        # Opt-out: retention=0 means "do not record". The PR documents
+        # AGENT_DOCTOR_DICTATE_HISTORY_LIMIT=0 as the global disable; honour
+        # that here so we do not insert and then immediately prune.
+        return 0
+    path = history_path(state_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with sqlite3.connect(str(path)) as conn:
+            _ensure_history_schema(conn)
+            cursor = conn.execute(
+                """
+                INSERT INTO transcripts (
+                    ts, mode, backend, whisper_model, language,
+                    transcript, prompt, enhanced, enhancer_failed, audio_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    float(clock()),
+                    mode,
+                    backend,
+                    whisper_model,
+                    language,
+                    transcript,
+                    prompt,
+                    1 if enhanced else 0,
+                    1 if enhancer_failed else 0,
+                    str(audio_path) if audio_path is not None else None,
+                ),
+            )
+            row_id = int(cursor.lastrowid or 0)
+            if limit > 0:
+                conn.execute(
+                    """
+                    DELETE FROM transcripts WHERE id IN (
+                        SELECT id FROM transcripts
+                        ORDER BY ts DESC LIMIT -1 OFFSET ?
+                    )
+                    """,
+                    (limit,),
+                )
+            conn.commit()
+    except sqlite3.Error as exc:
+        raise DictateError(f"failed to write dictate history at {path}: {exc}") from exc
+    return row_id
+
+
+def read_history(
+    *,
+    limit: int = 20,
+    state_dir: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Return the most recent ``limit`` transcripts as plain dicts.
+
+    Empty list if the history file does not exist yet. Order is newest-first.
+    """
+
+    path = history_path(state_dir)
+    if not path.exists():
+        return []
+    try:
+        with sqlite3.connect(str(path)) as conn:
+            _ensure_history_schema(conn)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT id, ts, mode, backend, whisper_model, language,
+                       transcript, prompt, enhanced, enhancer_failed, audio_path
+                FROM transcripts
+                ORDER BY ts DESC
+                LIMIT ?
+                """,
+                (max(0, limit),),
+            ).fetchall()
+    except sqlite3.Error as exc:
+        raise DictateError(f"failed to read dictate history at {path}: {exc}") from exc
+    return [dict(row) for row in rows]
+
+
+def clear_history(state_dir: Optional[Path] = None) -> None:
+    path = history_path(state_dir)
+    if path.exists():
+        path.unlink()
 
 
 # ----------------------------------------------------------------------------- 

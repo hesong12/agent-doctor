@@ -561,6 +561,40 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--llm-key", default=None, help="Optional bearer token for the LLM endpoint.")
         p.add_argument("--keep-audio", action="store_true", help="Do not delete the WAV after processing.")
         p.add_argument("--print-transcript", action="store_true", help="Also print the raw transcript to stderr.")
+        p.add_argument(
+            "--buffer-ms",
+            type=int,
+            default=None,
+            help=(
+                "Extra recording tail in milliseconds (capture audio AFTER 'stop' "
+                "is invoked). Avoids cutting the final syllable when releasing the "
+                "hotkey. Default: 150 ms; env: AGENT_DOCTOR_DICTATE_BUFFER_MS."
+            ),
+        )
+        beep_group = p.add_mutually_exclusive_group()
+        beep_group.add_argument(
+            "--beep",
+            dest="beep",
+            action="store_true",
+            default=None,
+            help="Play short macOS system sounds on recording start / done / failure.",
+        )
+        beep_group.add_argument(
+            "--no-beep",
+            dest="beep",
+            action="store_false",
+            help="Disable audio feedback even if AGENT_DOCTOR_DICTATE_BEEP=1 is set.",
+        )
+        p.add_argument(
+            "--timing",
+            action="store_true",
+            help="Print a per-phase millisecond breakdown to stderr.",
+        )
+        p.add_argument(
+            "--no-history",
+            action="store_true",
+            help="Skip writing this transcription to the SQLite history.",
+        )
 
     dictate_start = dictate_subs.add_parser("start", help="Start a recording.")
     _add_common_dictate_args(dictate_start)
@@ -588,6 +622,24 @@ def build_parser() -> argparse.ArgumentParser:
         "cancel", help="Abort the current recording and discard the audio."
     )
     dictate_cancel.set_defaults(func=_cmd_dictate_cancel)
+
+    dictate_history = dictate_subs.add_parser(
+        "history",
+        help="Show recent dictate runs (transcript + final prompt) from the SQLite history.",
+    )
+    dictate_history.add_argument("--limit", type=int, default=20, help="Rows to display (default: 20).")
+    dictate_history.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
+    dictate_history.add_argument(
+        "--full",
+        action="store_true",
+        help="Include the full transcript and prompt; default truncates each to 120 chars.",
+    )
+    dictate_history.add_argument(
+        "--clear",
+        action="store_true",
+        help="Delete the history database after printing (asks no confirmation).",
+    )
+    dictate_history.set_defaults(func=_cmd_dictate_history)
 
     # Adapter subcommands ------------------------------------------------------
     adapters = subparsers.add_parser(
@@ -1579,7 +1631,11 @@ def _cmd_dictate_start(args: argparse.Namespace) -> int:
         state = _d.start_recording(mode=mode)
     except _d.DictateError as exc:
         print(f"agent-doctor: {exc}", file=sys.stderr)
+        if _d.beep_enabled(getattr(args, "beep", None)):
+            _d.play_sound(_d.DEFAULT_FAIL_SOUND)
         return 2
+    if _d.beep_enabled(getattr(args, "beep", None)):
+        _d.play_sound(_d.DEFAULT_START_SOUND)
     print(
         json.dumps(
             {
@@ -1666,6 +1722,40 @@ def _cmd_dictate_cancel(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dictate_history(args: argparse.Namespace) -> int:
+    from . import dictate as _d
+    import datetime as _dt
+
+    try:
+        rows = _d.read_history(limit=args.limit)
+    except _d.DictateError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(rows, indent=2, sort_keys=True))
+    elif not rows:
+        print("(no dictate history yet)", file=sys.stderr)
+    else:
+        full = bool(args.full)
+        def _truncate(s: str, n: int = 120) -> str:
+            return s if full or len(s) <= n else s[: n - 1] + "\u2026"
+        for row in rows:
+            ts = _dt.datetime.fromtimestamp(row["ts"]).strftime("%Y-%m-%d %H:%M:%S")
+            tag = "enhanced" if row["enhanced"] else ("raw" if row["mode"] == "raw" else "raw-fallback")
+            failed = " (enhance-failed)" if row["enhancer_failed"] else ""
+            print(f"#{row['id']:>3} {ts} [{row['mode']}/{tag}{failed}]")
+            print(f"     transcript: {_truncate(row['transcript'])}")
+            if row["prompt"] and row["prompt"] != row["transcript"]:
+                print(f"     prompt:     {_truncate(row['prompt'])}")
+            print()
+
+    if args.clear:
+        _d.clear_history()
+        print("(history cleared)", file=sys.stderr)
+    return 0
+
+
 def _dictate_finish(args: argparse.Namespace) -> int:
     """Stop the recorder, transcribe once, optionally enhance, copy to clipboard.
 
@@ -1699,12 +1789,35 @@ def _dictate_finish(args: argparse.Namespace) -> int:
     cli_mode = getattr(args, "mode", None)
     mode = cli_mode if cli_mode is not None else state.mode
 
+    # Audio feedback (opt-in). The "done" / "fail" sounds fire later; play
+    # the "stop chime" inline so the user hears that 'stop' was registered
+    # even when the rest of the pipeline (transcribe + LLM) takes a few
+    # seconds. Reusing the start sound is intentional: same audible
+    # "registered" cue at both edges of the hotkey press.
+    play_audio = _d.beep_enabled(getattr(args, "beep", None))
+    if play_audio:
+        _d.play_sound(_d.DEFAULT_START_SOUND)
+
+    # Honour --buffer-ms BEFORE we send SIGTERM so the recorder captures
+    # the user's final syllable (the hotkey is typically released slightly
+    # before the user finishes the word).
+    try:
+        buffer_ms = _d.resolve_buffer_ms(getattr(args, "buffer_ms", None))
+    except _d.DictateError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+    _d.maybe_sleep_for_buffer(buffer_ms)
+
+    t0 = time.time()
     try:
         audio_path = _d.stop_recording()
     except _d.DictateError as exc:
         _d.clear_state()
+        if play_audio:
+            _d.play_sound(_d.DEFAULT_FAIL_SOUND)
         print(f"agent-doctor: {exc}", file=sys.stderr)
         return 2
+    t_stop = time.time()
 
     keep_audio = bool(getattr(args, "keep_audio", False))
     audio_pathobj = Path(audio_path)
@@ -1714,22 +1827,36 @@ def _dictate_finish(args: argparse.Namespace) -> int:
         model=getattr(args, "llm_model", None),
         api_key=getattr(args, "llm_key", None),
     )
-    whisper_model = getattr(args, "whisper_model", None)
+    # Resolve effective whisper model + backend so the history metadata
+    # reflects what actually ran, not what the user happened to type. The
+    # precedence (CLI > env > default) is the same order ``transcribe()``
+    # uses internally; we compute it here too so ``record_history`` gets
+    # the real values when neither CLI nor env was supplied.
+    whisper_model = (
+        getattr(args, "whisper_model", None)
+        or os.environ.get(_d.ENV_WHISPER_MODEL)
+        or _d.DEFAULT_WHISPER_MODEL
+    )
     language = getattr(args, "language", None)
+    backend_choice = (
+        getattr(args, "backend", None)
+        or os.environ.get(_d.ENV_BACKEND)
+        or _d.DEFAULT_BACKEND
+    )
 
-    rc = 0
-    enhancer_failed_reason = None
+    enhancer_failed_reason: Optional[str] = None
     result = None
+    t_transcribe: Optional[float] = None
+    t_enhance: Optional[float] = None
 
     try:
-        # Single transcription pass. Failures (incl. empty transcript) propagate
-        # because we do NOT want to silently copy an empty prompt to the clipboard.
         transcript = _d.transcribe(
             audio_pathobj,
             model_name=whisper_model,
-            backend=getattr(args, "backend", None),
+            backend=backend_choice,
             language=language,
         )
+        t_transcribe = time.time()
         if not transcript.strip():
             raise _d.DictateError("transcription produced no text; nothing to enhance")
 
@@ -1749,6 +1876,7 @@ def _dictate_finish(args: argparse.Namespace) -> int:
                 enhancer_failed_reason = str(exc)
                 prompt = transcript
                 enhanced = False
+        t_enhance = time.time()
 
         result = _d.DictateResult(
             transcript=transcript,
@@ -1762,13 +1890,39 @@ def _dictate_finish(args: argparse.Namespace) -> int:
             _d.copy_to_clipboard(result.prompt)
         except _d.DictateError as exc:
             print(f"agent-doctor: {exc}", file=sys.stderr)
-            rc = 2
-            return rc
+            if play_audio:
+                _d.play_sound(_d.DEFAULT_FAIL_SOUND)
+            return 2
+        t_clipboard = time.time()
 
         _d.notify(
             "Dictate ready" if result.enhanced else "Dictate (raw)",
             f"{len(result.prompt)} chars on clipboard ({result.mode})",
         )
+
+        if play_audio:
+            _d.play_sound(_d.DEFAULT_DONE_SOUND)
+
+        if not getattr(args, "no_history", False):
+            try:
+                _d.record_history(
+                    transcript=result.transcript,
+                    prompt=result.prompt,
+                    mode=result.mode,
+                    enhanced=result.enhanced,
+                    enhancer_failed=enhancer_failed_reason is not None,
+                    audio_path=result.audio_path if keep_audio else None,
+                    backend=(
+                        backend_choice
+                        if backend_choice != "auto"
+                        else _d.detect_backend(whisper_model)
+                    ),
+                    whisper_model=whisper_model,
+                    language=language,
+                )
+            except _d.DictateError as exc:
+                # Non-fatal: history is bookkeeping, do not fail the run.
+                print(f"agent-doctor: warning: {exc}", file=sys.stderr)
 
         if enhancer_failed_reason:
             print(
@@ -1777,6 +1931,21 @@ def _dictate_finish(args: argparse.Namespace) -> int:
             )
         if getattr(args, "print_transcript", False):
             print(result.transcript, file=sys.stderr)
+        if getattr(args, "timing", False):
+            print(
+                json.dumps(
+                    {
+                        "stop_ms": round((t_stop - t0) * 1000),
+                        "transcribe_ms": round(((t_transcribe or t_stop) - t_stop) * 1000),
+                        "enhance_ms": round(((t_enhance or t_transcribe or t_stop) - (t_transcribe or t_stop)) * 1000),
+                        "clipboard_ms": round((t_clipboard - (t_enhance or t_transcribe or t_stop)) * 1000),
+                        "buffer_ms": buffer_ms,
+                        "total_ms": round((t_clipboard - t0) * 1000 + buffer_ms),
+                    },
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
 
         print(
             json.dumps(
@@ -1793,13 +1962,12 @@ def _dictate_finish(args: argparse.Namespace) -> int:
         )
         return 0
     except _d.DictateError as exc:
-        # Transcription error or other hard failure. Surface and exit non-zero.
+        if play_audio:
+            _d.play_sound(_d.DEFAULT_FAIL_SOUND)
         print(f"agent-doctor: {exc}", file=sys.stderr)
         return 2
     finally:
-        # Always release the state file so the next 'start' is unblocked.
         _d.clear_state()
-        # Audio cleanup runs in finally so all early-return paths still hit it.
         if not keep_audio:
             try:
                 audio_pathobj.unlink(missing_ok=True)
