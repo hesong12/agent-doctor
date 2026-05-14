@@ -166,11 +166,35 @@ agent-doctor dictate stop     [--whisper-model ...] [--llm-url ...] ...
 agent-doctor dictate toggle   (same flags as start; recommended for hotkey use)
 agent-doctor dictate status   # JSON: recording? pid, mode, elapsed seconds
 agent-doctor dictate cancel   # discard the in-flight recording
+agent-doctor dictate history  # show recent transcripts + final prompts
 ```
 
-Every variant accepts `--print-transcript` (echo the raw transcription to
-stderr alongside the JSON receipt) and `--keep-audio` (preserve the WAV for
-debugging).
+Every recording variant accepts:
+
+| Flag | Effect |
+|------|--------|
+| `--print-transcript` | Echo the raw transcription to stderr alongside the JSON receipt. |
+| `--keep-audio` | Preserve the captured WAV under `$TMPDIR` for debugging. |
+| `--buffer-ms <N>` | Extra recording tail in milliseconds after `stop` is invoked. Avoids cutting your final syllable when releasing the hotkey. Default 150 ms; env: `AGENT_DOCTOR_DICTATE_BUFFER_MS`. |
+| `--beep` / `--no-beep` | macOS system sound on start / done / failure. Off by default; env: `AGENT_DOCTOR_DICTATE_BEEP=1`. |
+| `--timing` | Print a per-phase millisecond breakdown to stderr (stop, transcribe, enhance, clipboard, buffer, total). |
+| `--no-history` | Skip writing this run into the SQLite history. |
+
+## History
+
+Every successful run is logged to a small SQLite database at `~/Library/Application Support/agent-doctor/dictate-history.sqlite3`. Older rows are pruned to the retention limit in the same transaction as the insert, so the file never grows unbounded.
+
+```bash
+agent-doctor dictate history                # last 20, table view
+agent-doctor dictate history --limit 5      # last 5
+agent-doctor dictate history --full         # do not truncate transcripts
+agent-doctor dictate history --json         # machine-readable
+agent-doctor dictate history --clear        # delete the database
+```
+
+Retention: 100 entries by default; override with `AGENT_DOCTOR_DICTATE_HISTORY_LIMIT`. Set `--no-history` (or `AGENT_DOCTOR_DICTATE_HISTORY_LIMIT=0`) to opt out.
+
+Each row captures the transcript, the final clipboard prompt, mode, backend, whisper model, language, and an `enhancer_failed` flag so you can audit fallbacks.
 
 ## Privacy
 

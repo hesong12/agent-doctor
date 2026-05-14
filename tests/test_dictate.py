@@ -1085,3 +1085,597 @@ def test_suppress_native_output_restores_fds(tmp_path: Path) -> None:
     # to a captured pipe via os.write would touch real stdout; instead,
     # confirm fd 1 is still valid by calling os.fstat.
     os.fstat(1)  # would raise OSError if fd 1 had been closed
+
+
+# --------------------------------------------------------------------------- #
+# Tail buffer (extra recording after stop)                                    #
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_buffer_ms_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_BUFFER_MS", raising=False)
+    assert dictate.resolve_buffer_ms(None) == dictate.DEFAULT_BUFFER_MS
+
+
+def test_resolve_buffer_ms_cli_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_BUFFER_MS", "500")
+    assert dictate.resolve_buffer_ms(50) == 50
+
+
+def test_resolve_buffer_ms_env_when_no_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_BUFFER_MS", "300")
+    assert dictate.resolve_buffer_ms(None) == 300
+
+
+def test_resolve_buffer_ms_negative_clamps_to_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_BUFFER_MS", raising=False)
+    assert dictate.resolve_buffer_ms(-99) == 0
+
+
+def test_resolve_buffer_ms_invalid_env_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_BUFFER_MS", "not-an-int")
+    with pytest.raises(DictateError, match="not a valid integer"):
+        dictate.resolve_buffer_ms(None)
+
+
+def test_maybe_sleep_for_buffer_invokes_sleeper() -> None:
+    seen: List[float] = []
+    dictate.maybe_sleep_for_buffer(150, sleeper=seen.append)
+    assert seen == [0.15]
+
+
+def test_maybe_sleep_for_buffer_zero_is_noop() -> None:
+    seen: List[float] = []
+    dictate.maybe_sleep_for_buffer(0, sleeper=seen.append)
+    assert seen == []
+
+
+# --------------------------------------------------------------------------- #
+# Audio feedback                                                              #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("env", ["1", "true", "TRUE", "yes", "on"])
+def test_beep_enabled_truthy_env(monkeypatch: pytest.MonkeyPatch, env: str) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_BEEP", env)
+    assert dictate.beep_enabled(None) is True
+
+
+def test_beep_enabled_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_BEEP", raising=False)
+    assert dictate.beep_enabled(None) is False
+
+
+def test_beep_enabled_cli_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_BEEP", "1")
+    assert dictate.beep_enabled(False) is False  # explicit --no-beep wins
+    assert dictate.beep_enabled(True) is True
+
+
+def test_play_sound_invokes_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    if sys.platform != "darwin":
+        pytest.skip("afplay path is Darwin-only")
+    monkeypatch.setattr(dictate.shutil, "which", lambda name: "/usr/bin/afplay")
+    captured: List[List[str]] = []
+    dictate.play_sound("/tmp/sound.aiff", runner=lambda argv: captured.append(argv) or 0)
+    assert captured == [["afplay", "/tmp/sound.aiff"]]
+
+
+def test_play_sound_swallows_runner_exceptions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Audio feedback must never break the dictate flow."""
+    if sys.platform != "darwin":
+        pytest.skip("afplay path is Darwin-only")
+    monkeypatch.setattr(dictate.shutil, "which", lambda name: "/usr/bin/afplay")
+
+    def boom(_: List[str]) -> int:
+        raise RuntimeError("audio subsystem dead")
+
+    dictate.play_sound("/tmp/x.aiff", runner=boom)  # must NOT raise
+
+
+def test_play_sound_empty_path_is_noop() -> None:
+    dictate.play_sound("", runner=lambda argv: 1 / 0)  # must not invoke runner
+
+
+# --------------------------------------------------------------------------- #
+# History (SQLite)                                                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_record_and_read_history_round_trip(tmp_path: Path) -> None:
+    row_id = dictate.record_history(
+        transcript="hello world",
+        prompt="Hello, world.",
+        mode="chat",
+        enhanced=True,
+        backend="whisper-cpp",
+        whisper_model="ggml-large-v3-turbo.bin",
+        language="en",
+        state_dir=tmp_path,
+        clock=lambda: 1700000000.5,
+    )
+    assert row_id > 0
+
+    rows = dictate.read_history(state_dir=tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["transcript"] == "hello world"
+    assert row["prompt"] == "Hello, world."
+    assert row["mode"] == "chat"
+    assert row["enhanced"] == 1
+    assert row["enhancer_failed"] == 0
+    assert row["backend"] == "whisper-cpp"
+    assert row["whisper_model"] == "ggml-large-v3-turbo.bin"
+    assert row["language"] == "en"
+    assert row["ts"] == 1700000000.5
+
+
+def test_read_history_returns_newest_first(tmp_path: Path) -> None:
+    for i, ts in enumerate([1, 2, 3, 4], start=1):
+        dictate.record_history(
+            transcript=f"t{i}",
+            prompt=f"p{i}",
+            mode="chat",
+            enhanced=False,
+            state_dir=tmp_path,
+            clock=lambda ts=ts: float(ts),
+        )
+    rows = dictate.read_history(state_dir=tmp_path, limit=10)
+    assert [r["transcript"] for r in rows] == ["t4", "t3", "t2", "t1"]
+
+
+def test_record_history_prunes_to_retention_limit(tmp_path: Path) -> None:
+    for i in range(5):
+        dictate.record_history(
+            transcript=f"t{i}",
+            prompt=f"p{i}",
+            mode="chat",
+            enhanced=False,
+            state_dir=tmp_path,
+            retention_limit=3,
+            clock=lambda i=i: float(i),
+        )
+    rows = dictate.read_history(state_dir=tmp_path, limit=10)
+    # Newest 3 kept (t4, t3, t2); t0/t1 pruned.
+    assert [r["transcript"] for r in rows] == ["t4", "t3", "t2"]
+
+
+def test_read_history_missing_db_returns_empty(tmp_path: Path) -> None:
+    assert dictate.read_history(state_dir=tmp_path) == []
+
+
+def test_clear_history_removes_db(tmp_path: Path) -> None:
+    dictate.record_history(
+        transcript="x", prompt="x", mode="chat", enhanced=False,
+        state_dir=tmp_path,
+    )
+    assert dictate.history_path(tmp_path).exists()
+    dictate.clear_history(tmp_path)
+    assert not dictate.history_path(tmp_path).exists()
+
+
+def test_resolve_history_limit_invalid_env_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_HISTORY_LIMIT", "abc")
+    with pytest.raises(DictateError, match="not a valid integer"):
+        dictate._resolve_history_limit(None)
+
+
+# --------------------------------------------------------------------------- #
+# CLI integration: history + buffer + beep + timing                           #
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_dictate_history_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "history"])
+    out = capsys.readouterr()
+    assert rc == 0
+    assert "no dictate history" in out.err
+
+
+def test_cli_dictate_history_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    dictate.record_history(
+        transcript="hi", prompt="Hi.", mode="chat", enhanced=True,
+        state_dir=tmp_path, clock=lambda: 1.0,
+    )
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "history", "--json", "--limit", "5"])
+    out = capsys.readouterr()
+    assert rc == 0
+    payload = json.loads(out.out)
+    assert payload[0]["transcript"] == "hi"
+    assert payload[0]["enhanced"] == 1
+
+
+def test_cli_dictate_history_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    dictate.record_history(
+        transcript="x", prompt="x", mode="chat", enhanced=False,
+        state_dir=tmp_path,
+    )
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "history", "--clear"])
+    assert rc == 0
+    assert not dictate.history_path(tmp_path).exists()
+
+
+def test_cli_dictate_stop_records_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A successful stop must write one row into the history DB."""
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    saved = DictateState(
+        pid=99999, audio_path=str(audio), mode="chat",
+        started_at=time.time(), recorder="sox", extras={},
+    )
+    write_state(saved, state_dir=tmp_path)
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hello world")
+    monkeypatch.setattr(
+        dictate, "enhance_prompt",
+        lambda transcript, *, mode, config=None, caller=None: "Hello, world.",
+    )
+    monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "maybe_sleep_for_buffer", lambda *a, **kw: None)
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "stop"])
+    assert rc == 0
+
+    rows = dictate.read_history(state_dir=tmp_path, limit=10)
+    assert len(rows) == 1
+    assert rows[0]["transcript"] == "hello world"
+    assert rows[0]["prompt"] == "Hello, world."
+    assert rows[0]["enhanced"] == 1
+
+
+def test_cli_dictate_stop_no_history_flag_skips_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    write_state(
+        DictateState(
+            pid=99999, audio_path=str(audio), mode="chat",
+            started_at=time.time(), recorder="sox", extras={},
+        ),
+        state_dir=tmp_path,
+    )
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hi")
+    monkeypatch.setattr(dictate, "enhance_prompt", lambda *a, **kw: "Hi.")
+    monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "maybe_sleep_for_buffer", lambda *a, **kw: None)
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "stop", "--no-history"])
+    assert rc == 0
+    assert dictate.read_history(state_dir=tmp_path) == []
+
+
+def test_cli_dictate_stop_buffer_ms_sleeps_before_terminate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--buffer-ms 200 must call maybe_sleep_for_buffer(200) BEFORE stop_recording."""
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    write_state(
+        DictateState(
+            pid=99999, audio_path=str(audio), mode="chat",
+            started_at=time.time(), recorder="sox", extras={},
+        ),
+        state_dir=tmp_path,
+    )
+
+    order: List[str] = []
+    sleep_calls: List[int] = []
+
+    def fake_sleep(buffer_ms: int, sleeper: Any = None) -> None:
+        sleep_calls.append(buffer_ms)
+        order.append("sleep")
+
+    def fake_stop(**_kw: Any) -> Path:
+        order.append("stop")
+        return audio
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "maybe_sleep_for_buffer", fake_sleep)
+    monkeypatch.setattr(dictate, "stop_recording", fake_stop)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hi")
+    monkeypatch.setattr(dictate, "enhance_prompt", lambda *a, **kw: "Hi.")
+    monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "stop", "--buffer-ms", "200", "--no-history"])
+    assert rc == 0
+    assert sleep_calls == [200]
+    assert order == ["sleep", "stop"]
+
+
+def test_cli_dictate_timing_emits_phase_breakdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    write_state(
+        DictateState(
+            pid=99999, audio_path=str(audio), mode="chat",
+            started_at=time.time(), recorder="sox", extras={},
+        ),
+        state_dir=tmp_path,
+    )
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hi")
+    monkeypatch.setattr(dictate, "enhance_prompt", lambda *a, **kw: "Hi.")
+    monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "maybe_sleep_for_buffer", lambda *a, **kw: None)
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "stop", "--timing", "--no-history"])
+    out = capsys.readouterr()
+    assert rc == 0
+    # The timing JSON is written to stderr just before the receipt JSON on stdout.
+    timing = json.loads([line for line in out.err.splitlines() if line.startswith("{")][0])
+    assert "stop_ms" in timing
+    assert "transcribe_ms" in timing
+    assert "enhance_ms" in timing
+    assert "clipboard_ms" in timing
+    assert "total_ms" in timing
+    assert timing["buffer_ms"] == dictate.DEFAULT_BUFFER_MS  # 150ms default
+
+
+def test_cli_dictate_beep_off_skips_play_sound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--no-beep must suppress play_sound even if env says BEEP=1."""
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_BEEP", "1")
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    write_state(
+        DictateState(
+            pid=99999, audio_path=str(audio), mode="chat",
+            started_at=time.time(), recorder="sox", extras={},
+        ),
+        state_dir=tmp_path,
+    )
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hi")
+    monkeypatch.setattr(dictate, "enhance_prompt", lambda *a, **kw: "Hi.")
+    monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "maybe_sleep_for_buffer", lambda *a, **kw: None)
+
+    sound_calls: List[str] = []
+    monkeypatch.setattr(dictate, "play_sound", lambda path, **kw: sound_calls.append(path))
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "stop", "--no-beep", "--no-history"])
+    assert rc == 0
+    assert sound_calls == []
+
+
+def test_cli_dictate_beep_on_plays_done_sound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    write_state(
+        DictateState(
+            pid=99999, audio_path=str(audio), mode="chat",
+            started_at=time.time(), recorder="sox", extras={},
+        ),
+        state_dir=tmp_path,
+    )
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hi")
+    monkeypatch.setattr(dictate, "enhance_prompt", lambda *a, **kw: "Hi.")
+    monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "maybe_sleep_for_buffer", lambda *a, **kw: None)
+
+    sound_calls: List[str] = []
+    monkeypatch.setattr(dictate, "play_sound", lambda path, **kw: sound_calls.append(path))
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "stop", "--beep", "--no-history"])
+    assert rc == 0
+    assert dictate.DEFAULT_DONE_SOUND in sound_calls
+
+
+# --------------------------------------------------------------------------- #
+# PR #28 review feedback (Gemini)                                             #
+# --------------------------------------------------------------------------- #
+
+
+def test_record_history_limit_zero_is_global_disable(tmp_path: Path) -> None:
+    """Gemini medium #3: AGENT_DOCTOR_DICTATE_HISTORY_LIMIT=0 was documented
+    as the global opt-out but the previous implementation still INSERTed
+    rows (only the prune was skipped). The DB file must not be created
+    at all when limit=0."""
+
+    row_id = dictate.record_history(
+        transcript="should not persist",
+        prompt="should not persist",
+        mode="chat",
+        enhanced=False,
+        state_dir=tmp_path,
+        retention_limit=0,
+    )
+    assert row_id == 0
+    assert not dictate.history_path(tmp_path).exists()
+    assert dictate.read_history(state_dir=tmp_path) == []
+
+
+def test_record_history_limit_zero_via_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_HISTORY_LIMIT", "0")
+    row_id = dictate.record_history(
+        transcript="x", prompt="x", mode="chat", enhanced=False,
+        state_dir=tmp_path,
+    )
+    assert row_id == 0
+    assert not dictate.history_path(tmp_path).exists()
+
+
+def test_cli_dictate_stop_plays_stop_chime_when_beep_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gemini medium #1: --beep must play an inline "stop registered"
+    chime immediately on stop so the user hears feedback even when the
+    transcribe + LLM steps take a few seconds. The done chime fires later;
+    here we just assert the inline stop chime is registered."""
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    write_state(
+        DictateState(
+            pid=99999, audio_path=str(audio), mode="chat",
+            started_at=time.time(), recorder="sox", extras={},
+        ),
+        state_dir=tmp_path,
+    )
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hi")
+    monkeypatch.setattr(dictate, "enhance_prompt", lambda *a, **kw: "Hi.")
+    monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "maybe_sleep_for_buffer", lambda *a, **kw: None)
+
+    sound_calls: List[str] = []
+    monkeypatch.setattr(dictate, "play_sound", lambda path, **kw: sound_calls.append(path))
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "stop", "--beep", "--no-history"])
+    assert rc == 0
+    # The inline "stop chime" (start sound) must be the FIRST call, before
+    # any done/fail chime.
+    assert sound_calls, "expected at least one play_sound call when --beep is set"
+    assert sound_calls[0] == dictate.DEFAULT_START_SOUND, (
+        f"first sound must be the stop chime ({dictate.DEFAULT_START_SOUND}); "
+        f"got call sequence {sound_calls!r}"
+    )
+    # And the done chime must still fire after success.
+    assert dictate.DEFAULT_DONE_SOUND in sound_calls
+
+
+def test_cli_dictate_stop_records_effective_whisper_model_and_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gemini medium #2: when the user passes neither --whisper-model nor
+    --backend, the history row must record the EFFECTIVE values
+    (DEFAULT_WHISPER_MODEL and detect_backend(DEFAULT_WHISPER_MODEL)),
+    not literal Nones."""
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_WHISPER_MODEL", raising=False)
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_BACKEND", raising=False)
+
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    write_state(
+        DictateState(
+            pid=99999, audio_path=str(audio), mode="chat",
+            started_at=time.time(), recorder="sox", extras={},
+        ),
+        state_dir=tmp_path,
+    )
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hello")
+    monkeypatch.setattr(dictate, "enhance_prompt", lambda *a, **kw: "Hello.")
+    monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "maybe_sleep_for_buffer", lambda *a, **kw: None)
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "stop"])
+    assert rc == 0
+
+    rows = dictate.read_history(state_dir=tmp_path, limit=10)
+    assert len(rows) == 1
+    assert rows[0]["whisper_model"] == dictate.DEFAULT_WHISPER_MODEL
+    # detect_backend('small') -> 'faster-whisper'
+    assert rows[0]["backend"] == "faster-whisper"
+
+
+def test_cli_dictate_stop_records_explicit_whisper_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    write_state(
+        DictateState(
+            pid=99999, audio_path=str(audio), mode="chat",
+            started_at=time.time(), recorder="sox", extras={},
+        ),
+        state_dir=tmp_path,
+    )
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hi")
+    monkeypatch.setattr(dictate, "enhance_prompt", lambda *a, **kw: "Hi.")
+    monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "maybe_sleep_for_buffer", lambda *a, **kw: None)
+
+    from agent_doctor.cli import main
+
+    rc = main([
+        "dictate", "stop",
+        "--whisper-model", "/path/to/ggml-large-v3-turbo.bin",
+    ])
+    assert rc == 0
+    rows = dictate.read_history(state_dir=tmp_path, limit=10)
+    assert rows[0]["whisper_model"] == "/path/to/ggml-large-v3-turbo.bin"
+    # detect_backend on a .bin path -> 'whisper-cpp'
+    assert rows[0]["backend"] == "whisper-cpp"
