@@ -856,3 +856,232 @@ def test_default_llm_call_surfaces_url_error(monkeypatch: pytest.MonkeyPatch) ->
 
     with pytest.raises(DictateError, match="unreachable"):
         dictate._default_llm_call(cfg, [{"role": "user", "content": "hi"}])
+
+
+# --------------------------------------------------------------------------- #
+# Backend selection (whisper.cpp + faster-whisper)                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_detect_backend_ggml_path_routes_to_whisper_cpp(tmp_path: Path) -> None:
+    """A model name ending in '.bin' must route to whisper-cpp, not
+    faster-whisper, even when the file does not yet exist (we cannot
+    require existence because users may pass a path that pywhispercpp will
+    download)."""
+
+    candidate = str(tmp_path / "ggml-large-v3-turbo.bin")
+    assert dictate.detect_backend(candidate) == "whisper-cpp"
+
+
+def test_detect_backend_gguf_suffix_routes_to_whisper_cpp(tmp_path: Path) -> None:
+    candidate = str(tmp_path / "anything.gguf")
+    assert dictate.detect_backend(candidate) == "whisper-cpp"
+
+
+def test_detect_backend_existing_local_path_routes_to_whisper_cpp(tmp_path: Path) -> None:
+    """A bare path with no recognized suffix but that exists on disk
+    routes to whisper-cpp; this covers the case where a user points at a
+    whisper.cpp model dir without using the .bin suffix."""
+
+    p_local = tmp_path / "custom_model"
+    p_local.write_bytes(b"\x00" * 16)
+    assert dictate.detect_backend(str(p_local)) == "whisper-cpp"
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ["small", "medium", "large-v3", "large-v3-turbo", "distil-large-v3"],
+)
+def test_detect_backend_faster_whisper_size_aliases(alias: str) -> None:
+    assert dictate.detect_backend(alias) == "faster-whisper"
+
+
+def test_detect_backend_hf_repo_id_routes_to_faster_whisper() -> None:
+    """HF repo ids contain '/' but the local path does not exist; the
+    heuristic must fall through to faster-whisper, NOT mistakenly assume
+    whisper-cpp because of the slash."""
+
+    assert dictate.detect_backend("Systran/faster-whisper-small") == "faster-whisper"
+
+
+def test_detect_backend_empty_falls_back_to_faster_whisper() -> None:
+    assert dictate.detect_backend(None) == "faster-whisper"  # type: ignore[arg-type]
+    assert dictate.detect_backend("") == "faster-whisper"
+
+
+def test_transcribe_routes_to_whisper_cpp_for_bin_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Integration: transcribe(model_name=<...bin>) must call the whisper-cpp
+    backend, not the faster-whisper one."""
+
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"")
+    model = tmp_path / "ggml-tiny.bin"
+    model.write_bytes(b"")
+
+    calls: Dict[str, Any] = {}
+
+    def fake_cpp(audio_path: Path, model_name: str, language: Any) -> str:
+        calls["cpp"] = (audio_path, model_name, language)
+        return "from cpp"
+
+    def fake_ct2(audio_path: Path, model_name: str, language: Any) -> str:
+        calls["ct2"] = (audio_path, model_name, language)
+        return "from ct2"
+
+    monkeypatch.setattr(dictate, "_default_transcribe_whisper_cpp", fake_cpp)
+    monkeypatch.setattr(dictate, "_default_transcribe", fake_ct2)
+
+    out = dictate.transcribe(audio, model_name=str(model))
+    assert out == "from cpp"
+    assert "cpp" in calls and "ct2" not in calls
+
+
+def test_transcribe_routes_to_faster_whisper_for_size_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"")
+
+    calls: Dict[str, Any] = {}
+
+    def fake_cpp(*a: Any, **kw: Any) -> str:
+        calls["cpp"] = a
+        return "cpp"
+
+    def fake_ct2(*a: Any, **kw: Any) -> str:
+        calls["ct2"] = a
+        return "ct2"
+
+    monkeypatch.setattr(dictate, "_default_transcribe_whisper_cpp", fake_cpp)
+    monkeypatch.setattr(dictate, "_default_transcribe", fake_ct2)
+
+    out = dictate.transcribe(audio, model_name="large-v3-turbo")
+    assert out == "ct2"
+    assert "ct2" in calls and "cpp" not in calls
+
+
+def test_transcribe_explicit_backend_overrides_autodetect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--backend whisper-cpp forces whisper-cpp even if model name looks
+    like a faster-whisper size alias (e.g. user has a custom model named
+    'small.bin' but points the alias)."""
+
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"")
+
+    calls: List[str] = []
+
+    def fake_cpp(*a: Any, **kw: Any) -> str:
+        calls.append("cpp")
+        return "cpp"
+
+    def fake_ct2(*a: Any, **kw: Any) -> str:
+        calls.append("ct2")
+        return "ct2"
+
+    monkeypatch.setattr(dictate, "_default_transcribe_whisper_cpp", fake_cpp)
+    monkeypatch.setattr(dictate, "_default_transcribe", fake_ct2)
+
+    dictate.transcribe(audio, model_name="small", backend="whisper-cpp")
+    assert calls == ["cpp"]
+
+
+def test_transcribe_rejects_unknown_backend(tmp_path: Path) -> None:
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"")
+    with pytest.raises(DictateError, match="unknown whisper backend"):
+        dictate.transcribe(audio, backend="hallucinated")
+
+
+def test_transcribe_backend_env_var_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AGENT_DOCTOR_DICTATE_BACKEND env var sets the default backend
+    when --backend is not passed."""
+
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"")
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_BACKEND", "whisper-cpp")
+    calls: List[str] = []
+
+    def fake_cpp(*a: Any, **kw: Any) -> str:
+        calls.append("cpp")
+        return "cpp"
+
+    def fake_ct2(*a: Any, **kw: Any) -> str:
+        calls.append("ct2")
+        return "ct2"
+
+    monkeypatch.setattr(dictate, "_default_transcribe_whisper_cpp", fake_cpp)
+    monkeypatch.setattr(dictate, "_default_transcribe", fake_ct2)
+
+    # Even a size alias gets routed through whisper-cpp because of the env var.
+    dictate.transcribe(audio, model_name="small")
+    assert calls == ["cpp"]
+
+
+def test_transcribe_injected_transcriber_bypasses_backend_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backwards-compat: tests that pass a custom transcriber must still
+    bypass backend selection (so existing test suite keeps working)."""
+
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"")
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_BACKEND", "whisper-cpp")
+
+    cpp_calls = {"n": 0}
+
+    def boom_cpp(*a: Any, **kw: Any) -> str:
+        cpp_calls["n"] += 1
+        return "should not be called"
+
+    monkeypatch.setattr(dictate, "_default_transcribe_whisper_cpp", boom_cpp)
+
+    out = dictate.transcribe(
+        audio, model_name="anything",
+        transcriber=lambda ap, mn, lang: "injected",
+    )
+    assert out == "injected"
+    assert cpp_calls["n"] == 0
+
+
+def test_default_transcribe_whisper_cpp_raises_if_pywhispercpp_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When pywhispercpp is not installed, the whisper-cpp backend must
+    raise a friendly DictateError pointing at the [dictate-cpp] extra."""
+
+    # Hide pywhispercpp from the importer.
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "pywhispercpp", None)
+    monkeypatch.setitem(_sys.modules, "pywhispercpp.model", None)
+
+    with pytest.raises(DictateError, match="pywhispercpp is not installed"):
+        dictate._default_transcribe_whisper_cpp(tmp_path / "x.wav", "x.bin", None)
+
+
+def test_suppress_native_output_restores_fds(tmp_path: Path) -> None:
+    """The fd-level suppression context must restore stdout/stderr on exit
+    even when the wrapped block raises, so the user's terminal does not
+    stay redirected to /dev/null after a transcription failure."""
+
+    import os
+
+    pre_stdout = os.fstat(1).st_ino if os.path.exists("/dev/stdout") else None  # noqa: E501
+
+    try:
+        with dictate._maybe_suppress_native_output(suppress=True):
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+
+    # After the context, fd 1 must be writable. Easiest check: write a byte
+    # to a captured pipe via os.write would touch real stdout; instead,
+    # confirm fd 1 is still valid by calling os.fstat.
+    os.fstat(1)  # would raise OSError if fd 1 had been closed

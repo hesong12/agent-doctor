@@ -24,6 +24,9 @@ gemini = ["google-genai>=0.3", "keyring>=24"]
 dictate = [
     "faster-whisper>=1.0",
 ]
+dictate-cpp = [
+    "pywhispercpp>=1.2",
+]
 
 [project.scripts]
 agent-doctor = "agent_doctor.cli:main"

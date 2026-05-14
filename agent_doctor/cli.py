@@ -498,6 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Dictate subcommand -------------------------------------------------------
     from .dictate import (
         DEFAULT_MODE as _DICTATE_DEFAULT_MODE,
+        SUPPORTED_BACKENDS as _DICTATE_SUPPORTED_BACKENDS,
         SUPPORTED_MODES as _DICTATE_SUPPORTED_MODES,
     )
 
@@ -531,7 +532,24 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--whisper-model",
             default=None,
-            help="faster-whisper model name (e.g. 'small', 'medium', 'large-v3').",
+            help=(
+                "Whisper model identifier. For faster-whisper: a size alias "
+                "('small', 'medium', 'large-v3-turbo') or HF repo id. For "
+                "whisper-cpp: an absolute path to a GGML/GGUF file (e.g. "
+                "Handy's ggml-large-v3-turbo.bin). Auto-detects backend from "
+                "the suffix unless --backend is explicit."
+            ),
+        )
+        p.add_argument(
+            "--backend",
+            choices=list(_DICTATE_SUPPORTED_BACKENDS),
+            default=None,
+            help=(
+                "Whisper transcription backend. 'auto' (default) routes paths "
+                "ending in .bin/.gguf to whisper-cpp and everything else to "
+                "faster-whisper. Override with 'faster-whisper' or "
+                "'whisper-cpp' to force a backend."
+            ),
         )
         p.add_argument(
             "--language",
@@ -1709,6 +1727,7 @@ def _dictate_finish(args: argparse.Namespace) -> int:
         transcript = _d.transcribe(
             audio_pathobj,
             model_name=whisper_model,
+            backend=getattr(args, "backend", None),
             language=language,
         )
         if not transcript.strip():

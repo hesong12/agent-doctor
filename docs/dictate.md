@@ -101,18 +101,55 @@ announced on stderr and in the notification ("Dictate (raw)").
 ## Whisper configuration
 
 ```bash
-agent-doctor dictate toggle --whisper-model medium   # default: small
-agent-doctor dictate toggle --language zh            # default: auto-detect
+agent-doctor dictate toggle --whisper-model medium     # default: small
+agent-doctor dictate toggle --language zh              # default: auto-detect
+agent-doctor dictate toggle --backend whisper-cpp ...  # force a backend (default: auto)
 ```
 
 Or via environment:
 
 ```bash
-export AGENT_DOCTOR_DICTATE_WHISPER_MODEL="medium"
+export AGENT_DOCTOR_DICTATE_WHISPER_MODEL="large-v3-turbo"
+export AGENT_DOCTOR_DICTATE_BACKEND="whisper-cpp"   # auto | faster-whisper | whisper-cpp
 ```
 
-Larger models (`medium`, `large-v3`) are slower but more accurate. On an M-series
-Mac the `small` model is typically faster than real-time.
+### Backends
+
+| Backend | When | Install |
+|---------|------|---------|
+| `faster-whisper` (default) | Size aliases (`small`, `medium`, `large-v3-turbo`) and HF repo ids. CTranslate2 + int8 on CPU; portable. | `pip install 'agent-doctor[dictate]'` |
+| `whisper-cpp` | Local GGML / GGUF model files (e.g. Handy's `ggml-large-v3-turbo.bin`). Uses **Apple Metal on M-series**, no re-download if you already have the model. | `pip install 'agent-doctor[dictate-cpp]'` (builds whisper.cpp from source; Xcode CLT required) |
+
+**Auto-detect rules** (when `--backend auto`, the default):
+
+- `model_name` ending in `.bin` or `.gguf` → `whisper-cpp`
+- `model_name` is a local path that exists → `whisper-cpp`
+- Anything else (e.g. `large-v3-turbo`, `Systran/faster-whisper-small`) → `faster-whisper`
+
+### Reusing Handy's GGML model (recommended on Apple Silicon)
+
+If you have [Handy](https://github.com/cjpais/Handy) installed and have downloaded a model, you already have a Metal-accelerated `ggml-large-v3-turbo.bin` you can point at directly:
+
+```bash
+agent-doctor dictate toggle --mode coding \
+  --whisper-model "$HOME/Library/Application Support/com.pais.handy/models/ggml-large-v3-turbo.bin"
+```
+
+Benchmark on M-series Mac (M5 Max): the 1.5 GB `large-v3-turbo` GGML model loads cold in ~4.5 s and transcribes 3-4 s of audio in **~0.5 s** (≈8× real-time), all on the GPU. Pin the path via env var so you do not retype it:
+
+```bash
+export AGENT_DOCTOR_DICTATE_WHISPER_MODEL="$HOME/Library/Application Support/com.pais.handy/models/ggml-large-v3-turbo.bin"
+```
+
+Set `AGENT_DOCTOR_DICTATE_DEBUG=1` to keep whisper.cpp's verbose stdout logging (Metal init, model metadata, segment timings). Default behaviour suppresses it so the CLI receipt stays clean.
+
+### Larger faster-whisper models
+
+If you do not have a GGML/GGUF file already, faster-whisper will download whatever size you ask for from HuggingFace on first use:
+
+```bash
+agent-doctor dictate toggle --whisper-model large-v3-turbo   # ~1.5 GB one-time download
+```
 
 ## Files
 
