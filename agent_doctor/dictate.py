@@ -49,6 +49,7 @@ import sys
 import tempfile
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -63,10 +64,17 @@ DEFAULT_WHISPER_MODEL = "small"
 DEFAULT_MODE = "chat"
 SUPPORTED_MODES = ("chat", "coding", "research", "raw")
 
+# Whisper backend choices. ``auto`` inspects ``model_name``: a path ending in
+# ``.bin`` or ``.gguf`` (or any existing local file path) routes to
+# ``whisper-cpp``; everything else routes to ``faster-whisper``.
+SUPPORTED_BACKENDS = ("auto", "faster-whisper", "whisper-cpp")
+DEFAULT_BACKEND = "auto"
+
 ENV_LLM_URL = "AGENT_DOCTOR_DICTATE_LLM_URL"
 ENV_LLM_MODEL = "AGENT_DOCTOR_DICTATE_LLM_MODEL"
 ENV_LLM_KEY = "AGENT_DOCTOR_DICTATE_LLM_KEY"
 ENV_WHISPER_MODEL = "AGENT_DOCTOR_DICTATE_WHISPER_MODEL"
+ENV_BACKEND = "AGENT_DOCTOR_DICTATE_BACKEND"  # auto | faster-whisper | whisper-cpp
 ENV_STATE_DIR = "AGENT_DOCTOR_DICTATE_STATE_DIR"
 ENV_RECORDER = "AGENT_DOCTOR_DICTATE_RECORDER"  # "sox" | "ffmpeg"
 
@@ -421,22 +429,81 @@ def _default_wait_for_exit(pid: int, timeout: float) -> bool:
 # -----------------------------------------------------------------------------
 
 
+def detect_backend(model_name: Optional[str]) -> str:
+    """Choose a whisper backend based on the model identifier.
+
+    Heuristic:
+    - ``model_name`` is a path with suffix ``.bin`` or ``.gguf``       -> whisper-cpp
+    - ``model_name`` contains a path separator AND exists on disk      -> whisper-cpp
+    - everything else (faster-whisper size aliases like ``small`` /
+      ``large-v3-turbo``, or HF repo ids)                              -> faster-whisper
+
+    Returns one of the concrete backend names in ``SUPPORTED_BACKENDS``
+    excluding ``"auto"``.
+    """
+
+    if not model_name:
+        return "faster-whisper"
+    suffix = Path(model_name).suffix.lower()
+    if suffix in (".bin", ".gguf"):
+        return "whisper-cpp"
+    if ("/" in model_name or os.sep in model_name) and Path(model_name).expanduser().exists():
+        return "whisper-cpp"
+    return "faster-whisper"
+
+
 def transcribe(
     audio_path: Path,
     *,
     model_name: Optional[str] = None,
+    backend: Optional[str] = None,
     language: Optional[str] = None,
     transcriber: Optional[Callable[[Path, str, Optional[str]], str]] = None,
 ) -> str:
-    """Transcribe ``audio_path`` using faster-whisper.
+    """Transcribe ``audio_path`` with the selected whisper backend.
 
-    ``transcriber`` is overridable for tests; in production we lazy-import
-    ``faster_whisper`` and run it with sensible defaults.
+    Backend selection precedence:
+        explicit ``backend=`` kwarg
+        > ``AGENT_DOCTOR_DICTATE_BACKEND`` env var
+        > ``"auto"``
+    With ``"auto"`` we route to ``whisper-cpp`` for local GGML / GGUF model
+    files (e.g. Handy's ``ggml-large-v3-turbo.bin``) and to
+    ``faster-whisper`` for size aliases or HF repo ids.
+
+    ``transcriber`` is overridable for tests: if provided it bypasses backend
+    selection entirely. This preserves the dependency-injection contract that
+    the rest of the test suite relies on.
     """
 
-    chosen_model = model_name or os.environ.get(ENV_WHISPER_MODEL) or DEFAULT_WHISPER_MODEL
-    fn = transcriber or _default_transcribe
-    text = fn(audio_path, chosen_model, language)
+    chosen_model = (
+        model_name
+        or os.environ.get(ENV_WHISPER_MODEL)
+        or DEFAULT_WHISPER_MODEL
+    )
+
+    if transcriber is not None:
+        text = transcriber(audio_path, chosen_model, language)
+        return text.strip()
+
+    chosen_backend = (
+        backend
+        or os.environ.get(ENV_BACKEND)
+        or DEFAULT_BACKEND
+    )
+    if chosen_backend not in SUPPORTED_BACKENDS:
+        raise DictateError(
+            f"unknown whisper backend {chosen_backend!r}; expected one of "
+            f"{', '.join(SUPPORTED_BACKENDS)}"
+        )
+    if chosen_backend == "auto":
+        chosen_backend = detect_backend(chosen_model)
+
+    if chosen_backend == "whisper-cpp":
+        text = _default_transcribe_whisper_cpp(audio_path, chosen_model, language)
+    elif chosen_backend == "faster-whisper":
+        text = _default_transcribe(audio_path, chosen_model, language)
+    else:  # pragma: no cover - unreachable; validated above
+        raise DictateError(f"backend {chosen_backend!r} not implemented")
     return text.strip()
 
 
@@ -467,6 +534,97 @@ def _default_transcribe(
         vad_filter=True,
     )
     return "".join(segment.text for segment in segments)
+
+
+def _default_transcribe_whisper_cpp(
+    audio_path: Path,
+    model_name: str,
+    language: Optional[str],
+) -> str:
+    try:
+        from pywhispercpp.model import Model  # type: ignore
+    except ImportError as exc:  # pragma: no cover - exercised only when extras missing
+        raise DictateError(
+            "pywhispercpp is not installed; install the dictate-cpp extra:\n"
+            "  pipx inject agent-doctor pywhispercpp\n"
+            "or:\n"
+            "  pip install 'agent-doctor[dictate-cpp]'\n"
+            "(pywhispercpp builds whisper.cpp from source; Xcode CLT required on macOS)"
+        ) from exc
+
+    model_path = str(Path(model_name).expanduser())
+    n_threads = os.cpu_count() or 4
+
+    # whisper.cpp's C-level printf logging is verbose (Metal init, model
+    # metadata) and bypasses Python's logging. Redirect fds 1/2 to /dev/null
+    # around model load + transcribe so the user's terminal stays clean.
+    # We do NOT suppress when AGENT_DOCTOR_DICTATE_DEBUG=1 so power users can
+    # still see the underlying engine output when diagnosing perf or accuracy.
+    debug = os.environ.get("AGENT_DOCTOR_DICTATE_DEBUG") == "1"
+    with _maybe_suppress_native_output(suppress=not debug):
+        model = Model(model_path, n_threads=n_threads, print_progress=False)
+        kwargs: Dict[str, Any] = {}
+        if language:
+            kwargs["language"] = language
+        segments = model.transcribe(str(audio_path), **kwargs)
+        text = "".join(segment.text for segment in segments)
+    return text
+
+
+@contextmanager
+def _maybe_suppress_native_output(*, suppress: bool):
+    """Redirect fds 1/2 to /dev/null while ``suppress`` is True.
+
+    Required because whisper.cpp logs via C ``printf``, which Python's
+    ``contextlib.redirect_stdout`` cannot intercept. Restore on exit even
+    on exception so the user's terminal does not stay redirected.
+
+    Robustness notes:
+    - Python's ``sys.stdout`` / ``sys.stderr`` are line-buffered to a tty
+      and block-buffered otherwise. Any pending Python output must be
+      flushed *before* we redirect fd 1/2 so it actually reaches the
+      user's terminal instead of being silently flushed into /dev/null
+      after the dup2.
+    - Resources are acquired in a try-pyramid so a failing ``os.dup``
+      partway through does not leak the descriptors we already opened.
+    """
+
+    if not suppress:
+        yield
+        return
+
+    # Flush Python-level buffers so prior output is not pulled into the
+    # redirection window and lost.
+    try:
+        sys.stdout.flush()
+    except Exception:  # noqa: BLE001 - defensive; flushing must not break the path
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001
+        pass
+
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        saved_stdout = os.dup(1)
+        try:
+            saved_stderr = os.dup(2)
+            try:
+                os.dup2(devnull_fd, 1)
+                os.dup2(devnull_fd, 2)
+                try:
+                    yield
+                finally:
+                    # Restore in reverse order; on macOS dup2 is atomic so
+                    # this leaves no observable in-between state.
+                    os.dup2(saved_stdout, 1)
+                    os.dup2(saved_stderr, 2)
+            finally:
+                os.close(saved_stderr)
+        finally:
+            os.close(saved_stdout)
+    finally:
+        os.close(devnull_fd)
 
 
 # ----------------------------------------------------------------------------- 
