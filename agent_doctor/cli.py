@@ -495,6 +495,80 @@ def build_parser() -> argparse.ArgumentParser:
     openclaw_event.add_argument("--dry-run", action="store_true")
     openclaw_event.set_defaults(func=_cmd_notify_openclaw_system_event)
 
+    # Dictate subcommand -------------------------------------------------------
+    from .dictate import (
+        DEFAULT_MODE as _DICTATE_DEFAULT_MODE,
+        SUPPORTED_MODES as _DICTATE_SUPPORTED_MODES,
+    )
+
+    dictate = subparsers.add_parser(
+        "dictate",
+        help=(
+            "Voice -> optimized-prompt clipboard pipeline. Press a hotkey, speak, "
+            "and paste an LLM-rewritten prompt into any AI app."
+        ),
+    )
+    dictate_subs = dictate.add_subparsers(dest="dictate_command", required=True)
+
+    def _add_common_dictate_args(p, *, with_mode=True):
+        if with_mode:
+            p.add_argument(
+                "--mode",
+                choices=list(_DICTATE_SUPPORTED_MODES),
+                default=_DICTATE_DEFAULT_MODE,
+                help=(
+                    "Prompt-rewriting style. 'raw' skips the LLM and copies the "
+                    "transcript verbatim. Default: %(default)s."
+                ),
+            )
+        p.add_argument(
+            "--no-enhance",
+            action="store_true",
+            help="Skip the LLM enhancement step; copy the raw transcript.",
+        )
+        p.add_argument(
+            "--whisper-model",
+            default=None,
+            help="faster-whisper model name (e.g. 'small', 'medium', 'large-v3').",
+        )
+        p.add_argument(
+            "--language",
+            default=None,
+            help="BCP-47 language hint for whisper (e.g. 'en', 'zh'). Auto-detect by default.",
+        )
+        p.add_argument("--llm-url", default=None, help="OpenAI-compatible chat completion URL.")
+        p.add_argument("--llm-model", default=None, help="Model name to send in the request body.")
+        p.add_argument("--llm-key", default=None, help="Optional bearer token for the LLM endpoint.")
+        p.add_argument("--keep-audio", action="store_true", help="Do not delete the WAV after processing.")
+        p.add_argument("--print-transcript", action="store_true", help="Also print the raw transcript to stderr.")
+
+    dictate_start = dictate_subs.add_parser("start", help="Start a recording.")
+    _add_common_dictate_args(dictate_start)
+    dictate_start.set_defaults(func=_cmd_dictate_start)
+
+    dictate_stop = dictate_subs.add_parser(
+        "stop", help="Stop the running recording, enhance, and copy to clipboard."
+    )
+    _add_common_dictate_args(dictate_stop, with_mode=False)
+    dictate_stop.set_defaults(func=_cmd_dictate_stop)
+
+    dictate_toggle = dictate_subs.add_parser(
+        "toggle",
+        help="Stop if a recording is in flight, otherwise start one. Bind this to a hotkey.",
+    )
+    _add_common_dictate_args(dictate_toggle)
+    dictate_toggle.set_defaults(func=_cmd_dictate_toggle)
+
+    dictate_status = dictate_subs.add_parser(
+        "status", help="Show the current recording state as JSON."
+    )
+    dictate_status.set_defaults(func=_cmd_dictate_status)
+
+    dictate_cancel = dictate_subs.add_parser(
+        "cancel", help="Abort the current recording and discard the audio."
+    )
+    dictate_cancel.set_defaults(func=_cmd_dictate_cancel)
+
     # Adapter subcommands ------------------------------------------------------
     adapters = subparsers.add_parser(
         "adapters",
@@ -1474,6 +1548,167 @@ def _cmd_mcp_serve(_: argparse.Namespace) -> int:
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    return 0
+
+
+def _cmd_dictate_start(args: argparse.Namespace) -> int:
+    from . import dictate as _d
+
+    try:
+        state = _d.start_recording(mode=args.mode)
+    except _d.DictateError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+    print(
+        json.dumps(
+            {
+                "started": True,
+                "pid": state.pid,
+                "audio_path": state.audio_path,
+                "mode": state.mode,
+                "recorder": state.recorder,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _cmd_dictate_stop(args: argparse.Namespace) -> int:
+    return _dictate_finish(args)
+
+
+def _cmd_dictate_toggle(args: argparse.Namespace) -> int:
+    from . import dictate as _d
+
+    state = _d.read_state()
+    if state is not None and _d.is_pid_alive(state.pid):
+        return _dictate_finish(args)
+    return _cmd_dictate_start(args)
+
+
+def _cmd_dictate_status(_args: argparse.Namespace) -> int:
+    from . import dictate as _d
+
+    state = _d.read_state()
+    print(json.dumps(_d.summarize_state(state), indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_dictate_cancel(_args: argparse.Namespace) -> int:
+    from . import dictate as _d
+
+    state = _d.read_state()
+    if state is None:
+        print("no dictate recording in flight", file=sys.stderr)
+        return 0
+    try:
+        audio = _d.stop_recording()
+    except _d.DictateError as exc:
+        _d.clear_state()
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 0
+    try:
+        Path(audio).unlink(missing_ok=True)
+    finally:
+        _d.clear_state()
+    print(json.dumps({"cancelled": True}, indent=2))
+    return 0
+
+
+def _dictate_finish(args: argparse.Namespace) -> int:
+    from . import dictate as _d
+
+    state = _d.read_state()
+    if state is None:
+        print("agent-doctor: no dictate recording in flight", file=sys.stderr)
+        return 2
+
+    mode = getattr(args, "mode", None) or state.mode
+    try:
+        audio_path = _d.stop_recording()
+    except _d.DictateError as exc:
+        _d.clear_state()
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+
+    enhance = not getattr(args, "no_enhance", False)
+    llm_config = _d.llm_config_from_env(
+        url=getattr(args, "llm_url", None),
+        model=getattr(args, "llm_model", None),
+        api_key=getattr(args, "llm_key", None),
+    )
+
+    try:
+        result = _d.run_pipeline(
+            Path(audio_path),
+            mode=mode,
+            enhance=enhance,
+            llm_config=llm_config,
+            language=getattr(args, "language", None),
+            transcriber=(
+                (lambda ap, mn, lang: _d.transcribe(ap, model_name=getattr(args, "whisper_model", None) or mn, language=lang))
+                if getattr(args, "whisper_model", None)
+                else None
+            ),
+        )
+    except _d.DictateError as exc:
+        # Enhancement failed (e.g. ds4 not running). Fall back to raw transcript
+        # so the user still gets something on the clipboard.
+        try:
+            transcript = _d.transcribe(
+                Path(audio_path),
+                model_name=getattr(args, "whisper_model", None),
+                language=getattr(args, "language", None),
+            )
+        except _d.DictateError as exc2:
+            _d.clear_state()
+            print(f"agent-doctor: {exc2}", file=sys.stderr)
+            return 2
+        result = _d.DictateResult(
+            transcript=transcript,
+            prompt=transcript,
+            mode=mode,
+            audio_path=Path(audio_path),
+            enhanced=False,
+        )
+        print(f"agent-doctor: enhancement failed, copied raw transcript ({exc})", file=sys.stderr)
+
+    try:
+        _d.copy_to_clipboard(result.prompt)
+    except _d.DictateError as exc:
+        _d.clear_state()
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+
+    _d.notify(
+        "Dictate ready" if result.enhanced else "Dictate (raw)",
+        f"{len(result.prompt)} chars on clipboard ({result.mode})",
+    )
+
+    if getattr(args, "print_transcript", False):
+        print(result.transcript, file=sys.stderr)
+
+    if not getattr(args, "keep_audio", False):
+        try:
+            Path(result.audio_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    _d.clear_state()
+
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "enhanced": result.enhanced,
+                "mode": result.mode,
+                "prompt_chars": len(result.prompt),
+                "transcript_chars": len(result.transcript),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
