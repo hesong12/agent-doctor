@@ -22,19 +22,45 @@ from agent_doctor import cli
 
 
 def _subparser_choices(parser: argparse.ArgumentParser) -> set[str]:
+    """Return every subcommand name across all ``_SubParsersAction`` groups
+    on ``parser``.
+
+    A parser can in principle have more than one ``_SubParsersAction`` (e.g.
+    after a refactor that splits commands into groups). Returning only the
+    first group's choices would silently under-report the parser's surface;
+    we accumulate across all groups so this guard does not regress quietly
+    if the CLI structure evolves.
+    """
+
+    choices: set[str] = set()
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
-            return set(action.choices)
-    return set()
+            choices.update(action.choices)
+    return choices
 
 
 def _nested_subparser(
     parser: argparse.ArgumentParser, parent: str
 ) -> argparse.ArgumentParser:
+    """Return the child parser registered as ``parent`` under any
+    ``_SubParsersAction`` on ``parser``.
+
+    Like :func:`_subparser_choices`, we look across every subparser group
+    rather than the first one. We also check membership before indexing so
+    a missing ``parent`` yields the friendlier ``AssertionError`` below
+    instead of a raw ``KeyError`` from the first group that did not happen
+    to contain the command.
+    """
+
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
-            return action.choices[parent]
-    raise AssertionError(f"no subparsers action on parser; expected one with {parent!r}")
+            if parent in action.choices:
+                return action.choices[parent]
+    raise AssertionError(
+        f"no subparser named {parent!r} found on parser "
+        f"(checked {sum(1 for a in parser._actions if isinstance(a, argparse._SubParsersAction))} "
+        f"subparser group(s))"
+    )
 
 
 def test_top_level_subcommands_registered() -> None:
@@ -138,3 +164,79 @@ def test_pet_usage_accepts_json_flag() -> None:
     parser = cli.build_parser()
     args = parser.parse_args(["pet-usage", "--json"])
     assert getattr(args, "as_json", False) is True
+
+
+# --------------------------------------------------------------------------- #
+# Regression tests for PR #25 review feedback (Gemini)                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_subparser_choices_empty_when_no_subparsers() -> None:
+    """No ``_SubParsersAction`` on the parser -> empty set, not crash."""
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--flag")
+    assert _subparser_choices(p) == set()
+
+
+def _build_parser_with_two_subparser_groups() -> argparse.ArgumentParser:
+    """argparse rejects ``add_subparsers`` being called twice on the same
+    parser ("cannot have multiple subparser arguments"). The defensive
+    helpers still iterate across every ``_SubParsersAction`` for clarity
+    and forward-compat, so we exercise that path by building one group
+    normally and grafting a second ``_SubParsersAction`` onto the parser's
+    ``_actions`` list directly. This mirrors what a future argparse fork or
+    a manual hand-roll of a parser tree could look like and pins the
+    aggregation contract.
+    """
+
+    parser = argparse.ArgumentParser()
+    sub_a = parser.add_subparsers(dest="group_a")
+    sub_a.add_parser("alpha")
+    sub_a.add_parser("beta")
+
+    side = argparse.ArgumentParser()
+    sub_b = side.add_subparsers(dest="group_b")
+    sub_b.add_parser("gamma")
+    # Pull the side parser's _SubParsersAction off and graft it onto the
+    # primary parser's _actions list so _subparser_choices sees both.
+    for action in side._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            parser._actions.append(action)
+            break
+    return parser
+
+
+def test_subparser_choices_aggregates_across_multiple_groups() -> None:
+    """Gemini #25 medium: _subparser_choices must aggregate every
+    _SubParsersAction it finds, not return on the first one. The bug cannot
+    arise from the public argparse API today, but the helper's behavior is
+    pinned so it stays correct under refactors / argparse forks."""
+
+    parser = _build_parser_with_two_subparser_groups()
+    assert _subparser_choices(parser) == {"alpha", "beta", "gamma"}
+
+
+def test_nested_subparser_finds_command_in_later_group() -> None:
+    """Companion: _nested_subparser must also look across every
+    _SubParsersAction, not raise KeyError on the first that lacks the
+    command."""
+
+    parser = _build_parser_with_two_subparser_groups()
+    found = _nested_subparser(parser, "gamma")
+    assert isinstance(found, argparse.ArgumentParser)
+
+
+def test_nested_subparser_missing_raises_friendly_assertion() -> None:
+    """Gemini #25 medium: a missing subcommand must surface as the helper's
+    AssertionError with a useful diagnostic, not a raw KeyError from
+    argparse internals."""
+
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers(dest="group")
+    sub.add_parser("alpha")
+
+    import pytest
+
+    with pytest.raises(AssertionError, match=r"no subparser named 'missing'"):
+        _nested_subparser(p, "missing")
