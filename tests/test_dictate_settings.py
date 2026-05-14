@@ -39,3 +39,61 @@ def test_dataclasses_are_frozen() -> None:
     defaults = ds.default_settings()
     with pytest.raises(Exception):
         defaults.transcription.language = "en"  # type: ignore[misc]
+
+
+def test_save_and_load_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = tmp_path / "dictate.json"
+    monkeypatch.setattr(ds, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+
+    settings = ds.default_settings()
+    settings = ds.replace_section(
+        settings,
+        transcription=ds.TranscriptionSettings(
+            model_id="ggml-small",
+            model_path=str(tmp_path / "small.bin"),
+            language="en",
+            extra_buffer_ms=200,
+        ),
+    )
+    ds.save(settings)
+
+    loaded = ds.load()
+    assert loaded.transcription.model_id == "ggml-small"
+    assert loaded.transcription.model_path == str(tmp_path / "small.bin")
+    assert loaded.transcription.language == "en"
+    assert loaded.transcription.extra_buffer_ms == 200
+
+
+def test_load_missing_returns_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    loaded = ds.load()
+    assert loaded == ds.default_settings()
+
+
+def test_save_writes_0600(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = tmp_path / "dictate.json"
+    monkeypatch.setattr(ds, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    ds.save(ds.default_settings())
+    mode = stat.S_IMODE(cfg.stat().st_mode)
+    assert mode == 0o600
+
+
+def test_load_corrupt_json_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = tmp_path / "dictate.json"
+    cfg.write_text("{ not json")
+    monkeypatch.setattr(ds, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    with pytest.raises(ds.DictateSettingsError, match="parse"):
+        ds.load()
+
+
+def test_load_future_version_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = tmp_path / "dictate.json"
+    cfg.write_text(json.dumps({"version": 999}))
+    monkeypatch.setattr(ds, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    with pytest.raises(ds.DictateSettingsError, match="version"):
+        ds.load()
