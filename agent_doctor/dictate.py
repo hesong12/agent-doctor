@@ -246,6 +246,12 @@ def is_pid_alive(pid: int) -> bool:
 def _detect_recorder() -> str:
     override = os.environ.get(ENV_RECORDER)
     if override:
+        binary = "rec" if override == "sox" else override
+        if not shutil.which(binary):
+            raise DictateError(
+                f"recorder '{override}' specified via {ENV_RECORDER} but "
+                f"'{binary}' was not found on PATH"
+            )
         return override
     if shutil.which("rec"):
         return "sox"
@@ -332,7 +338,12 @@ def start_recording(
     argv = _build_recorder_argv(chosen, audio_path)
 
     _spawn = spawn or _default_spawn
-    proc = _spawn(argv)
+    try:
+        proc = _spawn(argv)
+    except FileNotFoundError as exc:
+        raise DictateError(
+            f"recorder binary '{argv[0]}' not found or not executable: {exc}"
+        ) from exc
 
     state = DictateState(
         pid=proc.pid,
@@ -584,8 +595,11 @@ def notify(
     if not shutil.which("osascript"):
         return
     fn = runner or _default_osascript
-    safe_title = title.replace('"', '\\"')
-    safe_message = message.replace('"', '\\"')
+    # AppleScript uses backslash as escape char; escape both backslashes
+    # and double quotes so file paths and LaTeX-style content do not break the
+    # outer 'display notification "..."' literal.
+    safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+    safe_message = message.replace("\\", "\\\\").replace('"', '\\"')
     script = f'display notification "{safe_message}" with title "{safe_title}"'
     fn(["osascript", "-e", script])
 

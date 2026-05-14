@@ -515,10 +515,12 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument(
                 "--mode",
                 choices=list(_DICTATE_SUPPORTED_MODES),
-                default=_DICTATE_DEFAULT_MODE,
+                default=None,
                 help=(
                     "Prompt-rewriting style. 'raw' skips the LLM and copies the "
-                    "transcript verbatim. Default: %(default)s."
+                    "transcript verbatim. When omitted, 'stop'/'toggle' reuses "
+                    f"the mode the recording was started in (default for new "
+                    f"recordings: {_DICTATE_DEFAULT_MODE})."
                 ),
             )
         p.add_argument(
@@ -1554,8 +1556,9 @@ def _cmd_mcp_serve(_: argparse.Namespace) -> int:
 def _cmd_dictate_start(args: argparse.Namespace) -> int:
     from . import dictate as _d
 
+    mode = getattr(args, "mode", None) or _d.DEFAULT_MODE
     try:
-        state = _d.start_recording(mode=args.mode)
+        state = _d.start_recording(mode=mode)
     except _d.DictateError as exc:
         print(f"agent-doctor: {exc}", file=sys.stderr)
         return 2
@@ -1581,7 +1584,15 @@ def _cmd_dictate_stop(args: argparse.Namespace) -> int:
 def _cmd_dictate_toggle(args: argparse.Namespace) -> int:
     from . import dictate as _d
 
-    state = _d.read_state()
+    try:
+        state = _d.read_state()
+    except _d.DictateError as exc:
+        # Corrupt state file: surface the error and exit non-zero so a user can
+        # recover with 'dictate cancel'. Do NOT fall through to start_recording
+        # because start would re-raise on the same stale file.
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        print("agent-doctor: run 'agent-doctor dictate cancel' to clear stale state", file=sys.stderr)
+        return 2
     if state is not None and _d.is_pid_alive(state.pid):
         return _dictate_finish(args)
     return _cmd_dictate_start(args)
@@ -1590,7 +1601,21 @@ def _cmd_dictate_toggle(args: argparse.Namespace) -> int:
 def _cmd_dictate_status(_args: argparse.Namespace) -> int:
     from . import dictate as _d
 
-    state = _d.read_state()
+    try:
+        state = _d.read_state()
+    except _d.DictateError as exc:
+        print(
+            json.dumps(
+                {
+                    "recording": False,
+                    "error": str(exc),
+                    "hint": "run 'agent-doctor dictate cancel' to clear stale state",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
     print(json.dumps(_d.summarize_state(state), indent=2, sort_keys=True))
     return 0
 
@@ -1598,7 +1623,14 @@ def _cmd_dictate_status(_args: argparse.Namespace) -> int:
 def _cmd_dictate_cancel(_args: argparse.Namespace) -> int:
     from . import dictate as _d
 
-    state = _d.read_state()
+    try:
+        state = _d.read_state()
+    except _d.DictateError as exc:
+        # Corrupt state file: best-effort clear and inform the user.
+        _d.clear_state()
+        print(f"agent-doctor: cleared corrupt state ({exc})", file=sys.stderr)
+        print(json.dumps({"cancelled": True, "had_corrupt_state": True}, indent=2))
+        return 0
     if state is None:
         print("no dictate recording in flight", file=sys.stderr)
         return 0
@@ -1617,14 +1649,38 @@ def _cmd_dictate_cancel(_args: argparse.Namespace) -> int:
 
 
 def _dictate_finish(args: argparse.Namespace) -> int:
+    """Stop the recorder, transcribe once, optionally enhance, copy to clipboard.
+
+    Error handling contract:
+    - Recorder-side failures (no audio captured) abort with a non-zero rc; the
+      audio file does not exist so nothing to clean up.
+    - Transcription failures (whisper crash or empty text) abort with a non-zero
+      rc; the WAV stays on disk so the user can debug, and state is cleared.
+    - Enhancer failures only fall back to the raw transcript (the original
+      goal of the graceful-degradation contract). Other errors propagate.
+    - Clipboard write failures abort with a non-zero rc but still clean up
+      audio + state.
+    """
+
     from . import dictate as _d
 
-    state = _d.read_state()
+    try:
+        state = _d.read_state()
+    except _d.DictateError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        print("agent-doctor: run 'agent-doctor dictate cancel' to clear stale state", file=sys.stderr)
+        return 2
     if state is None:
         print("agent-doctor: no dictate recording in flight", file=sys.stderr)
         return 2
 
-    mode = getattr(args, "mode", None) or state.mode
+    # Preserve the mode the recording was *started* in unless the user
+    # explicitly overrode it on the stop/toggle invocation. argparse default
+    # is None for --mode (see _add_common_dictate_args) so getattr returning
+    # None means "user did not pass --mode".
+    cli_mode = getattr(args, "mode", None)
+    mode = cli_mode if cli_mode is not None else state.mode
+
     try:
         audio_path = _d.stop_recording()
     except _d.DictateError as exc:
@@ -1632,84 +1688,104 @@ def _dictate_finish(args: argparse.Namespace) -> int:
         print(f"agent-doctor: {exc}", file=sys.stderr)
         return 2
 
+    keep_audio = bool(getattr(args, "keep_audio", False))
+    audio_pathobj = Path(audio_path)
     enhance = not getattr(args, "no_enhance", False)
     llm_config = _d.llm_config_from_env(
         url=getattr(args, "llm_url", None),
         model=getattr(args, "llm_model", None),
         api_key=getattr(args, "llm_key", None),
     )
+    whisper_model = getattr(args, "whisper_model", None)
+    language = getattr(args, "language", None)
+
+    rc = 0
+    enhancer_failed_reason = None
+    result = None
 
     try:
-        result = _d.run_pipeline(
-            Path(audio_path),
-            mode=mode,
-            enhance=enhance,
-            llm_config=llm_config,
-            language=getattr(args, "language", None),
-            transcriber=(
-                (lambda ap, mn, lang: _d.transcribe(ap, model_name=getattr(args, "whisper_model", None) or mn, language=lang))
-                if getattr(args, "whisper_model", None)
-                else None
-            ),
+        # Single transcription pass. Failures (incl. empty transcript) propagate
+        # because we do NOT want to silently copy an empty prompt to the clipboard.
+        transcript = _d.transcribe(
+            audio_pathobj,
+            model_name=whisper_model,
+            language=language,
         )
-    except _d.DictateError as exc:
-        # Enhancement failed (e.g. ds4 not running). Fall back to raw transcript
-        # so the user still gets something on the clipboard.
-        try:
-            transcript = _d.transcribe(
-                Path(audio_path),
-                model_name=getattr(args, "whisper_model", None),
-                language=getattr(args, "language", None),
-            )
-        except _d.DictateError as exc2:
-            _d.clear_state()
-            print(f"agent-doctor: {exc2}", file=sys.stderr)
-            return 2
+        if not transcript.strip():
+            raise _d.DictateError("transcription produced no text; nothing to enhance")
+
+        prompt = transcript
+        enhanced = False
+        if enhance and not _d.is_raw_mode(mode):
+            try:
+                prompt = _d.enhance_prompt(
+                    transcript,
+                    mode=mode,
+                    config=llm_config,
+                )
+                enhanced = bool(prompt)
+                if not enhanced:
+                    prompt = transcript
+            except _d.DictateError as exc:
+                enhancer_failed_reason = str(exc)
+                prompt = transcript
+                enhanced = False
+
         result = _d.DictateResult(
             transcript=transcript,
-            prompt=transcript,
+            prompt=prompt,
             mode=mode,
-            audio_path=Path(audio_path),
-            enhanced=False,
+            audio_path=audio_pathobj,
+            enhanced=enhanced,
         )
-        print(f"agent-doctor: enhancement failed, copied raw transcript ({exc})", file=sys.stderr)
 
-    try:
-        _d.copy_to_clipboard(result.prompt)
+        try:
+            _d.copy_to_clipboard(result.prompt)
+        except _d.DictateError as exc:
+            print(f"agent-doctor: {exc}", file=sys.stderr)
+            rc = 2
+            return rc
+
+        _d.notify(
+            "Dictate ready" if result.enhanced else "Dictate (raw)",
+            f"{len(result.prompt)} chars on clipboard ({result.mode})",
+        )
+
+        if enhancer_failed_reason:
+            print(
+                f"agent-doctor: enhancement failed, copied raw transcript ({enhancer_failed_reason})",
+                file=sys.stderr,
+            )
+        if getattr(args, "print_transcript", False):
+            print(result.transcript, file=sys.stderr)
+
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "enhanced": result.enhanced,
+                    "mode": result.mode,
+                    "prompt_chars": len(result.prompt),
+                    "transcript_chars": len(result.transcript),
+                    "enhancer_failed": enhancer_failed_reason is not None,
+                },
+                indent=2,
+            )
+        )
+        return 0
     except _d.DictateError as exc:
-        _d.clear_state()
+        # Transcription error or other hard failure. Surface and exit non-zero.
         print(f"agent-doctor: {exc}", file=sys.stderr)
         return 2
-
-    _d.notify(
-        "Dictate ready" if result.enhanced else "Dictate (raw)",
-        f"{len(result.prompt)} chars on clipboard ({result.mode})",
-    )
-
-    if getattr(args, "print_transcript", False):
-        print(result.transcript, file=sys.stderr)
-
-    if not getattr(args, "keep_audio", False):
-        try:
-            Path(result.audio_path).unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    _d.clear_state()
-
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "enhanced": result.enhanced,
-                "mode": result.mode,
-                "prompt_chars": len(result.prompt),
-                "transcript_chars": len(result.transcript),
-            },
-            indent=2,
-        )
-    )
-    return 0
+    finally:
+        # Always release the state file so the next 'start' is unblocked.
+        _d.clear_state()
+        # Audio cleanup runs in finally so all early-return paths still hit it.
+        if not keep_audio:
+            try:
+                audio_pathobj.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _cmd_eval_generate(args: argparse.Namespace) -> int:

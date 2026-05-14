@@ -498,3 +498,307 @@ def test_cli_dictate_cancel_no_state(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     rc = main(["dictate", "cancel"])
     assert rc == 0
+
+
+# --------------------------------------------------------------------------- #
+# Regression tests for PR #24 review feedback (Gemini + Codex)                #
+# --------------------------------------------------------------------------- #
+
+
+def test_start_recording_wraps_missing_binary_in_dictate_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gemini medium: ``subprocess.Popen`` raising FileNotFoundError must be
+    surfaced as a DictateError, not a raw traceback."""
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: False)
+
+    def boom(argv: List[str]) -> _FakeProc:
+        raise FileNotFoundError(2, "No such file or directory: 'rec'")
+
+    with pytest.raises(DictateError, match="recorder binary 'rec' not found"):
+        start_recording(
+            mode="chat",
+            state_dir=tmp_path,
+            audio_dir=tmp_path,
+            recorder="sox",
+            spawn=boom,
+        )
+
+
+def test_notify_escapes_backslashes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gemini medium: AppleScript uses '\\' as an escape char. A title with a
+    literal backslash (e.g. a Windows path or LaTeX) must be escaped so the
+    'display notification "..."' literal still parses."""
+
+    if sys.platform != "darwin":
+        pytest.skip("osascript path only fires on Darwin")
+
+    monkeypatch.setattr(dictate.shutil, "which", lambda name: "/usr/bin/osascript")
+    captured: List[List[str]] = []
+
+    def fake_runner(argv: List[str]) -> int:
+        captured.append(argv)
+        return 0
+
+    dictate.notify("path C:\\Users\\song", 'with "quotes"', runner=fake_runner)
+    assert captured, "notify should have invoked the runner"
+    script = captured[0][2]
+    # Original backslashes must be doubled and quotes must be backslash-escaped.
+    assert r"C:\\Users\\song" in script
+    assert r"\"quotes\"" in script
+
+
+def test_cli_dictate_status_corrupt_state_returns_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex P2: 'dictate status' must not crash on a corrupt state file."""
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    sf = state_file(tmp_path)
+    sf.parent.mkdir(parents=True, exist_ok=True)
+    sf.write_text("definitely not json {")
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "status"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 2
+    assert payload["recording"] is False
+    assert "error" in payload
+    assert "cancel" in payload.get("hint", "")
+
+
+def test_cli_dictate_cancel_clears_corrupt_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P2 follow-on: 'dictate cancel' must clear a corrupt state file."""
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    sf = state_file(tmp_path)
+    sf.parent.mkdir(parents=True, exist_ok=True)
+    sf.write_text("not json {")
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "cancel"])
+    assert rc == 0
+    assert not sf.exists()
+
+
+def test_cli_dictate_toggle_preserves_persisted_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex P2: when 'dictate toggle' fires the stop branch and the user did
+    NOT pass --mode, the persisted mode (from start) must be reused, not the
+    argparse default ('chat')."""
+
+    # Arrange: persisted state with mode='coding' and a real WAV pre-created.
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    saved = DictateState(
+        pid=99999,
+        audio_path=str(audio),
+        mode="coding",
+        started_at=time.time(),
+        recorder="sox",
+        extras={},
+    )
+    write_state(saved, state_dir=tmp_path)
+
+    # Pretend the recorder is alive so toggle dispatches to _dictate_finish.
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    # Pretend stop_recording cleanly returns the audio.
+    monkeypatch.setattr(
+        dictate,
+        "stop_recording",
+        lambda **kw: audio,
+    )
+    # Pretend transcribe + enhance work; capture the mode used.
+    monkeypatch.setattr(
+        dictate,
+        "transcribe",
+        lambda *a, **kw: "hello world",
+    )
+    captured_mode: Dict[str, str] = {}
+
+    def fake_enhance(transcript: str, *, mode: str, config: Any = None, caller: Any = None) -> str:
+        captured_mode["mode"] = mode
+        return f"[{mode}] hello"
+
+    monkeypatch.setattr(dictate, "enhance_prompt", fake_enhance)
+    # No-op clipboard.
+    monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "toggle"])  # no --mode flag
+    assert rc == 0
+    assert captured_mode["mode"] == "coding", (
+        "toggle without --mode should reuse the mode from the persisted state, "
+        f"got {captured_mode.get('mode')!r}"
+    )
+
+
+def test_cli_dictate_toggle_explicit_mode_overrides_persisted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Companion test: passing --mode at toggle time must override the
+    persisted mode."""
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    saved = DictateState(
+        pid=99999, audio_path=str(audio), mode="coding",
+        started_at=time.time(), recorder="sox", extras={},
+    )
+    write_state(saved, state_dir=tmp_path)
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hello")
+    seen: Dict[str, str] = {}
+    monkeypatch.setattr(
+        dictate,
+        "enhance_prompt",
+        lambda transcript, *, mode, config=None, caller=None: seen.setdefault("mode", mode) or "x",
+    )
+    monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "toggle", "--mode", "research"])
+    assert rc == 0
+    assert seen["mode"] == "research"
+
+
+def test_cli_dictate_stop_does_not_double_transcribe_on_enhancer_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gemini high: if the LLM enhancer fails, the CLI must NOT call
+    ``transcribe`` a second time. The transcript from the single pass must be
+    reused as the raw-fallback prompt."""
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    saved = DictateState(
+        pid=99999, audio_path=str(audio), mode="chat",
+        started_at=time.time(), recorder="sox", extras={},
+    )
+    write_state(saved, state_dir=tmp_path)
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+
+    transcribe_calls = {"count": 0}
+
+    def counting_transcribe(*args: Any, **kwargs: Any) -> str:
+        transcribe_calls["count"] += 1
+        return "the real transcript"
+
+    monkeypatch.setattr(dictate, "transcribe", counting_transcribe)
+
+    def failing_enhance(*args: Any, **kwargs: Any) -> str:
+        raise DictateError("ds4 server unreachable")
+
+    monkeypatch.setattr(dictate, "enhance_prompt", failing_enhance)
+
+    clipboard_calls: List[str] = []
+    monkeypatch.setattr(
+        dictate,
+        "copy_to_clipboard",
+        lambda text, **kw: clipboard_calls.append(text),
+    )
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "stop"])
+    assert rc == 0
+    assert transcribe_calls["count"] == 1, (
+        f"transcribe should run exactly once; got {transcribe_calls['count']}"
+    )
+    assert clipboard_calls == ["the real transcript"], (
+        f"raw transcript must be the clipboard fallback; got {clipboard_calls}"
+    )
+
+
+def test_cli_dictate_stop_does_not_copy_empty_prompt_on_transcription_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex P1: a transcription failure (empty result) must NOT be caught by
+    the enhancer-fallback path. The clipboard must remain untouched and the
+    CLI must exit non-zero."""
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    saved = DictateState(
+        pid=99999, audio_path=str(audio), mode="chat",
+        started_at=time.time(), recorder="sox", extras={},
+    )
+    write_state(saved, state_dir=tmp_path)
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "   ")  # all whitespace
+
+    clipboard_calls: List[str] = []
+    monkeypatch.setattr(
+        dictate,
+        "copy_to_clipboard",
+        lambda text, **kw: clipboard_calls.append(text),
+    )
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+    # If enhance gets called we'd see it in failures.
+    monkeypatch.setattr(
+        dictate,
+        "enhance_prompt",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not enhance empty transcript")),
+    )
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "stop"])
+    assert rc == 2
+    assert clipboard_calls == [], "must not copy anything for an empty transcript"
+
+
+def test_cli_dictate_stop_cleans_up_audio_on_clipboard_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gemini high #2: audio file + state must be cleaned up even when the
+    clipboard step fails."""
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    saved = DictateState(
+        pid=99999, audio_path=str(audio), mode="chat",
+        started_at=time.time(), recorder="sox", extras={},
+    )
+    write_state(saved, state_dir=tmp_path)
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hello")
+    monkeypatch.setattr(dictate, "enhance_prompt", lambda *a, **kw: "rewritten")
+
+    def failing_clipboard(text: str, **kw: Any) -> None:
+        raise DictateError("pbcopy died")
+
+    monkeypatch.setattr(dictate, "copy_to_clipboard", failing_clipboard)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "stop"])
+    assert rc == 2
+    assert not audio.exists(), "audio must be cleaned up even on clipboard failure"
+    assert read_state(state_dir=tmp_path) is None, "state must be cleared even on clipboard failure"
