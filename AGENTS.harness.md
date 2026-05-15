@@ -25,3 +25,5 @@ If a rule below conflicts with a rule in `~/.openclaw/workspace/AGENTS.md`, the 
 ## Self-test
 
 To verify these rules are reaching your agent: respond with the string `HARNESS_AGENTS_INCLUDE_SEEN` followed by the current repo name when first asked.
+
+<!-- harness template version: 2026-05-15 (sync-all live test) -->
