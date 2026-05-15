@@ -1,10 +1,13 @@
 name: harness-evidence
 
-# Hybrid runner pattern (per docs/operations/ci-self-hosted-fallback.md):
+# Hybrid runner pattern v2 (ADR-0008 propagation, 2026-05-15):
 #   primary  → ubuntu-latest (GitHub-hosted)
 #   fallback → self-hosted (Hermes, label "harness") — runs only when primary
 #              cannot start (billing block, hosted-runner outage, etc.)
 #   aggregate → required check that passes iff at least one of the two passed.
+#
+# Bot-aware unresolved-thread detection: only HUMAN unresolved threads block.
+# Bot threads (gemini, codex, greptile, etc.) are advisory only.
 #
 # The required branch-protection check is the "harness-evidence" job at the
 # bottom (the aggregator). Do not point branch protection at the primary or
@@ -25,19 +28,44 @@ jobs:
     # `needs.<job>.result` evaluates as success for downstream `if:` and the
     # fallback never runs. See memory/2026-05-13.md (Syntra footgun #2).
     steps:
-      - name: Validate harness evidence and review thread state
+      - name: Validate harness evidence (primary)
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            // Bot-aware harness-evidence check body — shared between primary and fallback.
+            // Promoted from Syntra workflow (2026-05-15) per ADR-0008 propagation.
             const prNumber = context.payload.pull_request.number;
             const owner    = context.repo.owner;
             const repo     = context.repo.repo;
             const body     = context.payload.pull_request.body || '';
             let   failed   = false;
 
-            // ── 1. Unresolved review threads ────────────────────────────────
-            let unresolved = 0;
+            // ── 1. Unresolved review threads (bot-aware) ──────────────────────────
+            // Only HUMAN-author unresolved threads block merge. Bot threads are
+            // advisory — surfaced as a notice, never blocking. Rationale: bots are
+            // valuable signal but treating them as blocking creates bottlenecks,
+            // signal fatigue, or auto-resolve anti-patterns at scale.
+            const BOT_LOGINS = new Set([
+              'gemini-code-assist',
+              'chatgpt-codex-connector',
+              'greptile-apps',
+              'github-actions',
+              'dependabot',
+              'claude-code',
+              'codex',
+            ]);
+            const isBotAuthor = (author) => {
+              if (!author) return false;
+              if (author.__typename === 'Bot') return true;
+              const login = String(author.login || '').toLowerCase();
+              if (BOT_LOGINS.has(login)) return true;
+              if (login.endsWith('[bot]') || login.endsWith('-bot')) return true;
+              return false;
+            };
+
+            let humanUnresolved = 0;
+            let botUnresolved   = 0;
             try {
               const { repository: { pullRequest: { reviewThreads: { nodes } } } } =
                 await github.graphql(`
@@ -45,38 +73,48 @@ jobs:
                     repository(owner: $owner, name: $repo) {
                       pullRequest(number: $number) {
                         reviewThreads(first: 100) {
-                          nodes { isResolved isOutdated }
+                          nodes {
+                            isResolved
+                            isOutdated
+                            comments(first: 1) {
+                              nodes {
+                                author { login __typename }
+                              }
+                            }
+                          }
                         }
                       }
                     }
                   }`, { owner, repo, number: prNumber });
-              unresolved = nodes.filter(t => !t.isResolved && !t.isOutdated).length;
+              for (const t of nodes) {
+                if (t.isResolved || t.isOutdated) continue;
+                const author = t.comments?.nodes?.[0]?.author;
+                if (isBotAuthor(author)) botUnresolved++;
+                else humanUnresolved++;
+              }
             } catch (e) {
               core.warning(`Could not fetch review threads: ${e.message}`);
             }
 
-            if (unresolved > 0) {
-              core.error(`${unresolved} unresolved review thread(s) — resolve all threads before merge.`);
+            if (humanUnresolved > 0) {
+              core.error(`${humanUnresolved} unresolved human review thread(s) — resolve before merge.`);
               failed = true;
+            } else if (botUnresolved > 0) {
+              core.notice(`review threads: 0 human unresolved ✓ (${botUnresolved} bot thread(s) — advisory only)`);
             } else {
               core.info(`review threads: 0 unresolved ✓`);
             }
 
-            // ── 2. Harness evidence in PR body ──────────────────────────────
+            // ── 2. Harness evidence in PR body ────────────────────────────────────
             const EVIDENCE = [
               'ready_for_song',
               'job-contract.json',
               'closure.json',
               'dev-autopilot submit',
             ];
-            const BYPASS = [
-              'harness-bypass:',
-              '--no-contract',
-            ];
-
+            const BYPASS = ['harness-bypass:', '--no-contract'];
             const hasEvidence = EVIDENCE.some(m => body.includes(m));
             const hasBypass   = BYPASS.some(m => body.includes(m));
-
             if (!hasEvidence && !hasBypass) {
               core.error([
                 'No harness evidence in PR body.',
@@ -100,22 +138,44 @@ jobs:
     if: always() && needs.check-primary.result != 'success'
     runs-on: [self-hosted, linux, x64, harness]
     steps:
-      - name: Validate harness evidence and review thread state (self-hosted)
+      - name: Validate harness evidence (fallback, self-hosted)
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            // Identical logic to check-primary. Kept inline rather than via a
-            // composite action because the check is small JS-only and a
-            // composite action would add a clone step the self-hosted runner
-            // does not need.
+            // Bot-aware harness-evidence check body — shared between primary and fallback.
+            // Promoted from Syntra workflow (2026-05-15) per ADR-0008 propagation.
             const prNumber = context.payload.pull_request.number;
             const owner    = context.repo.owner;
             const repo     = context.repo.repo;
             const body     = context.payload.pull_request.body || '';
             let   failed   = false;
 
-            let unresolved = 0;
+            // ── 1. Unresolved review threads (bot-aware) ──────────────────────────
+            // Only HUMAN-author unresolved threads block merge. Bot threads are
+            // advisory — surfaced as a notice, never blocking. Rationale: bots are
+            // valuable signal but treating them as blocking creates bottlenecks,
+            // signal fatigue, or auto-resolve anti-patterns at scale.
+            const BOT_LOGINS = new Set([
+              'gemini-code-assist',
+              'chatgpt-codex-connector',
+              'greptile-apps',
+              'github-actions',
+              'dependabot',
+              'claude-code',
+              'codex',
+            ]);
+            const isBotAuthor = (author) => {
+              if (!author) return false;
+              if (author.__typename === 'Bot') return true;
+              const login = String(author.login || '').toLowerCase();
+              if (BOT_LOGINS.has(login)) return true;
+              if (login.endsWith('[bot]') || login.endsWith('-bot')) return true;
+              return false;
+            };
+
+            let humanUnresolved = 0;
+            let botUnresolved   = 0;
             try {
               const { repository: { pullRequest: { reviewThreads: { nodes } } } } =
                 await github.graphql(`
@@ -123,37 +183,48 @@ jobs:
                     repository(owner: $owner, name: $repo) {
                       pullRequest(number: $number) {
                         reviewThreads(first: 100) {
-                          nodes { isResolved isOutdated }
+                          nodes {
+                            isResolved
+                            isOutdated
+                            comments(first: 1) {
+                              nodes {
+                                author { login __typename }
+                              }
+                            }
+                          }
                         }
                       }
                     }
                   }`, { owner, repo, number: prNumber });
-              unresolved = nodes.filter(t => !t.isResolved && !t.isOutdated).length;
+              for (const t of nodes) {
+                if (t.isResolved || t.isOutdated) continue;
+                const author = t.comments?.nodes?.[0]?.author;
+                if (isBotAuthor(author)) botUnresolved++;
+                else humanUnresolved++;
+              }
             } catch (e) {
               core.warning(`Could not fetch review threads: ${e.message}`);
             }
 
-            if (unresolved > 0) {
-              core.error(`${unresolved} unresolved review thread(s) — resolve all threads before merge.`);
+            if (humanUnresolved > 0) {
+              core.error(`${humanUnresolved} unresolved human review thread(s) — resolve before merge.`);
               failed = true;
+            } else if (botUnresolved > 0) {
+              core.notice(`review threads: 0 human unresolved ✓ (${botUnresolved} bot thread(s) — advisory only)`);
             } else {
               core.info(`review threads: 0 unresolved ✓`);
             }
 
+            // ── 2. Harness evidence in PR body ────────────────────────────────────
             const EVIDENCE = [
               'ready_for_song',
               'job-contract.json',
               'closure.json',
               'dev-autopilot submit',
             ];
-            const BYPASS = [
-              'harness-bypass:',
-              '--no-contract',
-            ];
-
+            const BYPASS = ['harness-bypass:', '--no-contract'];
             const hasEvidence = EVIDENCE.some(m => body.includes(m));
             const hasBypass   = BYPASS.some(m => body.includes(m));
-
             if (!hasEvidence && !hasBypass) {
               core.error([
                 'No harness evidence in PR body.',
@@ -162,24 +233,22 @@ jobs:
               ].join('\n'));
               failed = true;
             } else {
-              core.info(`harness-evidence: PASS via fallback runner (${hasEvidence ? 'evidence' : 'bypass'}) ✓`);
+              core.info(`harness-evidence: PASS (${hasEvidence ? 'evidence' : 'bypass'}) ✓`);
             }
 
             if (failed) {
-              core.setFailed('harness-evidence (fallback) check failed — see errors above.');
+              core.setFailed('harness-evidence check failed — see errors above.');
             }
 
-  # ── Aggregator ────────────────────────────────────────────────────────────
+  # ── Aggregator ──────────────────────────────────────────────────────────
   # This is the job branch protection must require. It passes iff at least
   # one of {primary, fallback} produced a 'success' result.
+  # Runs on self-hosted so a billing block on ubuntu-latest does not leave
+  # the required check permanently pending.
   harness-evidence:
     name: harness-evidence
     needs: [check-primary, check-fallback]
     if: always()
-    # Aggregator runs on self-hosted because that is the runner class that
-    # remains available when GitHub-hosted runners are blocked by billing.
-    # Running on ubuntu-latest would leave the required check permanently
-    # pending during a billing outage.
     runs-on: [self-hosted, linux, x64, harness]
     steps:
       - name: Aggregate primary/fallback results
