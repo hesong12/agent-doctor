@@ -407,6 +407,26 @@ When you trigger a dictation, the pet sprite shows a pulsing cyan ring (`listeni
 
 Disable per-state via `~/.agent-doctor/dictate.json` (`pet.animate_listening`, `pet.animate_thinking`).
 
+#### Global hotkey (macOS)
+
+```bash
+# One-time install: compiles the Swift helper and registers a LaunchAgent.
+agent-doctor dictate hotkey install
+
+# Change the chord.
+agent-doctor dictate hotkey set "ctrl+option+space"
+
+# Show status + binding.
+agent-doctor dictate hotkey show
+
+# Stop and remove the daemon.
+agent-doctor dictate hotkey uninstall
+```
+
+The helper is a ~150 LOC Swift binary compiled with `swiftc` (requires Xcode Command Line Tools). It reads `~/.agent-doctor/dictate.json` on launch and on SIGHUP, so `set` updates take effect without re-installing.
+
+You will be prompted to grant **Input Monitoring** in System Settings -> Privacy & Security the first time the daemon registers an `NSEvent` monitor.
+
 ## Privacy model
 
 Agent Doctor is local-only by design.
