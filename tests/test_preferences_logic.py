@@ -9,7 +9,10 @@ import pytest
 
 from agent_doctor import dictate_settings as ds
 from agent_doctor.ui.preferences import dictation_tab as dt
+from agent_doctor.ui.preferences import hotkey_tab as ht
 from agent_doctor.ui.preferences import llm_tab as lt
+from agent_doctor.ui.preferences import paste_tab as pat
+from agent_doctor.ui.preferences import pet_tab as petab
 
 
 def test_dictation_state_initialises_from_settings(
@@ -118,3 +121,56 @@ def test_llm_state_probe_returns_rows() -> None:
     rows = lt.probe_providers(timeout=0.5)
     ids = {r.provider_id for r in rows}
     assert ids == {"lm_studio", "ollama", "custom"}
+
+
+def test_hotkey_state_apply_persists_and_validates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    ht.HotkeyState(binding="ctrl+option+space", push_to_talk=False).apply()
+    s = ds.load()
+    assert s.hotkey.binding == "ctrl+option+space"
+    assert s.hotkey.push_to_talk is False
+
+    with pytest.raises(ht.HotkeyStateError, match="conflict"):
+        ht.HotkeyState(binding="cmd+space", push_to_talk=True).apply()
+
+
+def test_paste_state_disable_round_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    pat.PasteState(auto_paste=False, paste_delay_ms=80).apply()
+    s = ds.load()
+    assert s.paste.auto_paste is False
+    assert s.paste.paste_delay_ms == 80
+
+
+def test_paste_state_enable_requires_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(
+        "agent_doctor.dictate_paste._default_osascript",
+        lambda _argv: 1,  # simulate permission denied
+    )
+    monkeypatch.setattr(
+        "agent_doctor.dictate_paste._default_pbcopy",
+        lambda _argv, _data: 0,
+    )
+    with pytest.raises(pat.PasteStateError, match="permission"):
+        pat.PasteState(auto_paste=True, paste_delay_ms=60).apply()
+
+
+def test_pet_state_toggle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    petab.PetUiState(animate_listening=False, animate_thinking=True).apply()
+    s = ds.load()
+    assert s.pet.animate_listening is False
+    assert s.pet.animate_thinking is True
