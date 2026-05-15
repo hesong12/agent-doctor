@@ -1,43 +1,33 @@
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
+<!-- managed by harness install: CLAUDE.md = AGENTS.harness.md -->
+<!-- Claude Code auto-discovers this file; we mirror AGENTS.harness.md here -->
+<!-- so harness rules reach Claude Code sessions spawned via ACP / direct CLI. -->
 
-This project is indexed by GitNexus as **agent-doctor** (5878 symbols, 9041 relationships, 203 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+# Harness Rules — Auto-Installed (do not edit by hand)
 
-> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+**This file is managed by `harness install`. Regenerated on every run. Do not edit; edit `templates/install/AGENTS.harness.md` in `song-ai-harness` instead.**
 
-## Always Do
+Any agent (Claude Code, Codex, sub-agents, Hermes daemons) reading the parent `AGENTS.md` MUST follow these rules, IN ADDITION TO repo-specific instructions in the rest of `AGENTS.md`.
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+## Hard rules (machine-enforced where possible)
 
-## Never Do
+1. **PR Harness mandatory** — every code PR must go through `dev-autopilot submit <repo>`. The pre-push hook in `.git/hooks/pre-push` blocks pushes without a job-contract. To bypass, set `HARNESS_BYPASS=1` in the environment AND document the bypass in the PR body.
+2. **No direct push to `main`** — enforced by branch protection in production/development repos.
+3. **Required check `harness-evidence`** — PR body must include one of: `ready_for_song` · `job-contract.json` · `closure.json` · `dev-autopilot submit` · `harness-bypass:` · `--no-contract`. Workflow uses hybrid runner (GitHub-hosted primary → Hermes self-hosted fallback) per `docs/operations/ci-self-hosted-fallback.md` in song-ai-harness.
+4. **Review thread resolution** — every review comment must be ACCEPTed (with fix) or REJECTed (with reasoning) AND the corresponding GitHub review thread MUST be marked resolved. `pr-review-loop.sh` does this automatically; manual reviewers must do it explicitly.
+5. **Local codex-review closeout** — before first push of a job-contract execution, run `codex review` per `docs/operations/codex-review-closeout.md` (in song-ai-harness). Loop until clean, then hard-stop.
+6. **Project phase / merge authority** — query orchestrator SSOT (`orchestrator project show <name>`) before assuming AI may merge. `meta-self` and `production` repos require Song approval; `development` repos require all gates green.
 
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+## Where the canonical rules live
 
-## Resources
+- `~/.openclaw/workspace/AGENTS.md` — global workspace rules
+- `~/Projects/song-ai-harness/AGENTS.md` — harness-owner rules
+- `~/Projects/song-ai-harness/docs/operations/*.md` — per-topic SOPs
+- `~/Projects/song-ai-harness/docs/decisions/*.md` — ADRs
 
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/agent-doctor/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/agent-doctor/clusters` | All functional areas |
-| `gitnexus://repo/agent-doctor/processes` | All execution flows |
-| `gitnexus://repo/agent-doctor/process/{name}` | Step-by-step execution trace |
+If a rule below conflicts with a rule in `~/.openclaw/workspace/AGENTS.md`, the workspace AGENTS.md wins for OpenClaw/Luna; the harness AGENTS.md wins for non-OpenClaw agents (Codex, Claude Code).
 
-## CLI
+## Self-test
 
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+To verify these rules are reaching your agent: respond with the string `HARNESS_AGENTS_INCLUDE_SEEN` followed by the current repo name when first asked.
 
-<!-- gitnexus:end -->
+<!-- harness template version: 2026-05-15 (sync-all live test) -->
