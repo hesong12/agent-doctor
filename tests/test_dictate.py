@@ -285,17 +285,32 @@ def test_transcribe_respects_env_model(tmp_path: Path, monkeypatch: pytest.Monke
 # --------------------------------------------------------------------------- #
 
 
-def test_llm_config_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_llm_config_from_env_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Point settings at a clean tmp dir so ``load()`` returns built-in
+    # defaults (provider=lm_studio, base_url=http://localhost:1234/v1,
+    # model=None). With no env override the shim should mirror those.
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
     monkeypatch.delenv("AGENT_DOCTOR_DICTATE_LLM_URL", raising=False)
     monkeypatch.delenv("AGENT_DOCTOR_DICTATE_LLM_MODEL", raising=False)
     monkeypatch.delenv("AGENT_DOCTOR_DICTATE_LLM_KEY", raising=False)
     cfg = llm_config_from_env()
-    assert cfg.url == DEFAULT_LLM_URL
-    assert cfg.model == "ds4"
+    assert cfg.url == "http://localhost:1234/v1/chat/completions"
+    assert cfg.model == "default"
     assert cfg.api_key is None
 
 
-def test_llm_config_from_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_llm_config_from_env_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
     monkeypatch.setenv("AGENT_DOCTOR_DICTATE_LLM_URL", "http://example/v1/chat/completions")
     monkeypatch.setenv("AGENT_DOCTOR_DICTATE_LLM_MODEL", "claude-opus-4-7")
     monkeypatch.setenv("AGENT_DOCTOR_DICTATE_LLM_KEY", "sk-xxx")

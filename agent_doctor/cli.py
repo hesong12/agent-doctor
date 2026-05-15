@@ -1911,7 +1911,8 @@ def _dictate_finish(args: argparse.Namespace) -> int:
     keep_audio = bool(getattr(args, "keep_audio", False))
     audio_pathobj = Path(audio_path)
     enhance = not getattr(args, "no_enhance", False)
-    llm_config = _d.llm_config_from_env(
+    from . import dictate_llm as _dl
+    llm_config = _dl.llm_config(
         url=getattr(args, "llm_url", None),
         model=getattr(args, "llm_model", None),
         api_key=getattr(args, "llm_key", None),

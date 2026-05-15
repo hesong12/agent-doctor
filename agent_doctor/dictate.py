@@ -673,11 +673,10 @@ def llm_config_from_env(
     model: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> LLMConfig:
-    return LLMConfig(
-        url=url or os.environ.get(ENV_LLM_URL) or DEFAULT_LLM_URL,
-        model=model or os.environ.get(ENV_LLM_MODEL) or DEFAULT_LLM_MODEL,
-        api_key=api_key or os.environ.get(ENV_LLM_KEY),
-    )
+    """Backwards-compatible shim around :func:`dictate_llm.llm_config`."""
+
+    from . import dictate_llm as _dl
+    return _dl.llm_config(url=url, model=model, api_key=api_key)
 
 
 def enhance_prompt(
