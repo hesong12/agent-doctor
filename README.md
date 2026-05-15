@@ -401,6 +401,12 @@ agent-doctor dictate llm test "rewrite this as a clean prompt"
 
 Phase 2 collapses the old `--mode chat|coding|research` flags into a single "optimize for any downstream LLM" prompt. The flags continue to parse but emit a deprecation warning and behave as `--mode optimize`.
 
+#### Pet animations
+
+When you trigger a dictation, the pet sprite shows a pulsing cyan ring (`listening`) while audio is being captured/transcribed, then three orbiting amber dots (`thinking`) while the LLM rewrites your transcript. The autopilot-driven state (e.g. `intervening`) is restored as soon as the pipeline finishes — dictation never clobbers an open critical alert.
+
+Disable per-state via `~/.agent-doctor/dictate.json` (`pet.animate_listening`, `pet.animate_thinking`).
+
 ## Privacy model
 
 Agent Doctor is local-only by design.

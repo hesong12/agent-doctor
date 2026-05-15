@@ -1807,3 +1807,84 @@ def test_cli_dictate_warns_on_deprecated_mode(
     assert "optimize" in captured.err.lower()
     # The actual start fails because we stubbed out the recorder; rc == 2 is fine.
     assert rc == 2
+
+
+def test_run_pipeline_emits_thinking_state_during_enhance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_pipeline writes a 'thinking' transient state while enhance runs."""
+
+    from agent_doctor import pet_transient as _pt
+
+    states_observed: list[str] = []
+    real_write = _pt.write_transient
+
+    def recording_write(state: str, **kwargs: object) -> Path:
+        states_observed.append(state)
+        return real_write(state, **kwargs)
+
+    monkeypatch.setattr(_pt, "default_transient_file", lambda: tmp_path / "pt.json")
+    monkeypatch.setattr(_pt, "write_transient", recording_write)
+
+    audio = tmp_path / "in.wav"
+    audio.write_bytes(b"\x00")
+
+    def fake_transcriber(p: Path, m: str, l: object) -> str:
+        return "hello world"
+
+    def fake_caller(cfg: dictate.LLMConfig, messages: list[dict[str, str]]) -> str:
+        return "Hello world."
+
+    result = dictate.run_pipeline(
+        audio,
+        mode="optimize",
+        enhance=True,
+        transcriber=fake_transcriber,
+        enhancer=fake_caller,
+    )
+    assert result.enhanced
+    assert "thinking" in states_observed
+
+
+def test_dictate_finish_emits_listening_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The CLI handler should mark the pet as listening from 'stop' to the end of transcribe."""
+
+    from agent_doctor import cli, dictate as _d, pet_transient as _pt
+
+    states_observed: list[str] = []
+    monkeypatch.setattr(_pt, "default_transient_file", lambda: tmp_path / "pt.json")
+    real_write = _pt.write_transient
+
+    def recording_write(state: str, **kwargs: object) -> Path:
+        states_observed.append(state)
+        return real_write(state, **kwargs)
+
+    monkeypatch.setattr(_pt, "write_transient", recording_write)
+
+    # Stub the entire pipeline out.
+    monkeypatch.setattr(_d, "default_state_dir", lambda: tmp_path)
+    state = _d.DictateState(
+        pid=os.getpid(),
+        audio_path=str(tmp_path / "x.wav"),
+        mode="optimize",
+        started_at=time.time(),
+        recorder="sox",
+    )
+    (tmp_path / "x.wav").write_bytes(b"\x00")
+    _d.write_state(state, state_dir=tmp_path)
+
+    monkeypatch.setattr(_d, "stop_recording", lambda **_k: Path(state.audio_path))
+    monkeypatch.setattr(_d, "transcribe", lambda *a, **k: "hello")
+    monkeypatch.setattr(_d, "enhance_prompt", lambda *a, **k: "Hello.")
+    monkeypatch.setattr(_d, "copy_to_clipboard", lambda *a, **k: None)
+    monkeypatch.setattr(_d, "record_history", lambda **_k: 0)
+    monkeypatch.setattr(_d, "notify", lambda *a, **k: None)
+    monkeypatch.setattr(_d, "play_sound", lambda *a, **k: None)
+
+    rc = cli.main(["dictate", "stop"])
+    assert rc == 0
+    assert "listening" in states_observed

@@ -40,3 +40,6 @@ agent_doctor = ["assets/*.png", "assets/*.swift"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-config", "--strict-markers"]
+markers = [
+  "tkinter: requires a running display server",
+]
