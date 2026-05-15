@@ -2050,6 +2050,14 @@ def _dictate_finish(args: argparse.Namespace) -> int:
             return 2
         t_clipboard = time.time()
 
+        from . import dictate_paste as _dp
+        paste_err = _dp.maybe_auto_paste()
+        if paste_err is not None:
+            _d.notify(
+                "agent-doctor",
+                "Auto-paste failed — text is on the clipboard, paste manually.",
+            )
+
         _d.notify(
             "Dictate ready" if result.enhanced else "Dictate (raw)",
             f"{len(result.prompt)} chars on clipboard ({result.mode})",

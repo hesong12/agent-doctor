@@ -125,3 +125,48 @@ def test_maybe_auto_paste_runs_when_enabled(
     called: list[list[str]] = []
     dp.maybe_auto_paste(runner=lambda argv: (called.append(argv), 0)[1])
     assert called
+
+
+def test_dictate_finish_calls_auto_paste_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: when auto_paste is on and pipeline succeeds, paste fires."""
+
+    import os, time
+
+    from agent_doctor import cli, dictate as _d, dictate_paste as dp, dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        paste=ds.PasteSettings(auto_paste=True, paste_delay_ms=0),
+    )
+    ds.save(settings)
+
+    # Stub the full pipeline like in Phase 3.
+    state = _d.DictateState(
+        pid=12345,
+        audio_path=str(tmp_path / "x.wav"),
+        mode="optimize",
+        started_at=0.0,
+        recorder="sox",
+    )
+    (tmp_path / "x.wav").write_bytes(b"\x00")
+    monkeypatch.setattr(_d, "default_state_dir", lambda: tmp_path)
+    _d.write_state(state, state_dir=tmp_path)
+
+    monkeypatch.setattr(_d, "is_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(_d, "stop_recording", lambda **_k: Path(state.audio_path))
+    monkeypatch.setattr(_d, "transcribe", lambda *a, **k: "hello")
+    monkeypatch.setattr(_d, "enhance_prompt", lambda *a, **k: "Hello.")
+    monkeypatch.setattr(_d, "copy_to_clipboard", lambda *a, **k: None)
+    monkeypatch.setattr(_d, "record_history", lambda **_k: 0)
+    monkeypatch.setattr(_d, "notify", lambda *a, **k: None)
+    monkeypatch.setattr(_d, "play_sound", lambda *a, **k: None)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(dp, "_default_osascript", lambda argv: (calls.append(argv), 0)[1])
+    rc = cli.main(["dictate", "stop"])
+    assert rc == 0
+    assert calls  # paste fired
