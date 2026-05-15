@@ -77,3 +77,104 @@ def get_provider(provider_id: str) -> Provider:
         f"unknown provider {provider_id!r}; expected one of: "
         f"{', '.join(p.id for p in _PROVIDERS)}"
     )
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    provider_id: str
+    base_url: str
+    reachable: bool
+    models: list[str]
+    error: Optional[str] = None
+
+
+def probe(
+    base_url: str,
+    models_endpoint: str,
+    *,
+    timeout: float = PROBE_TIMEOUT_SECONDS,
+    api_key: Optional[str] = None,
+) -> ProbeResult:
+    """Issue ``GET <base_url><models_endpoint>`` and return a ProbeResult.
+
+    Never raises on network errors; failures are reported via ``reachable=False``
+    and the ``error`` field. The OpenAI-style response shape is::
+
+        {"object": "list", "data": [{"id": "name", ...}, ...]}
+
+    We extract the ``id`` fields and discard the rest.
+    """
+
+    url = base_url.rstrip("/") + models_endpoint
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=False,
+            models=[],
+            error=f"HTTP {exc.code} {exc.reason}",
+        )
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        return ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=False,
+            models=[],
+            error=str(exc),
+        )
+
+    try:
+        parsed = json.loads(raw)
+        data = parsed.get("data") if isinstance(parsed, dict) else None
+        if not isinstance(data, list):
+            return ProbeResult(
+                provider_id="",
+                base_url=base_url,
+                reachable=False,
+                models=[],
+                error=f"unexpected response shape: {raw[:120]}",
+            )
+        models: list[str] = []
+        for item in data:
+            if isinstance(item, dict) and isinstance(item.get("id"), str):
+                models.append(item["id"])
+        return ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=True,
+            models=models,
+            error=None,
+        )
+    except json.JSONDecodeError as exc:
+        return ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=False,
+            models=[],
+            error=f"invalid JSON: {exc.msg}",
+        )
+
+
+def probe_all(*, timeout: float = PROBE_TIMEOUT_SECONDS) -> list[ProbeResult]:
+    """Probe every catalog provider. Returns one ProbeResult per provider."""
+
+    out: list[ProbeResult] = []
+    for prov in _PROVIDERS:
+        result = probe(prov.base_url, prov.models_endpoint, timeout=timeout)
+        out.append(
+            ProbeResult(
+                provider_id=prov.id,
+                base_url=result.base_url,
+                reachable=result.reachable,
+                models=result.models,
+                error=result.error,
+            )
+        )
+    return out
