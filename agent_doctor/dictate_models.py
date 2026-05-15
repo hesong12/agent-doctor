@@ -229,3 +229,115 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 16), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def installed_path(
+    entry: CatalogEntry, *, download_dir: Optional[Path] = None
+) -> Optional[Path]:
+    """Return the on-disk path if installed, else None. Does not verify hash."""
+
+    dest = model_destination(entry, download_dir=download_dir)
+    return dest if dest.exists() else None
+
+
+def list_status(
+    *, download_dir: Optional[Path] = None
+) -> list[dict[str, object]]:
+    """Return a list-of-dicts view of the catalog with install status."""
+
+    rows: list[dict[str, object]] = []
+    for entry in _CATALOG:
+        path = installed_path(entry, download_dir=download_dir)
+        rows.append(
+            {
+                "id": entry.id,
+                "display_name": entry.display_name,
+                "url": entry.url,
+                "size_bytes": entry.size_bytes,
+                "sha256": entry.sha256,
+                "installed": path is not None,
+                "path": str(path) if path is not None else None,
+                "recommended_for": list(entry.recommended_for),
+            }
+        )
+    return rows
+
+
+def set_active(model_id: str, *, download_dir: Optional[Path] = None) -> Path:
+    """Mark ``model_id`` as the active transcription model in settings.
+
+    Requires the file to be installed (download first). Returns the installed path.
+    """
+
+    from . import dictate_settings as ds
+
+    entry = get(model_id)
+    path = installed_path(entry, download_dir=download_dir)
+    if path is None:
+        raise DictateModelsError(
+            f"model {model_id!r} is not installed; run "
+            f"'agent-doctor dictate models download {model_id}' first"
+        )
+    settings = ds.load()
+    new_transcription = ds.TranscriptionSettings(
+        model_id=model_id,
+        model_path=str(path),
+        language=settings.transcription.language,
+        extra_buffer_ms=settings.transcription.extra_buffer_ms,
+    )
+    ds.save(ds.replace_section(settings, transcription=new_transcription))
+    return path
+
+
+def current() -> Optional[dict[str, object]]:
+    """Return the currently selected model entry + path, or None."""
+
+    from . import dictate_settings as ds
+
+    settings = ds.load()
+    if settings.transcription.model_id is None:
+        return None
+    try:
+        entry = get(settings.transcription.model_id)
+    except DictateModelsError:
+        return {
+            "id": settings.transcription.model_id,
+            "path": settings.transcription.model_path,
+            "in_catalog": False,
+        }
+    return {
+        "id": entry.id,
+        "display_name": entry.display_name,
+        "path": settings.transcription.model_path,
+        "in_catalog": True,
+    }
+
+
+def remove(model_id: str, *, download_dir: Optional[Path] = None) -> bool:
+    """Delete the on-disk file for ``model_id``. Returns True if deleted."""
+
+    entry = get(model_id)
+    path = installed_path(entry, download_dir=download_dir)
+    if path is None:
+        return False
+    path.unlink()
+    return True
+
+
+def verify(
+    model_id: str, *, download_dir: Optional[Path] = None
+) -> dict[str, object]:
+    """Re-hash the installed file and report match/mismatch."""
+
+    entry = get(model_id)
+    path = installed_path(entry, download_dir=download_dir)
+    if path is None:
+        return {"installed": False, "ok": False, "reason": "not installed"}
+    actual = _file_sha256(path)
+    return {
+        "installed": True,
+        "ok": actual == entry.sha256.lower(),
+        "expected": entry.sha256,
+        "actual": actual,
+        "path": str(path),
+    }

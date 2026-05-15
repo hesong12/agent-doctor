@@ -137,3 +137,76 @@ def test_download_sha_mismatch_deletes_partial(
         dm._download_one(entry, dest, allow_list=(f"{base_url}/",))
     assert not dest.exists()
     assert not dest.with_suffix(dest.suffix + dm.PART_SUFFIX).exists()
+
+
+def test_set_persists_model_in_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(dm, "DOWNLOAD_DIR", tmp_path / "models")
+
+    # Fake an already-installed file with matching hash.
+    entry = dm.get("ggml-tiny")
+    body = b"x" * 64
+    digest = hashlib.sha256(body).hexdigest()
+    monkeypatch.setattr(
+        dm,
+        "_CATALOG",
+        tuple(
+            dm.CatalogEntry(
+                id=e.id,
+                display_name=e.display_name,
+                url=e.url,
+                size_bytes=len(body),
+                sha256=digest,
+                recommended_for=e.recommended_for,
+            )
+            if e.id == "ggml-tiny"
+            else e
+            for e in dm._CATALOG
+        ),
+    )
+    dest = dm.model_destination(dm.get("ggml-tiny"))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(body)
+
+    dm.set_active("ggml-tiny")
+    settings = ds.load()
+    assert settings.transcription.model_id == "ggml-tiny"
+    assert settings.transcription.model_path == str(dest)
+
+
+def test_set_refuses_when_file_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(dm, "DOWNLOAD_DIR", tmp_path / "models")
+
+    with pytest.raises(dm.DictateModelsError, match="not installed"):
+        dm.set_active("ggml-tiny")
+
+
+def test_remove_deletes_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dm, "DOWNLOAD_DIR", tmp_path / "models")
+    entry = dm.get("ggml-tiny")
+    dest = dm.model_destination(entry)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"x")
+    dm.remove("ggml-tiny")
+    assert not dest.exists()
+
+
+def test_installed_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dm, "DOWNLOAD_DIR", tmp_path / "models")
+    entry = dm.get("ggml-tiny")
+    assert dm.installed_path(entry) is None
+    dest = dm.model_destination(entry)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"y")
+    assert dm.installed_path(entry) == dest
