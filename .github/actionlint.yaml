@@ -1,0 +1,6 @@
+# Custom labels for self-hosted runners used by this repo.
+# Hermes-resident runner: name=hermes-harness-1, labels include "harness".
+# See docs/operations/ci-self-hosted-fallback.md.
+self-hosted-runner:
+  labels:
+    - harness
