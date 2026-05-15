@@ -681,6 +681,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dm_doctor.set_defaults(func=_cmd_dictate_models_doctor)
 
+    dictate_llm = dictate_subs.add_parser(
+        "llm",
+        help="Configure the LLM enhancer (LM Studio / Ollama / Custom).",
+    )
+    dictate_llm_subs = dictate_llm.add_subparsers(
+        dest="dictate_llm_cmd", required=True
+    )
+
+    llm_probe = dictate_llm_subs.add_parser(
+        "probe", help="Probe every known provider's /v1/models endpoint."
+    )
+    llm_probe.add_argument("--json", action="store_true")
+    llm_probe.set_defaults(func=_cmd_dictate_llm_probe)
+
+    llm_set = dictate_llm_subs.add_parser("set", help="Update the active LLM provider.")
+    llm_set.add_argument("--provider", choices=["lm_studio", "ollama", "custom"], required=True)
+    llm_set.add_argument("--model", default=None, help="OpenAI-style model id.")
+    llm_set.add_argument("--url", default=None, help="Override base URL (Custom provider only).")
+    llm_set.set_defaults(func=_cmd_dictate_llm_set)
+
+    llm_current = dictate_llm_subs.add_parser("current", help="Show active provider + model.")
+    llm_current.add_argument("--json", action="store_true")
+    llm_current.set_defaults(func=_cmd_dictate_llm_current)
+
+    llm_test = dictate_llm_subs.add_parser(
+        "test", help="Round-trip a canned transcript through the configured provider."
+    )
+    llm_test.add_argument(
+        "text", nargs="?", default="please rewrite this as a clean prompt", help="Text to enhance."
+    )
+    llm_test.set_defaults(func=_cmd_dictate_llm_test)
+
     # Adapter subcommands ------------------------------------------------------
     adapters = subparsers.add_parser(
         "adapters",
@@ -2470,6 +2502,100 @@ def _cmd_dictate_models_doctor(_args: argparse.Namespace) -> int:
             rc = 2
     print(json.dumps(rows, indent=2, sort_keys=True))
     return rc
+
+
+def _cmd_dictate_llm_probe(args: argparse.Namespace) -> int:
+    from . import dictate_llm as _dl
+
+    rows = _dl.probe_all()
+    payload = [
+        {
+            "provider_id": r.provider_id,
+            "base_url": r.base_url,
+            "reachable": r.reachable,
+            "models": r.models,
+            "error": r.error,
+        }
+        for r in rows
+    ]
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    for row in payload:
+        status = "✓" if row["reachable"] else "✗"
+        head = f"{status} {row['provider_id']:<10} {row['base_url']}"
+        if row["reachable"]:
+            print(f"{head}  ({len(row['models'])} model(s))")
+            for mid in row["models"]:
+                print(f"    - {mid}")
+        else:
+            print(f"{head}  unreachable: {row['error']}")
+    return 0
+
+
+def _cmd_dictate_llm_set(args: argparse.Namespace) -> int:
+    from . import dictate_settings as _ds
+    from . import dictate_llm as _dl
+
+    try:
+        provider = _dl.get_provider(args.provider)
+    except _dl.DictateLLMError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+    if args.url and not provider.allow_base_url_edit:
+        print(
+            f"agent-doctor: provider {provider.id!r} does not allow base-url override; "
+            "use --provider custom to supply a URL",
+            file=sys.stderr,
+        )
+        return 2
+    settings = _ds.load()
+    new_llm = _ds.LLMSettings(
+        provider_id=provider.id,
+        base_url=args.url or provider.base_url,
+        model=args.model,
+        api_key_ref=settings.llm.api_key_ref,
+        timeout_s=settings.llm.timeout_s,
+        optimize_prompt=settings.llm.optimize_prompt,
+    )
+    _ds.save(_ds.replace_section(settings, llm=new_llm))
+    print(f"provider: {provider.id}\nurl: {new_llm.base_url}\nmodel: {new_llm.model or '(none)'}")
+    return 0
+
+
+def _cmd_dictate_llm_current(args: argparse.Namespace) -> int:
+    from . import dictate_settings as _ds
+
+    settings = _ds.load()
+    payload = {
+        "provider_id": settings.llm.provider_id,
+        "base_url": settings.llm.base_url,
+        "model": settings.llm.model,
+        "timeout_s": settings.llm.timeout_s,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    print(
+        f"provider: {payload['provider_id']}\n"
+        f"url: {payload['base_url']}\n"
+        f"model: {payload['model'] or '(none)'}"
+    )
+    return 0
+
+
+def _cmd_dictate_llm_test(args: argparse.Namespace) -> int:
+    from . import dictate as _d
+    from . import dictate_llm as _dl
+
+    try:
+        cfg = _dl.llm_config()
+        result = _d.enhance_prompt(args.text, mode="optimize", config=cfg)
+    except _d.DictateError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+    print(result)
+    return 0
 
 
 if __name__ == "__main__":
