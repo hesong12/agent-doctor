@@ -39,3 +39,101 @@ def test_get_returns_catalog_entry() -> None:
 def test_get_unknown_raises() -> None:
     with pytest.raises(dm.DictateModelsError, match="unknown"):
         dm.get("does-not-exist")
+
+
+@pytest.fixture
+def fake_hf_server(tmp_path: Path) -> Iterator[tuple[str, dict[str, bytes]]]:
+    """Spin a local HTTP server that maps paths to canned bytes."""
+
+    payloads: dict[str, bytes] = {}
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            body = payloads.get(self.path)
+            if body is None:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Type", "application/octet-stream")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args: object) -> None:
+            return
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}", payloads
+    finally:
+        server.shutdown()
+        thread.join(timeout=2.0)
+
+
+def test_download_writes_file_and_verifies_hash(
+    tmp_path: Path, fake_hf_server: tuple[str, dict[str, bytes]]
+) -> None:
+    base_url, payloads = fake_hf_server
+    body = b"ggml-tiny-bytes" * 1024
+    digest = hashlib.sha256(body).hexdigest()
+    entry = dm.CatalogEntry(
+        id="ggml-tiny",
+        display_name="Tiny",
+        url=f"{base_url}/ggml-tiny.bin",
+        size_bytes=len(body),
+        sha256=digest,
+    )
+    payloads["/ggml-tiny.bin"] = body
+
+    dest = tmp_path / "ggml-tiny.bin"
+    progress_calls: list[tuple[int, int]] = []
+
+    dm._download_one(
+        entry,
+        dest,
+        allow_list=(f"{base_url}/",),
+        progress=lambda done, total: progress_calls.append((done, total)),
+    )
+
+    assert dest.read_bytes() == body
+    assert progress_calls[-1] == (len(body), len(body))
+    assert not dest.with_suffix(dest.suffix + dm.PART_SUFFIX).exists()
+
+
+def test_download_rejects_unauthorized_url(tmp_path: Path) -> None:
+    entry = dm.CatalogEntry(
+        id="evil",
+        display_name="evil",
+        url="https://evil.example/whisper.bin",
+        size_bytes=1,
+        sha256="0" * 64,
+    )
+    with pytest.raises(dm.DictateModelsError, match="not in the allow-list"):
+        dm._download_one(entry, tmp_path / "x.bin", allow_list=dm.ALLOW_LIST)
+
+
+def test_download_sha_mismatch_deletes_partial(
+    tmp_path: Path, fake_hf_server: tuple[str, dict[str, bytes]]
+) -> None:
+    base_url, payloads = fake_hf_server
+    body = b"actual bytes"
+    payloads["/x.bin"] = body
+    entry = dm.CatalogEntry(
+        id="x",
+        display_name="x",
+        url=f"{base_url}/x.bin",
+        size_bytes=len(body),
+        sha256="0" * 64,
+    )
+    dest = tmp_path / "x.bin"
+    with pytest.raises(dm.DictateModelsError, match="sha256 mismatch"):
+        dm._download_one(entry, dest, allow_list=(f"{base_url}/",))
+    assert not dest.exists()
+    assert not dest.with_suffix(dest.suffix + dm.PART_SUFFIX).exists()

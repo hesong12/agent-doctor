@@ -128,3 +128,104 @@ def model_destination(entry: CatalogEntry, *, download_dir: Optional[Path] = Non
     base = download_dir if download_dir is not None else DOWNLOAD_DIR
     filename = Path(urllib.parse.urlparse(entry.url).path).name
     return base / filename
+
+
+ProgressCallback = Callable[[int, int], None]
+
+
+def _default_progress(done: int, total: int) -> None:
+    if total <= 0:
+        return
+    pct = (done / total) * 100
+    mb_done = done / (1024 * 1024)
+    mb_total = total / (1024 * 1024)
+    sys.stderr.write(
+        f"\r  {pct:5.1f}% | {mb_done:7.1f} MB / {mb_total:7.1f} MB"
+    )
+    if done >= total:
+        sys.stderr.write("\n")
+    sys.stderr.flush()
+
+
+def _download_one(
+    entry: CatalogEntry,
+    dest: Path,
+    *,
+    allow_list: tuple[str, ...] = ALLOW_LIST,
+    progress: Optional[ProgressCallback] = None,
+    timeout: float = DOWNLOAD_TIMEOUT_SECONDS,
+) -> Path:
+    """Download ``entry`` to ``dest``. Verify SHA-256. Atomic install.
+
+    Raises DictateModelsError on URL rejection, network failure, or hash
+    mismatch. Leaves no ``.part`` residue on failure.
+    """
+
+    if not any(entry.url.startswith(prefix) for prefix in allow_list):
+        raise DictateModelsError(
+            f"refusing to download {entry.url}: not in the allow-list "
+            f"({', '.join(allow_list)})"
+        )
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = dest.with_suffix(dest.suffix + PART_SUFFIX)
+    if partial.exists():
+        partial.unlink()
+
+    hasher = hashlib.sha256()
+    bytes_done = 0
+    cb = progress or _default_progress
+
+    try:
+        req = urllib.request.Request(entry.url, headers={"User-Agent": "agent-doctor-dictate"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            total = int(resp.headers.get("Content-Length") or entry.size_bytes or 0)
+            with open(partial, "wb") as out:
+                while True:
+                    chunk = resp.read(1 << 16)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    hasher.update(chunk)
+                    bytes_done += len(chunk)
+                    cb(bytes_done, total or bytes_done)
+        actual = hasher.hexdigest()
+        if actual.lower() != entry.sha256.lower():
+            partial.unlink(missing_ok=True)
+            raise DictateModelsError(
+                f"sha256 mismatch for {entry.id}: expected {entry.sha256}, got {actual}"
+            )
+        os.replace(partial, dest)
+        return dest
+    except urllib.error.URLError as exc:
+        partial.unlink(missing_ok=True)
+        raise DictateModelsError(f"download failed for {entry.id}: {exc}") from exc
+    except OSError as exc:
+        partial.unlink(missing_ok=True)
+        raise DictateModelsError(f"disk error during download of {entry.id}: {exc}") from exc
+
+
+def download(
+    model_id: str,
+    *,
+    download_dir: Optional[Path] = None,
+    force: bool = False,
+    progress: Optional[ProgressCallback] = None,
+) -> Path:
+    """Download ``model_id`` and return the installed path. No-op if installed
+    and the SHA already matches, unless ``force=True``."""
+
+    entry = get(model_id)
+    dest = model_destination(entry, download_dir=download_dir)
+    if dest.exists() and not force:
+        if _file_sha256(dest) == entry.sha256.lower():
+            return dest
+    return _download_one(entry, dest, progress=progress)
+
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
