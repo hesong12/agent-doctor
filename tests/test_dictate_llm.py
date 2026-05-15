@@ -138,3 +138,55 @@ def test_probe_all_returns_one_row_per_provider(
     for row in rows:
         assert row.reachable is True
         assert row.models == ["stub"]
+
+
+def test_llm_config_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI > env > settings > provider default."""
+
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        llm=ds.LLMSettings(
+            provider_id="custom",
+            base_url="http://from-settings:9000/v1",
+            model="settings-model",
+            timeout_s=42,
+        ),
+    )
+    ds.save(settings)
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_LLM_URL", "http://from-env:9001/v1/chat/completions")
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_LLM_MODEL", "env-model")
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_LLM_KEY", raising=False)
+
+    # Env beats settings.
+    cfg = dl.llm_config()
+    assert cfg.url == "http://from-env:9001/v1/chat/completions"
+    assert cfg.model == "env-model"
+    assert cfg.timeout == 42  # timeout still comes from settings
+
+    # CLI beats env.
+    cfg = dl.llm_config(url="http://cli/v1/chat/completions", model="cli-model")
+    assert cfg.url == "http://cli/v1/chat/completions"
+    assert cfg.model == "cli-model"
+
+
+def test_llm_config_falls_back_to_provider_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_LLM_URL", raising=False)
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_LLM_MODEL", raising=False)
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_LLM_KEY", raising=False)
+    # Default settings -> lm_studio provider -> http://localhost:1234/v1
+    cfg = dl.llm_config()
+    assert cfg.url.startswith("http://localhost:1234/v1")
+    assert cfg.url.endswith("/chat/completions")

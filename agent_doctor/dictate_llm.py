@@ -14,10 +14,18 @@ live in the system keychain via :mod:`agent_doctor.settings`.
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Optional
+
+from agent_doctor.dictate import (
+    ENV_LLM_KEY,
+    ENV_LLM_MODEL,
+    ENV_LLM_URL,
+    LLMConfig,
+)
 
 
 PROBE_TIMEOUT_SECONDS = 10.0
@@ -178,3 +186,46 @@ def probe_all(*, timeout: float = PROBE_TIMEOUT_SECONDS) -> list[ProbeResult]:
             )
         )
     return out
+
+
+def llm_config(
+    *,
+    url: Optional[str] = None,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> LLMConfig:
+    """Resolve an :class:`LLMConfig` with this precedence order:
+
+    1. Explicit kwargs (CLI flags)
+    2. Environment variables
+    3. ``~/.agent-doctor/dictate.json`` settings
+    4. Provider-default base URL
+
+    The settings ``base_url`` is OpenAI-style root (``.../v1``) - we append
+    ``/chat/completions`` so the existing ``_default_llm_call`` continues to
+    work. The legacy env var keeps its historical literal value so users with
+    pre-existing config are unaffected.
+    """
+
+    from . import dictate_settings as _ds  # local import to avoid cycle
+
+    settings = _ds.load()
+    provider = get_provider(settings.llm.provider_id)
+    settings_url = (
+        (settings.llm.base_url or provider.base_url).rstrip("/") + "/chat/completions"
+    )
+    settings_model = settings.llm.model
+    settings_key = None  # api_key_ref handling deferred to Phase 6; settings does not store secrets
+
+    resolved_url = url or os.environ.get(ENV_LLM_URL) or settings_url
+    resolved_model = (
+        model or os.environ.get(ENV_LLM_MODEL) or settings_model or "default"
+    )
+    resolved_key = api_key or os.environ.get(ENV_LLM_KEY) or settings_key
+
+    return LLMConfig(
+        url=resolved_url,
+        model=resolved_model,
+        api_key=resolved_key,
+        timeout=float(settings.llm.timeout_s),
+    )
