@@ -62,8 +62,9 @@ from typing import Any, Callable, Dict, List, Optional
 DEFAULT_LLM_URL = "http://localhost:8080/v1/chat/completions"
 DEFAULT_LLM_MODEL = "ds4"
 DEFAULT_WHISPER_MODEL = "small"
-DEFAULT_MODE = "chat"
-SUPPORTED_MODES = ("chat", "coding", "research", "raw")
+DEFAULT_MODE = "optimize"
+SUPPORTED_MODES = ("optimize", "chat", "coding", "research", "raw")
+DEPRECATED_MODES = ("chat", "coding", "research")
 
 # Whisper backend choices. ``auto`` inspects ``model_name``: a path ending in
 # ``.bin`` or ``.gguf`` (or any existing local file path) routes to
@@ -128,36 +129,19 @@ _BASE_RULES = (
     "  'Here is the rewritten prompt:' header.\n"
 )
 
-_MODE_PROMPTS: Dict[str, str] = {
-    "chat": (
-        _BASE_RULES
-        + "\nStyle: a clear, concise prompt suitable for a general chat "
-        "assistant. Use the same language the user spoke in. Keep it short — "
-        "do not pad."
-    ),
-    "coding": (
-        _BASE_RULES
-        + "\nStyle: a precise engineering task for a coding agent "
-        "(Cursor, Claude Code, Codex). Structure as:\n"
-        "  1. One-line task summary.\n"
-        "  2. Concrete acceptance criteria (bulleted).\n"
-        "  3. Constraints or non-goals the user mentioned.\n"
-        "Only include sections the user actually specified; do not invent "
-        "acceptance criteria the user did not state."
-    ),
-    "research": (
-        _BASE_RULES
-        + "\nStyle: a research brief suitable for a deep-research agent.\n"
-        "  1. Question or objective in one sentence.\n"
-        "  2. Entities/scope/timeframe the user mentioned.\n"
-        "  3. Output format the user asked for, if any.\n"
-        "Do not add sub-questions the user did not raise."
-    ),
-}
+OPTIMIZE_PROMPT = (
+    _BASE_RULES
+    + "\nStyle: a clean, written prompt optimized for any downstream LLM. "
+    "Use the user's language. No padding, no role-play preamble, no header — "
+    "output the rewritten prompt only."
+)
 
 
 def mode_system_prompt(mode: str) -> str:
     """Return the system prompt for ``mode``.
+
+    Phase 2 collapses every non-raw mode into a single ``OPTIMIZE_PROMPT``.
+    Settings may override the literal text via ``llm.optimize_prompt``.
 
     ``raw`` has no enhancement and therefore no system prompt; callers should
     check :func:`is_raw_mode` before invoking the enhancer.
@@ -165,13 +149,17 @@ def mode_system_prompt(mode: str) -> str:
 
     if mode == "raw":
         raise DictateError("mode 'raw' bypasses the LLM enhancer")
-    try:
-        return _MODE_PROMPTS[mode]
-    except KeyError as exc:
+    if mode not in SUPPORTED_MODES:
         raise DictateError(
             f"unknown dictate mode '{mode}'; expected one of "
             f"{', '.join(SUPPORTED_MODES)}"
-        ) from exc
+        )
+    try:
+        from . import dictate_settings as _ds
+        override = _ds.load().llm.optimize_prompt
+    except Exception:  # noqa: BLE001 - settings must never break prompt lookup
+        override = None
+    return override or OPTIMIZE_PROMPT
 
 
 def is_raw_mode(mode: str) -> bool:
@@ -685,11 +673,10 @@ def llm_config_from_env(
     model: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> LLMConfig:
-    return LLMConfig(
-        url=url or os.environ.get(ENV_LLM_URL) or DEFAULT_LLM_URL,
-        model=model or os.environ.get(ENV_LLM_MODEL) or DEFAULT_LLM_MODEL,
-        api_key=api_key or os.environ.get(ENV_LLM_KEY),
-    )
+    """Backwards-compatible shim around :func:`dictate_llm.llm_config`."""
+
+    from . import dictate_llm as _dl
+    return _dl.llm_config(url=url, model=model, api_key=api_key)
 
 
 def enhance_prompt(

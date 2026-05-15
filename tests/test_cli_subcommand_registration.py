@@ -257,3 +257,13 @@ def test_dictate_models_subcommands_registered() -> None:
     dictate_sub = _nested_subparser(parser, "dictate")
     models_sub = _nested_subparser(dictate_sub, "models")
     assert _subparser_choices(models_sub) >= EXPECTED_DICTATE_MODELS_SUBCOMMANDS
+
+
+EXPECTED_DICTATE_LLM_SUBCOMMANDS = {"probe", "set", "current", "test"}
+
+
+def test_dictate_llm_subcommands_registered() -> None:
+    parser = cli.build_parser()
+    dictate_sub = _nested_subparser(parser, "dictate")
+    llm_sub = _nested_subparser(dictate_sub, "llm")
+    assert _subparser_choices(llm_sub) >= EXPECTED_DICTATE_LLM_SUBCOMMANDS

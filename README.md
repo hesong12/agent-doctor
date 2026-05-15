@@ -377,6 +377,30 @@ agent-doctor dictate models doctor
 
 The catalog is allow-listed to `huggingface.co/ggerganov/whisper.cpp/resolve/main/`. Each download is SHA-256-verified and installed atomically into `~/.agent-doctor/models/whisper/`.
 
+#### LLM enhancer
+
+```bash
+# Which providers can we see?
+agent-doctor dictate llm probe
+
+# Point at LM Studio with a specific model
+agent-doctor dictate llm set --provider lm_studio --model qwen2.5-7b-instruct
+
+# Or Ollama
+agent-doctor dictate llm set --provider ollama --model llama3.1:8b
+
+# Custom OpenAI-compatible endpoint
+agent-doctor dictate llm set --provider custom --url http://localhost:8000/v1 --model whatever
+
+# Show the active config
+agent-doctor dictate llm current
+
+# Round-trip a canned transcript
+agent-doctor dictate llm test "rewrite this as a clean prompt"
+```
+
+Phase 2 collapses the old `--mode chat|coding|research` flags into a single "optimize for any downstream LLM" prompt. The flags continue to parse but emit a deprecation warning and behave as `--mode optimize`.
+
 ## Privacy model
 
 Agent Doctor is local-only by design.
