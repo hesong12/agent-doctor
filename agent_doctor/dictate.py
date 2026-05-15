@@ -1110,12 +1110,14 @@ def run_pipeline(
             enhanced=False,
         )
 
-    prompt = enhance_prompt(
-        transcript,
-        mode=mode,
-        config=llm_config,
-        caller=enhancer,
-    )
+    from . import pet_transient as _pt
+    with _pt.pet_state("thinking", ttl_seconds=60.0):
+        prompt = enhance_prompt(
+            transcript,
+            mode=mode,
+            config=llm_config,
+            caller=enhancer,
+        )
     return DictateResult(
         transcript=transcript,
         prompt=prompt or transcript,

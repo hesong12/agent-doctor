@@ -1860,6 +1860,7 @@ def _dictate_finish(args: argparse.Namespace) -> int:
     """
 
     from . import dictate as _d
+    from . import pet_transient as _pt
 
     try:
         state = _d.read_state()
@@ -1898,15 +1899,16 @@ def _dictate_finish(args: argparse.Namespace) -> int:
     _d.maybe_sleep_for_buffer(buffer_ms)
 
     t0 = time.time()
-    try:
-        audio_path = _d.stop_recording()
-    except _d.DictateError as exc:
-        _d.clear_state()
-        if play_audio:
-            _d.play_sound(_d.DEFAULT_FAIL_SOUND)
-        print(f"agent-doctor: {exc}", file=sys.stderr)
-        return 2
-    t_stop = time.time()
+    with _pt.pet_state("listening", ttl_seconds=180.0):
+        try:
+            audio_path = _d.stop_recording()
+        except _d.DictateError as exc:
+            _d.clear_state()
+            if play_audio:
+                _d.play_sound(_d.DEFAULT_FAIL_SOUND)
+            print(f"agent-doctor: {exc}", file=sys.stderr)
+            return 2
+        t_stop = time.time()
 
     keep_audio = bool(getattr(args, "keep_audio", False))
     audio_pathobj = Path(audio_path)
@@ -1940,32 +1942,34 @@ def _dictate_finish(args: argparse.Namespace) -> int:
     t_enhance: Optional[float] = None
 
     try:
-        transcript = _d.transcribe(
-            audio_pathobj,
-            model_name=whisper_model,
-            backend=backend_choice,
-            language=language,
-        )
-        t_transcribe = time.time()
-        if not transcript.strip():
-            raise _d.DictateError("transcription produced no text; nothing to enhance")
+        with _pt.pet_state("listening", ttl_seconds=180.0):
+            transcript = _d.transcribe(
+                audio_pathobj,
+                model_name=whisper_model,
+                backend=backend_choice,
+                language=language,
+            )
+            t_transcribe = time.time()
+            if not transcript.strip():
+                raise _d.DictateError("transcription produced no text; nothing to enhance")
 
         prompt = transcript
         enhanced = False
         if enhance and not _d.is_raw_mode(mode):
-            try:
-                prompt = _d.enhance_prompt(
-                    transcript,
-                    mode=mode,
-                    config=llm_config,
-                )
-                enhanced = bool(prompt)
-                if not enhanced:
+            with _pt.pet_state("thinking", ttl_seconds=60.0):
+                try:
+                    prompt = _d.enhance_prompt(
+                        transcript,
+                        mode=mode,
+                        config=llm_config,
+                    )
+                    enhanced = bool(prompt)
+                    if not enhanced:
+                        prompt = transcript
+                except _d.DictateError as exc:
+                    enhancer_failed_reason = str(exc)
                     prompt = transcript
-            except _d.DictateError as exc:
-                enhancer_failed_reason = str(exc)
-                prompt = transcript
-                enhanced = False
+                    enhanced = False
         t_enhance = time.time()
 
         result = _d.DictateResult(
