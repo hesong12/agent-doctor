@@ -82,3 +82,20 @@ def test_draw_thinking_orbits_over_time() -> None:
         (canvas_b.oval_calls[0][1] + canvas_b.oval_calls[0][3]) / 2,
     )
     assert centre_a != centre_b
+
+
+@pytest.mark.tkinter
+def test_animations_render_against_real_tk_canvas() -> None:
+    import tkinter as tk
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("no display available")
+    root.withdraw()
+    canvas = tk.Canvas(root, width=300, height=300)
+    canvas.pack()
+    pa.draw_listening(canvas, t=0.5, cx=150, cy=150)
+    pa.draw_thinking(canvas, t=0.5, cx=150, cy=150)
+    root.update_idletasks()
+    root.destroy()

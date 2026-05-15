@@ -1074,6 +1074,27 @@ def _draw_sprite_pet(
 
 
 def _draw_tk_effects(canvas: Any, snapshot: DisplaySnapshot, phase: float) -> None:
+    from . import pet_animations as _pa
+
+    canvas.delete(_pa.ANIMATION_TAG)
+
+    if snapshot.state == "listening":
+        _pa.draw_listening(
+            canvas,
+            t=phase,
+            cx=_WINDOW_WIDTH / 2,
+            cy=194,
+        )
+        return
+    if snapshot.state == "thinking":
+        _pa.draw_thinking(
+            canvas,
+            t=phase,
+            cx=_WINDOW_WIDTH / 2,
+            cy=194,
+        )
+        return
+
     pulse = (math.sin(phase * 2.0) + 1) / 2
     x_offset = 35
     y_offset = 92
