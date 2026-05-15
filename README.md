@@ -427,6 +427,23 @@ The helper is a ~150 LOC Swift binary compiled with `swiftc` (requires Xcode Com
 
 You will be prompted to grant **Input Monitoring** in System Settings -> Privacy & Security the first time the daemon registers an `NSEvent` monitor.
 
+#### Auto-paste at cursor
+
+By default agent-doctor copies the optimised prompt to the clipboard and stops there. To have it land at the focused cursor automatically:
+
+```bash
+# One-time: runs a synthetic Cmd+V test and asks you to grant Accessibility permission.
+agent-doctor dictate paste enable
+
+# Re-test after enabling.
+agent-doctor dictate paste test
+
+# Stop auto-pasting.
+agent-doctor dictate paste disable
+```
+
+If the keystroke fails (e.g. permission revoked), the text is still on the clipboard and a notification fires explaining the fallback.
+
 ## Privacy model
 
 Agent Doctor is local-only by design.

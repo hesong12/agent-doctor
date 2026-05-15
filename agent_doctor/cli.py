@@ -769,6 +769,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hk_uninstall.set_defaults(func=_cmd_dictate_hotkey_uninstall)
 
+    dictate_paste = dictate_subs.add_parser(
+        "paste",
+        help="Configure auto-paste at cursor after the prompt is copied.",
+    )
+    dictate_paste_subs = dictate_paste.add_subparsers(
+        dest="dictate_paste_cmd", required=True
+    )
+
+    paste_enable = dictate_paste_subs.add_parser(
+        "enable",
+        help="Run a Cmd+V permission test, then flip auto-paste ON.",
+    )
+    paste_enable.set_defaults(func=_cmd_dictate_paste_enable)
+
+    paste_disable = dictate_paste_subs.add_parser(
+        "disable", help="Flip auto-paste OFF."
+    )
+    paste_disable.set_defaults(func=_cmd_dictate_paste_disable)
+
+    paste_test = dictate_paste_subs.add_parser(
+        "test", help="Write a known phrase to the clipboard and try to paste it."
+    )
+    paste_test.set_defaults(func=_cmd_dictate_paste_test)
+
     # Adapter subcommands ------------------------------------------------------
     adapters = subparsers.add_parser(
         "adapters",
@@ -2050,6 +2074,14 @@ def _dictate_finish(args: argparse.Namespace) -> int:
             return 2
         t_clipboard = time.time()
 
+        from . import dictate_paste as _dp
+        paste_err = _dp.maybe_auto_paste()
+        if paste_err is not None:
+            _d.notify(
+                "agent-doctor",
+                "Auto-paste failed — text is on the clipboard, paste manually.",
+            )
+
         _d.notify(
             "Dictate ready" if result.enhanced else "Dictate (raw)",
             f"{len(result.prompt)} chars on clipboard ({result.mode})",
@@ -2742,6 +2774,45 @@ def _cmd_dictate_hotkey_uninstall(_args: argparse.Namespace) -> int:
     result = _hi.uninstall()
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
+
+
+def _cmd_dictate_paste_enable(_args: argparse.Namespace) -> int:
+    from . import dictate_paste as _dp
+
+    try:
+        _dp.enable()
+    except _dp.PasteError as exc:
+        print(
+            f"agent-doctor: {exc}\n"
+            "open: x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+            file=sys.stderr,
+        )
+        return 2
+    print("auto-paste: ON")
+    return 0
+
+
+def _cmd_dictate_paste_disable(_args: argparse.Namespace) -> int:
+    from . import dictate_paste as _dp
+
+    _dp.disable()
+    print("auto-paste: OFF")
+    return 0
+
+
+def _cmd_dictate_paste_test(_args: argparse.Namespace) -> int:
+    from . import dictate_paste as _dp
+
+    ok = _dp.permission_test()
+    if ok:
+        print("paste test: OK (text 'agent-doctor paste test' should now be at your cursor)")
+        return 0
+    print(
+        "paste test: FAILED — open System Settings -> Privacy & Security -> Accessibility "
+        "and add your terminal / agent-doctor.",
+        file=sys.stderr,
+    )
+    return 2
 
 
 if __name__ == "__main__":
