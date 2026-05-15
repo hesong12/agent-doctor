@@ -277,3 +277,13 @@ def test_dictate_hotkey_subcommands_registered() -> None:
     dictate_sub = _nested_subparser(parser, "dictate")
     hk_sub = _nested_subparser(dictate_sub, "hotkey")
     assert _subparser_choices(hk_sub) >= EXPECTED_DICTATE_HOTKEY_SUBCOMMANDS
+
+
+EXPECTED_DICTATE_PASTE_SUBCOMMANDS = {"enable", "disable", "test"}
+
+
+def test_dictate_paste_subcommands_registered() -> None:
+    parser = cli.build_parser()
+    dictate_sub = _nested_subparser(parser, "dictate")
+    paste_sub = _nested_subparser(dictate_sub, "paste")
+    assert _subparser_choices(paste_sub) >= EXPECTED_DICTATE_PASTE_SUBCOMMANDS
