@@ -21,7 +21,6 @@ import pytest
 
 from agent_doctor import dictate
 from agent_doctor.dictate import (
-    DEFAULT_LLM_URL,
     DEFAULT_MODE,
     DictateError,
     DictateResult,
