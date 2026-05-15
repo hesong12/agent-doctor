@@ -2591,7 +2591,7 @@ def _cmd_dictate_llm_test(args: argparse.Namespace) -> int:
     try:
         cfg = _dl.llm_config()
         result = _d.enhance_prompt(args.text, mode="optimize", config=cfg)
-    except _d.DictateError as exc:
+    except (_d.DictateError, _dl.DictateLLMError) as exc:
         print(f"agent-doctor: {exc}", file=sys.stderr)
         return 2
     print(result)
