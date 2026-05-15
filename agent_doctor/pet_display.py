@@ -191,6 +191,36 @@ def snapshot_from_payload(payload: dict[str, Any]) -> DisplaySnapshot:
     )
 
 
+def apply_transient_overlay(snapshot: DisplaySnapshot) -> DisplaySnapshot:
+    """Return a snapshot whose ``state`` is overlaid by the transient file if any.
+
+    All other fields are preserved. Animation accent/fill colours are picked
+    from a per-state table when the transient overlays a state.
+    """
+
+    from . import pet_transient as _pt
+
+    payload = _pt.read_transient()
+    if not payload:
+        return snapshot
+    state = payload.get("state")
+    accent, fill = _transient_visuals(state)
+    return replace(
+        snapshot,
+        state=state,
+        accent=accent or snapshot.accent,
+        fill=fill or snapshot.fill,
+    )
+
+
+def _transient_visuals(state: str) -> tuple[str | None, str | None]:
+    if state == "listening":
+        return "#33b3a8", "#e0fbf8"
+    if state == "thinking":
+        return "#e0a040", "#fff5d6"
+    return None, None
+
+
 def _int_payload(payload: dict[str, Any], key: str, fallback: int) -> int:
     try:
         return int(payload.get(key) or fallback)
@@ -472,6 +502,10 @@ def _state_label(snapshot: DisplaySnapshot) -> str:
         return "Needs review"
     if snapshot.state == "watching":
         return "Watching"
+    if snapshot.state == "listening":
+        return "Listening…"
+    if snapshot.state == "thinking":
+        return "Optimizing prompt…"
     return "Idle"
 
 
@@ -897,6 +931,7 @@ def display_pet(
             _reload_pet_image_if_changed()
         raw_snapshot = status_cache["snapshot"]
         snapshot = _visible_snapshot(raw_snapshot, interaction, now)
+        snapshot = apply_transient_overlay(snapshot)
         canvas.delete("all")
         _draw_pet(canvas, snapshot, phase=now, pet_image=sprite_state["image"])
         _draw_tk_state_chip(canvas, snapshot)
