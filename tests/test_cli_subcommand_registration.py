@@ -240,3 +240,20 @@ def test_nested_subparser_missing_raises_friendly_assertion() -> None:
 
     with pytest.raises(AssertionError, match=r"no subparser named 'missing'"):
         _nested_subparser(p, "missing")
+
+
+EXPECTED_DICTATE_MODELS_SUBCOMMANDS = {
+    "list",
+    "current",
+    "download",
+    "set",
+    "remove",
+    "doctor",
+}
+
+
+def test_dictate_models_subcommands_registered() -> None:
+    parser = cli.build_parser()
+    dictate_sub = _nested_subparser(parser, "dictate")
+    models_sub = _nested_subparser(dictate_sub, "models")
+    assert _subparser_choices(models_sub) >= EXPECTED_DICTATE_MODELS_SUBCOMMANDS

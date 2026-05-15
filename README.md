@@ -341,6 +341,42 @@ ANTHROPIC_API_KEY=... agent-doctor eval replay \
 
 The eval pipeline is deliberately separated from the production scan path so the local-first guarantee is preserved. See [`docs/evaluation.md`](docs/evaluation.md) for the full framework, including scenario card schema, distractor kinds, the LLM-backed generator, and CI gating.
 
+### Dictate
+
+Voice → optimized-prompt clipboard pipeline. Press a hotkey, speak, paste an LLM-rewritten prompt into any AI app. macOS-first; transcription runs locally via `faster-whisper` or `whisper.cpp`.
+
+```bash
+agent-doctor dictate start     [--mode chat|coding|research|raw]
+agent-doctor dictate stop      # transcribe + enhance + copy to clipboard
+agent-doctor dictate toggle    # one-shot for hotkey binding
+agent-doctor dictate status    # JSON: recording? pid, mode, elapsed seconds
+agent-doctor dictate cancel    # discard the in-flight recording
+agent-doctor dictate history   # show recent transcripts + final prompts
+```
+
+See [`docs/dictate.md`](docs/dictate.md) for backends, modes, LLM configuration, the Karabiner example, and the full flag reference.
+
+#### Model picker (whisper.cpp)
+
+```bash
+# Show catalog + which models are installed
+agent-doctor dictate models list
+
+# Download an authorized model (Hugging Face/ggerganov)
+agent-doctor dictate models download ggml-large-v3-turbo
+
+# Make it the default for new recordings
+agent-doctor dictate models set ggml-large-v3-turbo
+
+# What's currently active?
+agent-doctor dictate models current
+
+# Re-verify SHA-256 of every installed model
+agent-doctor dictate models doctor
+```
+
+The catalog is allow-listed to `huggingface.co/ggerganov/whisper.cpp/resolve/main/`. Each download is SHA-256-verified and installed atomically into `~/.agent-doctor/models/whisper/`.
+
 ## Privacy model
 
 Agent Doctor is local-only by design.

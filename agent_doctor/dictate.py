@@ -500,6 +500,7 @@ def transcribe(
     chosen_model = (
         model_name
         or os.environ.get(ENV_WHISPER_MODEL)
+        or _settings_model_path()
         or DEFAULT_WHISPER_MODEL
     )
 
@@ -527,6 +528,21 @@ def transcribe(
     else:  # pragma: no cover - unreachable; validated above
         raise DictateError(f"backend {chosen_backend!r} not implemented")
     return text.strip()
+
+
+def _settings_model_path() -> Optional[str]:
+    """Return the configured whisper model path from settings, if any.
+
+    Settings are looked up lazily so importing dictate.py stays cheap and the
+    file is not required to exist (tests / first-run).
+    """
+
+    try:
+        from . import dictate_settings as _ds  # local import keeps cycle-free
+        settings = _ds.load()
+    except Exception:  # noqa: BLE001 - settings must never break dictate startup
+        return None
+    return settings.transcription.model_path or settings.transcription.model_id
 
 
 def _default_transcribe(
