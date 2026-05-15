@@ -444,6 +444,24 @@ agent-doctor dictate paste disable
 
 If the keystroke fails (e.g. permission revoked), the text is still on the clipboard and a notification fires explaining the fallback.
 
+#### Preferences window
+
+Open the GUI:
+
+```bash
+agent-doctor dictate preferences
+```
+
+or right-click the pet sprite and choose "Preferences…". Five tabs:
+
+- **Dictation** — model, language, extra recording buffer.
+- **LLM** — provider (LM Studio / Ollama / Custom), base URL, model, test connection.
+- **Hotkey** — chord, push-to-talk vs toggle, install / uninstall daemon.
+- **Paste** — auto-paste toggle, delay, permission test.
+- **Pet** — listening / thinking animation toggles, sprite picker.
+
+All changes save immediately. No Save button.
+
 ## Privacy model
 
 Agent Doctor is local-only by design.

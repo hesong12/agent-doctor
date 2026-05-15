@@ -896,7 +896,18 @@ def display_pet(
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def open_preferences() -> None:
+        # Lazy import: keeps the preferences UI out of the headless import path
+        # and only pulls tkinter for the new window when the user asks.
+        from agent_doctor.ui.preferences import open_window
+
+        # open_window() runs its own tk.Tk().mainloop(); run it in a daemon
+        # thread so the pet stays responsive and the thread won't block exit.
+        threading.Thread(target=open_window, daemon=True).start()
+
     context_menu = tk.Menu(root, tearoff=0)
+    context_menu.add_command(label="Preferences…", command=open_preferences)
+    context_menu.add_separator()
     context_menu.add_command(label="Change sprite…", command=change_sprite)
 
     def show_context_menu(event: Any) -> None:

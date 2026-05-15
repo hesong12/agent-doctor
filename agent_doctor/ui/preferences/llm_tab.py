@@ -1,0 +1,65 @@
+"""LLM tab logic (provider, base_url, model, optimize prompt)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Optional
+
+from agent_doctor import dictate_llm as dl
+from agent_doctor import dictate_settings as ds
+
+
+class LLMStateError(ValueError):
+    pass
+
+
+@dataclass
+class LLMState:
+    provider_id: str
+    base_url: str
+    model: Optional[str]
+    api_key: Optional[str]
+    timeout_s: int
+    optimize_prompt: Optional[str]
+
+    @classmethod
+    def from_settings(cls) -> "LLMState":
+        s = ds.load()
+        return cls(
+            provider_id=s.llm.provider_id,
+            base_url=s.llm.base_url,
+            model=s.llm.model,
+            api_key=None,
+            timeout_s=s.llm.timeout_s,
+            optimize_prompt=s.llm.optimize_prompt,
+        )
+
+    def apply(self) -> None:
+        provider = dl.get_provider(self.provider_id)
+        if not provider.allow_base_url_edit and self.base_url != provider.base_url:
+            raise LLMStateError(
+                f"provider {self.provider_id!r} requires base_url {provider.base_url!r}; "
+                "switch to 'custom' to override"
+            )
+        if self.timeout_s <= 0 or self.timeout_s > 600:
+            raise LLMStateError(f"timeout_s must be 1..600 (got {self.timeout_s})")
+        s = ds.load()
+        new = ds.LLMSettings(
+            provider_id=self.provider_id,
+            base_url=self.base_url,
+            model=self.model,
+            api_key_ref=s.llm.api_key_ref,
+            timeout_s=int(self.timeout_s),
+            optimize_prompt=self.optimize_prompt,
+        )
+        ds.save(ds.replace_section(s, llm=new))
+
+
+def probe_providers(timeout: float = 5.0) -> List[dl.ProbeResult]:
+    return dl.probe_all(timeout=timeout)
+
+
+def fetch_models_for(provider_id: str, base_url: Optional[str] = None, *, timeout: float = 5.0):
+    p = dl.get_provider(provider_id)
+    url = base_url or p.base_url
+    return dl.probe(url, p.models_endpoint, timeout=timeout)
