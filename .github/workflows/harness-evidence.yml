@@ -1,0 +1,196 @@
+name: harness-evidence
+
+# Hybrid runner pattern (per docs/operations/ci-self-hosted-fallback.md):
+#   primary  → ubuntu-latest (GitHub-hosted)
+#   fallback → self-hosted (Hermes, label "harness") — runs only when primary
+#              cannot start (billing block, hosted-runner outage, etc.)
+#   aggregate → required check that passes iff at least one of the two passed.
+#
+# The required branch-protection check is the "harness-evidence" job at the
+# bottom (the aggregator). Do not point branch protection at the primary or
+# fallback jobs directly — either can legitimately fail/skip in hybrid mode.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  check-primary:
+    name: harness-evidence-primary
+    runs-on: ubuntu-latest
+    # IMPORTANT: do NOT set continue-on-error here. With continue-on-error,
+    # `needs.<job>.result` evaluates as success for downstream `if:` and the
+    # fallback never runs. See memory/2026-05-13.md (Syntra footgun #2).
+    steps:
+      - name: Validate harness evidence and review thread state
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const owner    = context.repo.owner;
+            const repo     = context.repo.repo;
+            const body     = context.payload.pull_request.body || '';
+            let   failed   = false;
+
+            // ── 1. Unresolved review threads ────────────────────────────────
+            let unresolved = 0;
+            try {
+              const { repository: { pullRequest: { reviewThreads: { nodes } } } } =
+                await github.graphql(`
+                  query($owner: String!, $repo: String!, $number: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        reviewThreads(first: 100) {
+                          nodes { isResolved isOutdated }
+                        }
+                      }
+                    }
+                  }`, { owner, repo, number: prNumber });
+              unresolved = nodes.filter(t => !t.isResolved && !t.isOutdated).length;
+            } catch (e) {
+              core.warning(`Could not fetch review threads: ${e.message}`);
+            }
+
+            if (unresolved > 0) {
+              core.error(`${unresolved} unresolved review thread(s) — resolve all threads before merge.`);
+              failed = true;
+            } else {
+              core.info(`review threads: 0 unresolved ✓`);
+            }
+
+            // ── 2. Harness evidence in PR body ──────────────────────────────
+            const EVIDENCE = [
+              'ready_for_song',
+              'job-contract.json',
+              'closure.json',
+              'dev-autopilot submit',
+            ];
+            const BYPASS = [
+              'harness-bypass:',
+              '--no-contract',
+            ];
+
+            const hasEvidence = EVIDENCE.some(m => body.includes(m));
+            const hasBypass   = BYPASS.some(m => body.includes(m));
+
+            if (!hasEvidence && !hasBypass) {
+              core.error([
+                'No harness evidence in PR body.',
+                'Include one of:  ready_for_song · job-contract.json · closure.json · dev-autopilot submit',
+                'Or bypass with:  harness-bypass: <reason>  |  --no-contract',
+              ].join('\n'));
+              failed = true;
+            } else {
+              core.info(`harness-evidence: PASS (${hasEvidence ? 'evidence' : 'bypass'}) ✓`);
+            }
+
+            if (failed) {
+              core.setFailed('harness-evidence check failed — see errors above.');
+            }
+
+  check-fallback:
+    name: harness-evidence-fallback
+    needs: check-primary
+    # Fallback runs ONLY when primary failed or was skipped (e.g. billing
+    # block prevented the hosted runner from picking the job up at all).
+    if: always() && needs.check-primary.result != 'success'
+    runs-on: [self-hosted, linux, x64, harness]
+    steps:
+      - name: Validate harness evidence and review thread state (self-hosted)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Identical logic to check-primary. Kept inline rather than via a
+            // composite action because the check is small JS-only and a
+            // composite action would add a clone step the self-hosted runner
+            // does not need.
+            const prNumber = context.payload.pull_request.number;
+            const owner    = context.repo.owner;
+            const repo     = context.repo.repo;
+            const body     = context.payload.pull_request.body || '';
+            let   failed   = false;
+
+            let unresolved = 0;
+            try {
+              const { repository: { pullRequest: { reviewThreads: { nodes } } } } =
+                await github.graphql(`
+                  query($owner: String!, $repo: String!, $number: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        reviewThreads(first: 100) {
+                          nodes { isResolved isOutdated }
+                        }
+                      }
+                    }
+                  }`, { owner, repo, number: prNumber });
+              unresolved = nodes.filter(t => !t.isResolved && !t.isOutdated).length;
+            } catch (e) {
+              core.warning(`Could not fetch review threads: ${e.message}`);
+            }
+
+            if (unresolved > 0) {
+              core.error(`${unresolved} unresolved review thread(s) — resolve all threads before merge.`);
+              failed = true;
+            } else {
+              core.info(`review threads: 0 unresolved ✓`);
+            }
+
+            const EVIDENCE = [
+              'ready_for_song',
+              'job-contract.json',
+              'closure.json',
+              'dev-autopilot submit',
+            ];
+            const BYPASS = [
+              'harness-bypass:',
+              '--no-contract',
+            ];
+
+            const hasEvidence = EVIDENCE.some(m => body.includes(m));
+            const hasBypass   = BYPASS.some(m => body.includes(m));
+
+            if (!hasEvidence && !hasBypass) {
+              core.error([
+                'No harness evidence in PR body.',
+                'Include one of:  ready_for_song · job-contract.json · closure.json · dev-autopilot submit',
+                'Or bypass with:  harness-bypass: <reason>  |  --no-contract',
+              ].join('\n'));
+              failed = true;
+            } else {
+              core.info(`harness-evidence: PASS via fallback runner (${hasEvidence ? 'evidence' : 'bypass'}) ✓`);
+            }
+
+            if (failed) {
+              core.setFailed('harness-evidence (fallback) check failed — see errors above.');
+            }
+
+  # ── Aggregator ────────────────────────────────────────────────────────────
+  # This is the job branch protection must require. It passes iff at least
+  # one of {primary, fallback} produced a 'success' result.
+  harness-evidence:
+    name: harness-evidence
+    needs: [check-primary, check-fallback]
+    if: always()
+    # Aggregator runs on self-hosted because that is the runner class that
+    # remains available when GitHub-hosted runners are blocked by billing.
+    # Running on ubuntu-latest would leave the required check permanently
+    # pending during a billing outage.
+    runs-on: [self-hosted, linux, x64, harness]
+    steps:
+      - name: Aggregate primary/fallback results
+        run: |
+          PRIMARY="${{ needs.check-primary.result }}"
+          FALLBACK="${{ needs.check-fallback.result }}"
+          echo "primary  = $PRIMARY"
+          echo "fallback = $FALLBACK"
+          if [ "$PRIMARY" = "success" ] || [ "$FALLBACK" = "success" ]; then
+            echo "harness-evidence: PASS (primary=$PRIMARY, fallback=$FALLBACK)"
+            exit 0
+          fi
+          echo "harness-evidence: FAIL — neither primary nor fallback succeeded."
+          exit 1

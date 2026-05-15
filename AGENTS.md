@@ -129,3 +129,12 @@ This project is indexed by GitNexus as **agent-doctor** (5878 symbols, 9041 rela
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+<!-- HARNESS-INCLUDE-START (managed by harness install — do not edit) -->
+## Harness rules (auto-installed)
+
+See [AGENTS.harness.md](./AGENTS.harness.md) for harness-wide rules that apply
+to every agent (Claude Code, Codex, sub-agents) working in this repo. Those
+rules are versioned in `song-ai-harness/templates/install/AGENTS.harness.md`
+and refreshed by `harness install <repo>`.
+<!-- HARNESS-INCLUDE-END -->
