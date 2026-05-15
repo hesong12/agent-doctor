@@ -132,25 +132,33 @@ def _from_dict(payload: dict[str, Any]) -> DictateSettings:
             f"unsupported settings version {version} (this build supports {SCHEMA_VERSION})"
         )
     t = payload.get("transcription") or {}
-    l = payload.get("llm") or {}
+    llm_d = payload.get("llm") or {}
     h = payload.get("hotkey") or {}
     p = payload.get("paste") or {}
     pet = payload.get("pet") or {}
+    try:
+        extra_buffer_ms = int(t.get("extra_buffer_ms", 150))
+        timeout_s = int(llm_d.get("timeout_s", 30))
+        paste_delay_ms = int(p.get("paste_delay_ms", 60))
+    except (ValueError, TypeError) as exc:
+        raise DictateSettingsError(
+            f"non-numeric integer field in settings: {exc}"
+        ) from exc
     return DictateSettings(
         version=version,
         transcription=TranscriptionSettings(
             model_id=t.get("model_id"),
             model_path=t.get("model_path"),
             language=t.get("language", "auto"),
-            extra_buffer_ms=int(t.get("extra_buffer_ms", 150)),
+            extra_buffer_ms=extra_buffer_ms,
         ),
         llm=LLMSettings(
-            provider_id=l.get("provider_id", "lm_studio"),
-            base_url=l.get("base_url", "http://localhost:1234/v1"),
-            model=l.get("model"),
-            api_key_ref=l.get("api_key_ref"),
-            timeout_s=int(l.get("timeout_s", 30)),
-            optimize_prompt=l.get("optimize_prompt"),
+            provider_id=llm_d.get("provider_id", "lm_studio"),
+            base_url=llm_d.get("base_url", "http://localhost:1234/v1"),
+            model=llm_d.get("model"),
+            api_key_ref=llm_d.get("api_key_ref"),
+            timeout_s=timeout_s,
+            optimize_prompt=llm_d.get("optimize_prompt"),
         ),
         hotkey=HotkeySettings(
             binding=h.get("binding", "ctrl+option+space"),
@@ -159,7 +167,7 @@ def _from_dict(payload: dict[str, Any]) -> DictateSettings:
         ),
         paste=PasteSettings(
             auto_paste=bool(p.get("auto_paste", False)),
-            paste_delay_ms=int(p.get("paste_delay_ms", 60)),
+            paste_delay_ms=paste_delay_ms,
             last_permission_check=p.get("last_permission_check"),
         ),
         pet=PetSettings(
@@ -188,24 +196,51 @@ def _ensure_dir() -> None:
 
 
 def _atomic_write(dest: Path, body: bytes) -> None:
-    """Write ``body`` to ``dest`` atomically with mode 0600."""
+    """Write ``body`` to ``dest`` atomically with mode 0600.
+
+    Mirrors the canonical pattern in ``agent_doctor.settings._atomic_write``:
+    fchmod the temp fd to ``_FILE_MODE`` BEFORE writing the body so the bytes
+    never live on disk under a looser mode, fsync, then atomically replace
+    into place. On any failure the temp file is unlinked so we don't leave
+    orphan ``.dictate.json.*`` droppings in the config dir.
+    """
 
     _ensure_dir()
     fd, tmp_name = tempfile.mkstemp(prefix=".dictate.json.", dir=str(dest.parent))
+    tmp_path = Path(tmp_name)
     try:
-        os.write(fd, body)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.chmod(tmp_name, _FILE_MODE)
-    os.replace(tmp_name, dest)
+        try:
+            os.fchmod(fd, _FILE_MODE)
+            os.write(fd, body)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, dest)
+    except Exception:
+        # Atomic-replace never partially-applies on POSIX, but an fchmod /
+        # write / fsync / replace error leaves the temp file on disk — clean
+        # it up so we don't litter the config dir.
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def save(settings: DictateSettings) -> Path:
-    """Persist ``settings`` to ``CONFIG_FILE`` atomically. Returns the path."""
+    """Persist ``settings`` to ``CONFIG_FILE`` atomically. Returns the path.
+
+    Every OS-level failure is wrapped in ``DictateSettingsError`` so the
+    public contract is "every exception path raises DictateSettingsError".
+    """
 
     body = json.dumps(_to_dict(settings), indent=2, sort_keys=True).encode("utf-8")
-    _atomic_write(CONFIG_FILE, body)
+    try:
+        _atomic_write(CONFIG_FILE, body)
+    except OSError as exc:
+        raise DictateSettingsError(
+            f"could not write {CONFIG_FILE}: {exc}"
+        ) from exc
     return CONFIG_FILE
 
 

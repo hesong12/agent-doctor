@@ -97,3 +97,47 @@ def test_load_future_version_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
     with pytest.raises(ds.DictateSettingsError, match="version"):
         ds.load()
+
+
+def test_save_wraps_oserror_as_dictate_settings_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare OSError from the OS layer must surface as DictateSettingsError."""
+
+    cfg = tmp_path / "dictate.json"
+    monkeypatch.setattr(ds, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(ds.os, "replace", boom)
+
+    with pytest.raises(ds.DictateSettingsError, match="could not write"):
+        ds.save(ds.default_settings())
+
+    # And the temp-file cleanup path should have unlinked the tmp file —
+    # no .dictate.json.* droppings left in the config dir.
+    leftover = [p for p in tmp_path.iterdir() if p.name.startswith(".dictate.json.")]
+    assert leftover == [], f"orphan temp files left behind: {leftover}"
+
+
+def test_load_non_numeric_extra_buffer_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-numeric int fields must raise DictateSettingsError, not bare ValueError."""
+
+    cfg = tmp_path / "dictate.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "transcription": {"extra_buffer_ms": "not a number"},
+            }
+        )
+    )
+    monkeypatch.setattr(ds, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+
+    with pytest.raises(ds.DictateSettingsError, match="non-numeric"):
+        ds.load()
