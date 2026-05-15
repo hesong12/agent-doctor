@@ -9,6 +9,7 @@ import pytest
 
 from agent_doctor import dictate_settings as ds
 from agent_doctor.ui.preferences import dictation_tab as dt
+from agent_doctor.ui.preferences import llm_tab as lt
 
 
 def test_dictation_state_initialises_from_settings(
@@ -72,3 +73,48 @@ def test_install_options_lists_catalog_with_status(
     for opt in options:
         assert "installed" in opt
         assert "display_name" in opt
+
+
+def test_llm_state_from_and_to_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    state = lt.LLMState(
+        provider_id="ollama",
+        base_url="http://localhost:11434/v1",
+        model="llama3.1:8b",
+        api_key=None,
+        timeout_s=20,
+        optimize_prompt=None,
+    )
+    state.apply()
+    loaded = ds.load()
+    assert loaded.llm.provider_id == "ollama"
+    assert loaded.llm.base_url == "http://localhost:11434/v1"
+    assert loaded.llm.model == "llama3.1:8b"
+    assert loaded.llm.timeout_s == 20
+
+
+def test_llm_state_blocks_custom_base_url_on_non_custom_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    with pytest.raises(lt.LLMStateError, match="custom"):
+        lt.LLMState(
+            provider_id="lm_studio",
+            base_url="http://elsewhere/v1",
+            model=None,
+            api_key=None,
+            timeout_s=30,
+            optimize_prompt=None,
+        ).apply()
+
+
+def test_llm_state_probe_returns_rows() -> None:
+    """The tab uses ``probe_all`` so we just sanity-check the bridge."""
+
+    rows = lt.probe_providers(timeout=0.5)
+    ids = {r.provider_id for r in rows}
+    assert ids == {"lm_studio", "ollama", "custom"}
