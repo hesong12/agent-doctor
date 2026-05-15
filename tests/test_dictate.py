@@ -1679,3 +1679,37 @@ def test_cli_dictate_stop_records_explicit_whisper_model(
     assert rows[0]["whisper_model"] == "/path/to/ggml-large-v3-turbo.bin"
     # detect_backend on a .bin path -> 'whisper-cpp'
     assert rows[0]["backend"] == "whisper-cpp"
+
+
+def test_transcribe_uses_settings_model_path_when_not_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When CLI/env do not supply a model, transcribe falls back to settings."""
+
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        transcription=ds.TranscriptionSettings(
+            model_id="ggml-x",
+            model_path=str(tmp_path / "ggml-x.bin"),
+        ),
+    )
+    ds.save(settings)
+
+    monkeypatch.delenv(dictate.ENV_WHISPER_MODEL, raising=False)
+    monkeypatch.delenv(dictate.ENV_BACKEND, raising=False)
+
+    seen: dict[str, str] = {}
+
+    def fake_transcriber(audio: Path, model: str, language: object) -> str:
+        seen["model"] = model
+        return "hello"
+
+    audio = tmp_path / "x.wav"
+    audio.write_bytes(b"\x00")
+    out = dictate.transcribe(audio, transcriber=fake_transcriber)
+    assert out == "hello"
+    assert seen["model"] == str(tmp_path / "ggml-x.bin")
