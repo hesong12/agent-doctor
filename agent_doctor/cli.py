@@ -641,6 +641,46 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dictate_history.set_defaults(func=_cmd_dictate_history)
 
+    dictate_models = dictate_subs.add_parser(
+        "models",
+        help="Manage whisper.cpp transcription models (list/download/set/remove/doctor).",
+    )
+    dictate_models_subs = dictate_models.add_subparsers(
+        dest="dictate_models_cmd", required=True
+    )
+
+    dm_list = dictate_models_subs.add_parser("list", help="Show catalog + install status.")
+    dm_list.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
+    dm_list.set_defaults(func=_cmd_dictate_models_list)
+
+    dm_current = dictate_models_subs.add_parser("current", help="Print the active model.")
+    dm_current.add_argument("--json", action="store_true")
+    dm_current.set_defaults(func=_cmd_dictate_models_current)
+
+    dm_download = dictate_models_subs.add_parser(
+        "download", help="Download a model from the authorized catalog."
+    )
+    dm_download.add_argument("model_id", help="Catalog id (see 'list').")
+    dm_download.add_argument("--force", action="store_true", help="Re-download even if installed.")
+    dm_download.set_defaults(func=_cmd_dictate_models_download)
+
+    dm_set = dictate_models_subs.add_parser(
+        "set", help="Mark a downloaded model as the active transcription model."
+    )
+    dm_set.add_argument("model_id")
+    dm_set.set_defaults(func=_cmd_dictate_models_set)
+
+    dm_remove = dictate_models_subs.add_parser(
+        "remove", help="Delete the on-disk file for a model id."
+    )
+    dm_remove.add_argument("model_id")
+    dm_remove.set_defaults(func=_cmd_dictate_models_remove)
+
+    dm_doctor = dictate_models_subs.add_parser(
+        "doctor", help="Re-verify SHA-256 of all installed models."
+    )
+    dm_doctor.set_defaults(func=_cmd_dictate_models_doctor)
+
     # Adapter subcommands ------------------------------------------------------
     adapters = subparsers.add_parser(
         "adapters",
@@ -2328,6 +2368,91 @@ def _cmd_calibrate_review(args: argparse.Namespace) -> int:
 
 def _exists(path: Path) -> str:
     return "yes" if path.expanduser().exists() else "no"
+
+
+def _cmd_dictate_models_list(args: argparse.Namespace) -> int:
+    from . import dictate_models as _dm
+
+    rows = _dm.list_status()
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2, sort_keys=True))
+        return 0
+    header = f"{'ID':<28} {'Status':<10} {'Size':>10}  Notes"
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        status = "installed" if row["installed"] else "available"
+        size_mb = int(row["size_bytes"]) / (1024 * 1024)
+        print(
+            f"{row['id']:<28} {status:<10} {size_mb:>8.1f} MB  {row['display_name']}"
+        )
+    return 0
+
+
+def _cmd_dictate_models_current(args: argparse.Namespace) -> int:
+    from . import dictate_models as _dm
+
+    cur = _dm.current()
+    if getattr(args, "json", False):
+        print(json.dumps(cur or {}, indent=2, sort_keys=True))
+        return 0
+    if cur is None:
+        print("no transcription model selected")
+        print("run 'agent-doctor dictate models list' and 'set' one")
+        return 0
+    print(f"{cur['id']}  ->  {cur['path']}")
+    return 0
+
+
+def _cmd_dictate_models_download(args: argparse.Namespace) -> int:
+    from . import dictate_models as _dm
+
+    try:
+        path = _dm.download(args.model_id, force=args.force)
+    except _dm.DictateModelsError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+    print(f"installed: {path}")
+    return 0
+
+
+def _cmd_dictate_models_set(args: argparse.Namespace) -> int:
+    from . import dictate_models as _dm
+
+    try:
+        path = _dm.set_active(args.model_id)
+    except _dm.DictateModelsError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+    print(f"active model: {args.model_id}  ->  {path}")
+    return 0
+
+
+def _cmd_dictate_models_remove(args: argparse.Namespace) -> int:
+    from . import dictate_models as _dm
+
+    try:
+        removed = _dm.remove(args.model_id)
+    except _dm.DictateModelsError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+    print(f"removed: {args.model_id}" if removed else f"not installed: {args.model_id}")
+    return 0
+
+
+def _cmd_dictate_models_doctor(_args: argparse.Namespace) -> int:
+    from . import dictate_models as _dm
+
+    rows: list[dict[str, object]] = []
+    rc = 0
+    for entry in _dm.catalog():
+        report = _dm.verify(entry.id)
+        report["id"] = entry.id
+        rows.append(report)
+        if report["installed"] and not report["ok"]:
+            rc = 2
+    print(json.dumps(rows, indent=2, sort_keys=True))
+    return rc
 
 
 if __name__ == "__main__":
