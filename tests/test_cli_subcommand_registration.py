@@ -267,3 +267,13 @@ def test_dictate_llm_subcommands_registered() -> None:
     dictate_sub = _nested_subparser(parser, "dictate")
     llm_sub = _nested_subparser(dictate_sub, "llm")
     assert _subparser_choices(llm_sub) >= EXPECTED_DICTATE_LLM_SUBCOMMANDS
+
+
+EXPECTED_DICTATE_HOTKEY_SUBCOMMANDS = {"install", "set", "show", "test", "uninstall"}
+
+
+def test_dictate_hotkey_subcommands_registered() -> None:
+    parser = cli.build_parser()
+    dictate_sub = _nested_subparser(parser, "dictate")
+    hk_sub = _nested_subparser(dictate_sub, "hotkey")
+    assert _subparser_choices(hk_sub) >= EXPECTED_DICTATE_HOTKEY_SUBCOMMANDS

@@ -713,6 +713,62 @@ def build_parser() -> argparse.ArgumentParser:
     )
     llm_test.set_defaults(func=_cmd_dictate_llm_test)
 
+    dictate_hotkey = dictate_subs.add_parser(
+        "hotkey",
+        help="Configure the global push-to-talk hotkey daemon (macOS).",
+    )
+    dictate_hotkey_subs = dictate_hotkey.add_subparsers(
+        dest="dictate_hotkey_cmd", required=True
+    )
+
+    hk_install = dictate_hotkey_subs.add_parser(
+        "install", help="Compile the Swift helper and load the LaunchAgent."
+    )
+    hk_install.add_argument(
+        "--agent-doctor-bin",
+        default=None,
+        help="Path to the agent-doctor executable (defaults to `which agent-doctor`).",
+    )
+    hk_install.set_defaults(func=_cmd_dictate_hotkey_install)
+
+    hk_set = dictate_hotkey_subs.add_parser(
+        "set", help="Update the chord and/or push-to-talk mode."
+    )
+    hk_set.add_argument("binding", help="e.g. 'ctrl+option+space'.")
+    hk_set.add_argument(
+        "--push-to-talk",
+        dest="push_to_talk",
+        action="store_true",
+        default=None,
+        help="Force push-to-talk mode (hold to record).",
+    )
+    hk_set.add_argument(
+        "--toggle",
+        dest="push_to_talk",
+        action="store_false",
+        help="Force toggle mode (single press).",
+    )
+    hk_set.set_defaults(func=_cmd_dictate_hotkey_set)
+
+    hk_show = dictate_hotkey_subs.add_parser(
+        "show", help="Show binding + daemon state."
+    )
+    hk_show.add_argument("--json", action="store_true")
+    hk_show.set_defaults(func=_cmd_dictate_hotkey_show)
+
+    hk_test = dictate_hotkey_subs.add_parser(
+        "test", help="Capture the next chord pressed and print its canonical form."
+    )
+    hk_test.add_argument(
+        "--seconds", type=float, default=5.0, help="Listen window (default 5s)."
+    )
+    hk_test.set_defaults(func=_cmd_dictate_hotkey_test)
+
+    hk_uninstall = dictate_hotkey_subs.add_parser(
+        "uninstall", help="Unload and remove the LaunchAgent."
+    )
+    hk_uninstall.set_defaults(func=_cmd_dictate_hotkey_uninstall)
+
     # Adapter subcommands ------------------------------------------------------
     adapters = subparsers.add_parser(
         "adapters",
@@ -2605,6 +2661,86 @@ def _cmd_dictate_llm_test(args: argparse.Namespace) -> int:
         print(f"agent-doctor: {exc}", file=sys.stderr)
         return 2
     print(result)
+    return 0
+
+
+def _cmd_dictate_hotkey_install(args: argparse.Namespace) -> int:
+    from . import hotkey_install as _hi
+
+    try:
+        result = _hi.install(agent_doctor_bin=args.agent_doctor_bin)
+    except _hi.HotkeyInstallError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, indent=2, sort_keys=True))
+    print(
+        "\nNext: grant 'Input Monitoring' permission.\n"
+        "  open 'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent'\n"
+        "After granting, the daemon picks it up automatically (LaunchAgent KeepAlive=true).",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _cmd_dictate_hotkey_set(args: argparse.Namespace) -> int:
+    from . import dictate_settings as _ds
+    from . import hotkey_install as _hi
+    from . import hotkey_parse as _hp
+
+    try:
+        chord = _hp.parse(args.binding)
+    except _hp.HotkeyParseError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+
+    settings = _ds.load()
+    new = _ds.HotkeySettings(
+        binding=chord.canonical(),
+        push_to_talk=settings.hotkey.push_to_talk if args.push_to_talk is None else bool(args.push_to_talk),
+        daemon_enabled=settings.hotkey.daemon_enabled,
+    )
+    _ds.save(_ds.replace_section(settings, hotkey=new))
+    if _hi.DEFAULT_PLIST_PATH.exists():
+        _hi.sighup()
+    print(f"binding: {new.binding}\npush_to_talk: {new.push_to_talk}")
+    return 0
+
+
+def _cmd_dictate_hotkey_show(args: argparse.Namespace) -> int:
+    from . import dictate_settings as _ds
+    from . import hotkey_install as _hi
+
+    settings = _ds.load()
+    status = _hi.status()
+    payload = {
+        "binding": settings.hotkey.binding,
+        "push_to_talk": settings.hotkey.push_to_talk,
+        "daemon_enabled": settings.hotkey.daemon_enabled,
+        **status,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    for k, v in payload.items():
+        print(f"{k}: {v}")
+    return 0
+
+
+def _cmd_dictate_hotkey_test(args: argparse.Namespace) -> int:
+    print(
+        "agent-doctor: 'hotkey test' is a UI-only smoke check.\n"
+        "  Open the Preferences window or watch the daemon log at\n"
+        f"  ~/Library/Logs/agent-doctor-hotkey.log to verify the chord.",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _cmd_dictate_hotkey_uninstall(_args: argparse.Namespace) -> int:
+    from . import hotkey_install as _hi
+
+    result = _hi.uninstall()
+    print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
 
