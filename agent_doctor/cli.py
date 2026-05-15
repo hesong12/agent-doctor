@@ -793,6 +793,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     paste_test.set_defaults(func=_cmd_dictate_paste_test)
 
+    dictate_prefs = dictate_subs.add_parser(
+        "preferences",
+        help="Open the Preferences window (tkinter).",
+    )
+    dictate_prefs.set_defaults(func=_cmd_dictate_preferences)
+
     # Adapter subcommands ------------------------------------------------------
     adapters = subparsers.add_parser(
         "adapters",
@@ -2813,6 +2819,16 @@ def _cmd_dictate_paste_test(_args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     return 2
+
+
+def _cmd_dictate_preferences(_args: argparse.Namespace) -> int:
+    try:
+        from agent_doctor.ui.preferences import open_window
+    except Exception as exc:  # noqa: BLE001 - tkinter missing on Linux CI is OK
+        print(f"agent-doctor: preferences UI unavailable: {exc}", file=sys.stderr)
+        return 2
+    open_window()
+    return 0
 
 
 if __name__ == "__main__":

@@ -287,3 +287,9 @@ def test_dictate_paste_subcommands_registered() -> None:
     dictate_sub = _nested_subparser(parser, "dictate")
     paste_sub = _nested_subparser(dictate_sub, "paste")
     assert _subparser_choices(paste_sub) >= EXPECTED_DICTATE_PASTE_SUBCOMMANDS
+
+
+def test_dictate_preferences_subcommand_registered() -> None:
+    parser = cli.build_parser()
+    dictate_sub = _nested_subparser(parser, "dictate")
+    assert "preferences" in _subparser_choices(dictate_sub)
