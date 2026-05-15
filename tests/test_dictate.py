@@ -334,7 +334,10 @@ def test_enhance_prompt_invokes_caller_with_messages() -> None:
     )
     assert out == "rewritten prompt"
     assert seen["messages"][0]["role"] == "system"
-    assert "acceptance criteria" in seen["messages"][0]["content"].lower()
+    # Phase 2: every non-raw mode collapses to OPTIMIZE_PROMPT, so we assert
+    # against a substring guaranteed to live in that single prompt rather
+    # than the old per-mode 'acceptance criteria' wording.
+    assert "output the rewritten prompt only" in seen["messages"][0]["content"].lower()
     assert seen["messages"][1]["role"] == "user"
     assert seen["messages"][1]["content"].startswith("build me a thing")
 
@@ -1713,3 +1716,40 @@ def test_transcribe_uses_settings_model_path_when_not_given(
     out = dictate.transcribe(audio, transcriber=fake_transcriber)
     assert out == "hello"
     assert seen["model"] == str(tmp_path / "ggml-x.bin")
+
+
+# --------------------------------------------------------------------------- #
+# OPTIMIZE_PROMPT collapse (Phase 2 - T4)                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_optimize_prompt_is_used_for_every_non_raw_mode() -> None:
+    """Phase 2: all non-raw modes collapse to OPTIMIZE_PROMPT."""
+
+    text_chat = dictate.mode_system_prompt("chat")
+    text_coding = dictate.mode_system_prompt("coding")
+    text_research = dictate.mode_system_prompt("research")
+    text_optimize = dictate.mode_system_prompt("optimize")
+    assert text_chat == text_coding == text_research == text_optimize
+    assert "optimized for any downstream LLM" in text_chat
+
+
+def test_optimize_prompt_honours_settings_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    custom = "Custom override prompt content"
+    settings = ds.replace_section(
+        ds.default_settings(),
+        llm=ds.LLMSettings(optimize_prompt=custom),
+    )
+    ds.save(settings)
+    assert dictate.mode_system_prompt("optimize") == custom
+
+
+def test_raw_mode_still_rejects_prompt_request() -> None:
+    with pytest.raises(dictate.DictateError, match="raw"):
+        dictate.mode_system_prompt("raw")
