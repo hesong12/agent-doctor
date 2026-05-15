@@ -595,16 +595,19 @@ def test_cli_dictate_toggle_preserves_persisted_mode(
 ) -> None:
     """Codex P2: when 'dictate toggle' fires the stop branch and the user did
     NOT pass --mode, the persisted mode (from start) must be reused, not the
-    argparse default ('chat')."""
+    argparse default.
 
-    # Arrange: persisted state with mode='coding' and a real WAV pre-created.
+    Phase 2 update: we use 'optimize' (the canonical non-raw, non-deprecated
+    mode) so the assertion survives the chat/coding/research collapse."""
+
+    # Arrange: persisted state with mode='optimize' and a real WAV pre-created.
     monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
     audio = tmp_path / "rec.wav"
     audio.write_bytes(b"RIFF....fake")
     saved = DictateState(
         pid=99999,
         audio_path=str(audio),
-        mode="coding",
+        mode="optimize",
         started_at=time.time(),
         recorder="sox",
         extras={},
@@ -640,7 +643,7 @@ def test_cli_dictate_toggle_preserves_persisted_mode(
 
     rc = main(["dictate", "toggle"])  # no --mode flag
     assert rc == 0
-    assert captured_mode["mode"] == "coding", (
+    assert captured_mode["mode"] == "optimize", (
         "toggle without --mode should reuse the mode from the persisted state, "
         f"got {captured_mode.get('mode')!r}"
     )
@@ -650,13 +653,17 @@ def test_cli_dictate_toggle_explicit_mode_overrides_persisted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Companion test: passing --mode at toggle time must override the
-    persisted mode."""
+    persisted mode.
+
+    Phase 2 update: persisted='optimize' (would enhance) is overridden by
+    --mode raw (skips the enhancer entirely). enhance_prompt should NOT be
+    called — that is the observable signal that the override took effect."""
 
     monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
     audio = tmp_path / "rec.wav"
     audio.write_bytes(b"RIFF....fake")
     saved = DictateState(
-        pid=99999, audio_path=str(audio), mode="coding",
+        pid=99999, audio_path=str(audio), mode="optimize",
         started_at=time.time(), recorder="sox", extras={},
     )
     write_state(saved, state_dir=tmp_path)
@@ -665,19 +672,20 @@ def test_cli_dictate_toggle_explicit_mode_overrides_persisted(
     monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
     monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hello")
     seen: Dict[str, str] = {}
-    monkeypatch.setattr(
-        dictate,
-        "enhance_prompt",
-        lambda transcript, *, mode, config=None, caller=None: seen.setdefault("mode", mode) or "x",
-    )
+
+    def _should_not_be_called(*_a: Any, **_k: Any) -> str:
+        seen["called"] = "yes"
+        return "should-not-happen"
+
+    monkeypatch.setattr(dictate, "enhance_prompt", _should_not_be_called)
     monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
     monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
 
     from agent_doctor.cli import main
 
-    rc = main(["dictate", "toggle", "--mode", "research"])
+    rc = main(["dictate", "toggle", "--mode", "raw"])
     assert rc == 0
-    assert seen["mode"] == "research"
+    assert "called" not in seen, "raw override must short-circuit the enhancer"
 
 
 def test_cli_dictate_stop_does_not_double_transcribe_on_enhancer_failure(
@@ -1753,3 +1761,35 @@ def test_optimize_prompt_honours_settings_override(
 def test_raw_mode_still_rejects_prompt_request() -> None:
     with pytest.raises(dictate.DictateError, match="raw"):
         dictate.mode_system_prompt("raw")
+
+
+# --------------------------------------------------------------------------- #
+# Deprecation warning for old modes (Phase 2 - T5)                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_dictate_warns_on_deprecated_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--mode chat` etc. work but print a stderr deprecation notice."""
+
+    from agent_doctor import cli, dictate as _d
+
+    # No real recording will run; we just exercise argument parsing + the
+    # deprecation hook. _cmd_dictate_start aborts cleanly with an audio error
+    # when no recorder is on PATH. We monkeypatch _detect_recorder to raise so
+    # the path runs deterministically.
+    def _no_recorder(*_a: object, **_k: object) -> str:
+        raise _d.DictateError("no recorder")
+
+    monkeypatch.setattr(_d, "_detect_recorder", _no_recorder)
+    monkeypatch.setattr(_d, "default_state_dir", lambda: tmp_path)
+
+    rc = cli.main(["dictate", "start", "--mode", "chat"])
+    captured = capsys.readouterr()
+    assert "deprecated" in captured.err.lower()
+    assert "optimize" in captured.err.lower()
+    # The actual start fails because we stubbed out the recorder; rc == 2 is fine.
+    assert rc == 2

@@ -1663,10 +1663,27 @@ def _cmd_mcp_serve(_: argparse.Namespace) -> int:
     return 0
 
 
+def _maybe_deprecate_mode(mode: Optional[str]) -> Optional[str]:
+    """If ``mode`` is one of the deprecated chat/coding/research aliases, emit a
+    one-line stderr warning and collapse to 'optimize'. Returns the canonical mode."""
+
+    from . import dictate as _d
+
+    if mode in _d.DEPRECATED_MODES:
+        print(
+            f"agent-doctor: --mode {mode!r} is deprecated; using 'optimize' "
+            "(see CHANGELOG)",
+            file=sys.stderr,
+        )
+        return "optimize"
+    return mode
+
+
 def _cmd_dictate_start(args: argparse.Namespace) -> int:
     from . import dictate as _d
 
-    mode = getattr(args, "mode", None) or _d.DEFAULT_MODE
+    raw_mode = getattr(args, "mode", None)
+    mode = _maybe_deprecate_mode(raw_mode) or _d.DEFAULT_MODE
     try:
         state = _d.start_recording(mode=mode)
     except _d.DictateError as exc:
@@ -1826,8 +1843,8 @@ def _dictate_finish(args: argparse.Namespace) -> int:
     # explicitly overrode it on the stop/toggle invocation. argparse default
     # is None for --mode (see _add_common_dictate_args) so getattr returning
     # None means "user did not pass --mode".
-    cli_mode = getattr(args, "mode", None)
-    mode = cli_mode if cli_mode is not None else state.mode
+    cli_mode = _maybe_deprecate_mode(getattr(args, "mode", None))
+    mode = cli_mode if cli_mode is not None else _maybe_deprecate_mode(state.mode) or state.mode
 
     # Audio feedback (opt-in). The "done" / "fail" sounds fire later; play
     # the "stop chime" inline so the user hears that 'stop' was registered
