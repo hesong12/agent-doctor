@@ -5,6 +5,8 @@ Public API:
 - ``write_plist(path, helper, agent_doctor_bin)`` — produce the LaunchAgent plist.
 - ``install(agent_doctor_bin=None)`` — build, write plist, launchctl bootstrap.
 - ``sighup()`` — kick the running daemon so it re-reads ``dictate.json``.
+- ``pause()`` — stop the running LaunchAgent without removing the plist.
+- ``resume()`` — re-bootstrap an existing plist (no rebuild).
 - ``uninstall()`` — launchctl bootout + remove the plist.
 
 All shell-outs go through ``_run_launchctl`` so tests can stub them.
@@ -138,6 +140,39 @@ def sighup() -> bool:
         ["launchctl", "kill", "SIGHUP", f"{_domain_target()}/{LABEL}"]
     )
     return proc.returncode == 0
+
+
+def pause() -> bool:
+    """Stop the running LaunchAgent without removing the plist.
+
+    Returns True iff launchctl bootout reported success. The plist itself is
+    untouched so a subsequent :func:`resume` can re-bootstrap without a full
+    rebuild.
+    """
+
+    proc = _run_launchctl(["launchctl", "bootout", f"{_domain_target()}/{LABEL}"])
+    return proc.returncode == 0
+
+
+def resume() -> dict[str, str]:
+    """Re-bootstrap an existing plist (no rebuild).
+
+    Raises :class:`HotkeyInstallError` if the plist is missing — callers
+    should fall back to :func:`install` in that case.
+    """
+
+    plist = DEFAULT_PLIST_PATH
+    if not plist.exists():
+        raise HotkeyInstallError(
+            f"plist not found at {plist}; run install first"
+        )
+    proc = _run_launchctl(["launchctl", "bootstrap", _domain_target(), str(plist)])
+    if proc.returncode != 0:
+        raise HotkeyInstallError(
+            f"launchctl bootstrap failed (rc={proc.returncode}): "
+            f"{proc.stderr.decode('utf-8', 'replace')}"
+        )
+    return {"plist": str(plist)}
 
 
 def uninstall() -> dict[str, str]:

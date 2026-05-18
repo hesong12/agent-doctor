@@ -65,7 +65,10 @@ def daemon_status_snapshot() -> dict[str, object]:
     s = ds.load()
     if not daemon["plist_exists"]:
         pill = "daemon_stopped"
-        perms = pp.PermissionStatus(accessibility=False, input_monitoring=False, first_missing="accessibility")
+        # No probe has run yet — suppress the permission banner by leaving
+        # ``first_missing`` empty. The accessibility/input_monitoring fields
+        # are filler; they aren't surfaced when no banner is shown.
+        perms = pp.PermissionStatus(accessibility=False, input_monitoring=False, first_missing=None)
     elif not daemon["running"] or not s.hotkey.daemon_enabled:
         pill = "paused"
         perms = pp.PermissionStatus(accessibility=True, input_monitoring=True, first_missing=None)

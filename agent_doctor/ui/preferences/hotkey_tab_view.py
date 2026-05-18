@@ -170,8 +170,12 @@ def build(notebook: Any) -> None:
     def _on_daemon_toggle() -> None:
         from agent_doctor import dictate_settings as ds
         if daemon_var.get():
+            # Turning ON: bootstrap if plist exists, else fresh install.
             try:
-                hi.install()
+                if hi.DEFAULT_PLIST_PATH.exists():
+                    hi.resume()
+                else:
+                    hi.install()
             except hi.HotkeyInstallError as exc:
                 messagebox.showerror("Hotkey", str(exc))
                 daemon_var.set(False)
@@ -185,7 +189,10 @@ def build(notebook: Any) -> None:
                 )
             ))
         else:
-            hi.uninstall()
+            # Turning OFF: bootout the agent but keep the plist (so we can
+            # resume without a rebuild). Uninstall (separate button) is the
+            # only path that removes the plist.
+            hi.pause()
             s = ds.load()
             ds.save(ds.replace_section(
                 s, hotkey=ds.HotkeySettings(
@@ -296,6 +303,16 @@ def _open_capture_overlay(parent: Any) -> str | None:
         controller.cancel()
         dlg.destroy()
 
+    def _sync_use_btn() -> None:
+        # Only CAPTURED_CHORD makes "Use this chord" a valid commit target —
+        # IDLE/CAPTURED_MODIFIER/CONFLICT all raise from controller.commit().
+        # Modifier-only bindings auto-commit on release in _on_release, so
+        # the button is only relevant for chord bindings.
+        if controller.state is hc.State.CAPTURED_CHORD:
+            use_btn.configure(state="normal")
+        else:
+            use_btn.configure(state="disabled")
+
     def _on_key(event: Any) -> None:
         token = _keysym_to_token(event.keysym)
         if token is None:
@@ -306,6 +323,7 @@ def _open_capture_overlay(parent: Any) -> str | None:
         cap_var.set(controller.captured or "…")
         if controller.state is hc.State.CONFLICT:
             sub.set(controller.conflict_reason or "Conflicts with macOS.")
+        _sync_use_btn()
 
     def _on_release(event: Any) -> None:
         token = _keysym_to_token(event.keysym)
@@ -316,6 +334,8 @@ def _open_capture_overlay(parent: Any) -> str | None:
         controller.on_key_event(hc.KeyEvent(kind="release", key=token, t_ms=t_ms))
         if controller.state is hc.State.COMMITTED:
             _commit_and_close()
+            return
+        _sync_use_btn()
 
     def _on_focus_out(event: Any) -> None:
         # Spec §5.2: window losing focus = Cancel. Guard against spurious
@@ -339,6 +359,7 @@ def _open_capture_overlay(parent: Any) -> str | None:
 
     use_btn = tk.Button(dlg, text="Use this chord", command=_commit_and_close)
     use_btn.pack(pady=(4, 10))
+    use_btn.configure(state="disabled")  # enabled only when state is CAPTURED_CHORD
     tk.Button(dlg, text="Cancel", command=_cancel_and_close).pack()
 
     dlg.focus_set()

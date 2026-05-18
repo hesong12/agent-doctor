@@ -49,14 +49,26 @@ def test_settings_url_for_known_panes() -> None:
     assert "ListenEvent" in pp.settings_url("input_monitoring")
 
 
-def test_default_input_monitoring_probe_returns_true(tmp_path) -> None:
-    # The probe is intentionally optimistic — see docstring. We cannot
-    # reliably detect Input Monitoring revocation without private APIs,
-    # so the probe returns True regardless of log presence/freshness.
-    assert pp._default_input_monitoring_probe(log_path=tmp_path / "irrelevant.log") is True
-    log = tmp_path / "exists.log"
-    log.write_text("data")
-    assert pp._default_input_monitoring_probe(log_path=log) is True
+def test_default_input_monitoring_probe_no_heartbeat(tmp_path) -> None:
+    # No heartbeat = events not flowing = IM not confirmed.
+    assert pp._default_input_monitoring_probe(heartbeat_path=tmp_path / "absent") is False
+
+
+def test_default_input_monitoring_probe_fresh_heartbeat(tmp_path) -> None:
+    hb = tmp_path / "im-heartbeat"
+    hb.write_text("1\n")
+    assert pp._default_input_monitoring_probe(heartbeat_path=hb) is True
+
+
+def test_default_input_monitoring_probe_stale_heartbeat(tmp_path) -> None:
+    import os
+
+    hb = tmp_path / "im-heartbeat"
+    hb.write_text("1\n")
+    # Backdate mtime by 5 minutes.
+    old = hb.stat().st_mtime - 300
+    os.utime(hb, (old, old))
+    assert pp._default_input_monitoring_probe(heartbeat_path=hb) is False
 
 
 def test_settings_url_unknown_pane_raises() -> None:

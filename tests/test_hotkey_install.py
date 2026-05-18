@@ -111,3 +111,47 @@ def test_uninstall_calls_launchctl_bootout(
     monkeypatch.setattr(hi, "_run_launchctl", fake_run)
     hi.uninstall()
     assert any(arg[:2] == ["launchctl", "bootout"] for arg in calls)
+
+
+def test_pause_runs_bootout_without_removing_plist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "x.plist")
+    (tmp_path / "x.plist").write_text("dummy")
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kw: Any) -> subprocess.CompletedProcess:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(hi, "_run_launchctl", fake_run)
+    assert hi.pause() is True
+    assert any("bootout" in " ".join(c) for c in calls)
+    assert (tmp_path / "x.plist").exists()
+
+
+def test_resume_runs_bootstrap_when_plist_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "x.plist")
+    (tmp_path / "x.plist").write_text("dummy")
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kw: Any) -> subprocess.CompletedProcess:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(hi, "_run_launchctl", fake_run)
+    result = hi.resume()
+    assert "plist" in result
+    assert any(arg[:2] == ["launchctl", "bootstrap"] for arg in calls)
+
+
+def test_resume_raises_when_plist_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "absent.plist")
+    with pytest.raises(hi.HotkeyInstallError, match="not found"):
+        hi.resume()

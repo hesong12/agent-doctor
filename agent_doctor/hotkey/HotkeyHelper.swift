@@ -115,6 +115,24 @@ func run(_ argv: [String]) {
     }
 }
 
+// Heartbeat file. The helper rewrites this on every global event so the
+// Python side can infer whether Input Monitoring is granted: if the helper
+// is registered but the heartbeat is missing or stale, IM is almost
+// certainly revoked (or events aren't reaching us for some other reason).
+let HEARTBEAT_PATH: URL = {
+    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    let dir = appSupport.appendingPathComponent("agent-doctor")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir.appendingPathComponent("im-heartbeat")
+}()
+
+func touchHeartbeat() {
+    let now = Date()
+    if let data = "\(Int(now.timeIntervalSince1970))\n".data(using: .utf8) {
+        try? data.write(to: HEARTBEAT_PATH, options: .atomic)
+    }
+}
+
 class HotkeyDaemon {
     var config: Config = readConfig()
     var chord: ParsedChord? = nil
@@ -142,6 +160,7 @@ class HotkeyDaemon {
     private func installKeyMonitor(for c: ParsedChord) {
         let mask: NSEvent.EventTypeMask = [.keyDown, .keyUp]
         monitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] ev in
+            touchHeartbeat()
             guard let self = self else { return }
             let flags = ev.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if ev.keyCode != c.keyCode { return }
@@ -167,6 +186,7 @@ class HotkeyDaemon {
     private func installFlagsMonitor(for keyCode: UInt16) {
         guard let myFlag = MODIFIER_FLAG_FOR_KEYCODE[keyCode] else { return }
         monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] ev in
+            touchHeartbeat()
             guard let self = self else { return }
             let flags = ev.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let myFlagOn = flags.contains(myFlag)

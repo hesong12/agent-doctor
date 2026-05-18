@@ -256,6 +256,28 @@ def test_hotkey_daemon_status_snapshot_when_plist_missing(
     assert snap["pill"] == "daemon_stopped"
 
 
+def test_daemon_stopped_snapshot_hides_permission_banner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Synthetic perms in daemon_stopped state should not trigger the permission banner."""
+    from agent_doctor import hotkey_install as hi
+
+    monkeypatch.setattr(
+        hi, "status", lambda: {
+            "plist_exists": False,
+            "helper_exists": False,
+            "running": False,
+            "plist": "/tmp/x.plist",
+            "helper": "/tmp/x",
+        }
+    )
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    snap = ht.daemon_status_snapshot()
+    assert snap["pill"] == "daemon_stopped"
+    assert snap["perms"].first_missing is None
+
+
 def test_hotkey_daemon_status_snapshot_permission_needed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
