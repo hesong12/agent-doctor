@@ -1032,7 +1032,7 @@ In `agent_doctor/hotkey/HotkeyHelper.swift`, append to the `KEYCODES` dictionary
 Below the `MODIFIERS` and `KEYCODES` dictionaries, add:
 
 ```swift
-let MODIFIER_ONLY_KEYCODES: Set<UInt16> = [54, 55, 58, 59, 60, 61, 62, 63]
+let MODIFIER_ONLY_KEYCODES: Set<UInt16> = [54, 55, 56, 58, 59, 60, 61, 62, 63]
 
 // Map each modifier-only keycode to the corresponding flag bit so the
 // daemon can confirm "this physical key produced this flag change."

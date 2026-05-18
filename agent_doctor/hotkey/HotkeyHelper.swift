@@ -72,7 +72,7 @@ let KEYCODES: [String: UInt16] = [
     "fn": 63,
 ]
 
-let MODIFIER_ONLY_KEYCODES: Set<UInt16> = [54, 55, 58, 59, 60, 61, 62, 63]
+let MODIFIER_ONLY_KEYCODES: Set<UInt16> = [54, 55, 56, 58, 59, 60, 61, 62, 63]
 
 // Map each modifier-only keycode to the corresponding flag bit so the
 // daemon can confirm "this physical key produced this flag change."
