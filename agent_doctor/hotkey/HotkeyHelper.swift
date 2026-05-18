@@ -168,24 +168,28 @@ class HotkeyDaemon {
         guard let myFlag = MODIFIER_FLAG_FOR_KEYCODE[keyCode] else { return }
         monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] ev in
             guard let self = self else { return }
-            if ev.keyCode != keyCode { return }
             let flags = ev.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let myFlagOn = flags.contains(myFlag)
-            // Alone-key rule: only fire when the bound flag is the only one held.
             var others: NSEvent.ModifierFlags = [.command, .option, .control, .shift, .function]
             others.remove(myFlag)
             let anyOther = !flags.intersection(others).isEmpty
-            if myFlagOn && !anyOther {
+
+            // Start requires the event to originate from the BOUND physical
+            // key (so left_cmd doesn't accidentally trigger a right_cmd
+            // binding). Stop must fire on ANY flagsChanged event that
+            // invalidates the alone-key state — including events from other
+            // modifier keys, otherwise "user pressed Shift while holding the
+            // bound modifier" would never release.
+            let isOurKey = ev.keyCode == keyCode
+
+            if myFlagOn && !anyOther && isOurKey {
                 if !self.keyDown {
                     self.keyDown = true
                     run([self.config.agentDoctorBin, "dictate", "start"])
                 }
-            } else {
-                // Flag dropped or another modifier joined — release-equivalent.
-                if self.keyDown {
-                    self.keyDown = false
-                    run([self.config.agentDoctorBin, "dictate", "stop"])
-                }
+            } else if self.keyDown {
+                self.keyDown = false
+                run([self.config.agentDoctorBin, "dictate", "stop"])
             }
         }
     }
