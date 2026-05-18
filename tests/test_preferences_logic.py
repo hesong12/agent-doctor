@@ -137,6 +137,17 @@ def test_hotkey_state_apply_persists_and_validates(
         ht.HotkeyState(binding="cmd+space", push_to_talk=True).apply()
 
 
+def test_hotkey_state_modifier_only_coerces_push_to_talk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    ht.HotkeyState(binding="right_cmd", push_to_talk=False).apply()
+    loaded = ds.load()
+    assert loaded.hotkey.binding == "right_cmd"
+    assert loaded.hotkey.push_to_talk is True  # coerced
+
+
 def test_paste_state_disable_round_trip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -28,10 +28,11 @@ class HotkeyState:
             chord = hp.parse(self.binding)
         except hp.HotkeyParseError as exc:
             raise HotkeyStateError(str(exc)) from exc
+        ptt = bool(self.push_to_talk) or hp.is_modifier_only(chord)
         s = ds.load()
         new = ds.HotkeySettings(
             binding=chord.canonical(),
-            push_to_talk=bool(self.push_to_talk),
+            push_to_talk=ptt,
             daemon_enabled=s.hotkey.daemon_enabled,
         )
         ds.save(ds.replace_section(s, hotkey=new))
