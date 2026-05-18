@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from agent_doctor import dictate_settings as ds
 from agent_doctor import hotkey_install as hi
 from agent_doctor import hotkey_parse as hp
+from agent_doctor.ui.preferences import permission_probe as pp
 
 
 class HotkeyStateError(ValueError):
@@ -50,3 +51,29 @@ def uninstall_daemon() -> dict[str, str]:
 
 def daemon_status() -> dict[str, object]:
     return hi.status()
+
+
+def daemon_status_snapshot() -> dict[str, object]:
+    """Return a snapshot used by the tab view to render the status pill.
+
+    Keys: ``pill`` (one of "listening" / "permission_needed" / "paused" /
+    "daemon_stopped"), ``perms`` (PermissionStatus), ``daemon`` (raw dict
+    from ``hotkey_install.status()``), ``settings`` (HotkeySettings).
+    """
+
+    daemon = hi.status()
+    s = ds.load()
+    if not daemon["plist_exists"]:
+        pill = "daemon_stopped"
+        perms = pp.PermissionStatus(accessibility=False, input_monitoring=False, first_missing="accessibility")
+    elif not daemon["running"] or not s.hotkey.daemon_enabled:
+        pill = "paused"
+        perms = pp.PermissionStatus(accessibility=True, input_monitoring=True, first_missing=None)
+    else:
+        perms = pp.check_macos_permissions()
+        pill = "listening" if perms.first_missing is None else "permission_needed"
+    return {"pill": pill, "perms": perms, "daemon": daemon, "settings": s.hotkey}
+
+
+def permission_status_snapshot() -> pp.PermissionStatus:
+    return pp.check_macos_permissions()

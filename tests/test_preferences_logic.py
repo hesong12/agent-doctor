@@ -185,3 +185,79 @@ def test_pet_state_toggle(
     s = ds.load()
     assert s.pet.animate_listening is False
     assert s.pet.animate_thinking is True
+
+
+def test_hotkey_daemon_status_snapshot_returns_pill_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import hotkey_install as hi
+
+    monkeypatch.setattr(
+        hi, "status", lambda: {
+            "plist_exists": True,
+            "helper_exists": True,
+            "running": True,
+            "plist": "/tmp/x.plist",
+            "helper": "/tmp/x",
+        }
+    )
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        hotkey=ds.HotkeySettings(binding="right_cmd", push_to_talk=True, daemon_enabled=True),
+    )
+    ds.save(settings)
+    # Force both perms to True so the pill resolution is deterministic in CI.
+    from agent_doctor.ui.preferences import permission_probe as pp
+    monkeypatch.setattr(
+        pp, "check_macos_permissions",
+        lambda **_: pp.PermissionStatus(accessibility=True, input_monitoring=True, first_missing=None),
+    )
+    snap = ht.daemon_status_snapshot()
+    assert snap["pill"] == "listening"
+
+
+def test_hotkey_daemon_status_snapshot_when_plist_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import hotkey_install as hi
+
+    monkeypatch.setattr(
+        hi, "status", lambda: {
+            "plist_exists": False,
+            "helper_exists": False,
+            "running": False,
+            "plist": "/tmp/x.plist",
+            "helper": "/tmp/x",
+        }
+    )
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    snap = ht.daemon_status_snapshot()
+    assert snap["pill"] == "daemon_stopped"
+
+
+def test_hotkey_daemon_status_snapshot_when_user_paused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import hotkey_install as hi
+
+    monkeypatch.setattr(
+        hi, "status", lambda: {
+            "plist_exists": True,
+            "helper_exists": True,
+            "running": False,
+            "plist": "/tmp/x.plist",
+            "helper": "/tmp/x",
+        }
+    )
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        hotkey=ds.HotkeySettings(binding="right_cmd", push_to_talk=True, daemon_enabled=False),
+    )
+    ds.save(settings)
+    snap = ht.daemon_status_snapshot()
+    assert snap["pill"] == "paused"
