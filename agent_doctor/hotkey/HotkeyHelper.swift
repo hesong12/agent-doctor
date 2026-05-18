@@ -132,6 +132,14 @@ class HotkeyDaemon {
             fputs("hotkey: could not parse binding \(config.binding)\n", stderr)
             return
         }
+        if c.modifiers.isEmpty && MODIFIER_ONLY_KEYCODES.contains(c.keyCode) {
+            installFlagsMonitor(for: c.keyCode)
+        } else {
+            installKeyMonitor(for: c)
+        }
+    }
+
+    private func installKeyMonitor(for c: ParsedChord) {
         let mask: NSEvent.EventTypeMask = [.keyDown, .keyUp]
         monitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] ev in
             guard let self = self else { return }
@@ -150,6 +158,32 @@ class HotkeyDaemon {
             } else if ev.type == .keyUp {
                 self.keyDown = false
                 if self.config.pushToTalk {
+                    run([self.config.agentDoctorBin, "dictate", "stop"])
+                }
+            }
+        }
+    }
+
+    private func installFlagsMonitor(for keyCode: UInt16) {
+        guard let myFlag = MODIFIER_FLAG_FOR_KEYCODE[keyCode] else { return }
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] ev in
+            guard let self = self else { return }
+            if ev.keyCode != keyCode { return }
+            let flags = ev.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let myFlagOn = flags.contains(myFlag)
+            // Alone-key rule: only fire when the bound flag is the only one held.
+            var others: NSEvent.ModifierFlags = [.command, .option, .control, .shift, .function]
+            others.remove(myFlag)
+            let anyOther = !flags.intersection(others).isEmpty
+            if myFlagOn && !anyOther {
+                if !self.keyDown {
+                    self.keyDown = true
+                    run([self.config.agentDoctorBin, "dictate", "start"])
+                }
+            } else {
+                // Flag dropped or another modifier joined — release-equivalent.
+                if self.keyDown {
+                    self.keyDown = false
                     run([self.config.agentDoctorBin, "dictate", "stop"])
                 }
             }
