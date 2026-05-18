@@ -24,3 +24,8 @@ def test_open_window_does_not_crash(monkeypatch: pytest.MonkeyPatch, tmp_path) -
     monkeypatch.setattr(tk.Tk, "mainloop", lambda self: None)
     open_window()
     root.destroy()
+
+
+def test_hotkey_tab_view_imports_without_tk_root() -> None:
+    # Import-only — instantiating widgets needs a Tk root which CI may lack.
+    from agent_doctor.ui.preferences import hotkey_tab_view  # noqa: F401
