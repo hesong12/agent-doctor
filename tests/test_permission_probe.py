@@ -49,30 +49,14 @@ def test_settings_url_for_known_panes() -> None:
     assert "ListenEvent" in pp.settings_url("input_monitoring")
 
 
-def test_default_input_monitoring_probe_missing_file(tmp_path) -> None:
-    assert pp._default_input_monitoring_probe(log_path=tmp_path / "absent.log") is False
-
-
-def test_default_input_monitoring_probe_empty_file(tmp_path) -> None:
-    log = tmp_path / "empty.log"
-    log.write_text("")
-    assert pp._default_input_monitoring_probe(log_path=log) is False
-
-
-def test_default_input_monitoring_probe_fresh_nonempty(tmp_path) -> None:
-    log = tmp_path / "fresh.log"
-    log.write_text("ran\n")
+def test_default_input_monitoring_probe_returns_true(tmp_path) -> None:
+    # The probe is intentionally optimistic — see docstring. We cannot
+    # reliably detect Input Monitoring revocation without private APIs,
+    # so the probe returns True regardless of log presence/freshness.
+    assert pp._default_input_monitoring_probe(log_path=tmp_path / "irrelevant.log") is True
+    log = tmp_path / "exists.log"
+    log.write_text("data")
     assert pp._default_input_monitoring_probe(log_path=log) is True
-
-
-def test_default_input_monitoring_probe_stale(tmp_path, monkeypatch) -> None:
-    import os
-    log = tmp_path / "stale.log"
-    log.write_text("ran\n")
-    # Backdate mtime by 100 days.
-    old = log.stat().st_mtime - 100 * 86400
-    os.utime(log, (old, old))
-    assert pp._default_input_monitoring_probe(log_path=log) is False
 
 
 def test_settings_url_unknown_pane_raises() -> None:

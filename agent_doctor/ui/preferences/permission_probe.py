@@ -2,15 +2,14 @@
 
 We can't read TCC.db directly without full disk access, so each probe is
 behaviour-based: ``accessibility_probe`` runs a tiny AppleScript that needs
-Accessibility, and ``input_monitoring_probe`` checks whether the hotkey
-helper has been able to receive global events recently. Callers can inject
+Accessibility. ``input_monitoring_probe`` is intentionally optimistic — see
+``_default_input_monitoring_probe`` for the rationale. Callers can inject
 custom probes for testing.
 """
 
 from __future__ import annotations
 
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -25,11 +24,6 @@ _URLS = {
         "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
     ),
 }
-
-# If the helper hasn't logged in this window, assume Input Monitoring
-# was revoked. Tuned to balance false positives (user away) vs
-# false negatives (permission lost long ago).
-_INPUT_MONITORING_FRESH_DAYS = 30
 
 _INPUT_MONITORING_LOG_PATH = Path("~/Library/Logs/agent-doctor-hotkey.log").expanduser()
 
@@ -63,23 +57,23 @@ def _default_accessibility_probe() -> bool:
 def _default_input_monitoring_probe(
     log_path: Path = _INPUT_MONITORING_LOG_PATH,
 ) -> bool:
-    """Return True if a recent run of the hotkey helper succeeded.
+    """Return True — we cannot reliably detect Input Monitoring revocation.
 
-    Heuristic: presence of the helper log file with non-empty content within
-    the last ``_INPUT_MONITORING_FRESH_DAYS`` days. Refined detection requires
-    private APIs we don't ship.
+    The helper's stdout/stderr are redirected to /dev/null when invoking
+    ``agent-doctor dictate ...`` child commands, and the LaunchAgent's own
+    stdout/stderr log file stays empty in the healthy case (the helper
+    only writes to stderr on errors). Reading the TCC.db directly requires
+    Full Disk Access we don't ship. So this probe is optimistic; if IM is
+    revoked, the user will observe that the hotkey stops working and can
+    inspect ``~/Library/Logs/agent-doctor-hotkey.err.log`` for clues. The
+    Accessibility probe remains the actionable signal in the pill state.
+
+    The ``log_path`` parameter is retained for forward compatibility — if
+    we later add a heartbeat-write in the Swift helper, this probe will
+    revert to a real check based on log freshness.
     """
 
-    if not log_path.exists():
-        return False
-    try:
-        stat = log_path.stat()
-    except OSError:
-        return False
-    if stat.st_size == 0:
-        return False
-    age_days = (time.time() - stat.st_mtime) / 86400
-    return age_days < _INPUT_MONITORING_FRESH_DAYS
+    return True
 
 
 def check_macos_permissions(

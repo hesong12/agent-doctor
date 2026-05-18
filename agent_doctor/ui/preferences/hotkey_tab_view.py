@@ -46,8 +46,10 @@ def build(notebook: Any) -> None:
     )
 
     # --- permission banner -----------------------------------------
+    # Start hidden — _refresh() packs/forgets based on whether a permission
+    # is actually missing. ttk.Frame doesn't expose -background so we can't
+    # camouflage it; hiding the whole frame is cleaner.
     banner_frame = ttk.Frame(frame)
-    banner_frame.pack(fill="x", pady=(0, 10))
     banner_text = tk.StringVar(value="")
     banner_label = tk.Label(banner_frame, textvariable=banner_text, anchor="w", padx=8, pady=6)
     banner_label.pack(side="left", fill="x", expand=True)
@@ -111,11 +113,16 @@ def build(notebook: Any) -> None:
             banner_text.set(label)
             banner_label.configure(background="#fff7e8", foreground="#7a5b14")
             banner_action.configure(command=lambda t=target: subprocess.run(["open", pp.settings_url(t)]))
-            banner_frame.pack_configure()
+            # Show the banner only when there's something to surface. We
+            # repack right before the shortcut tile so the visual layout
+            # (header → banner → tile → mode → daemon → footer) is stable.
+            if not banner_frame.winfo_ismapped():
+                banner_frame.pack(fill="x", pady=(0, 10), before=tile)
         else:
             banner_text.set("")
-            banner_label.configure(background=frame.cget("background"))
             banner_action.configure(command=lambda: None)
+            if banner_frame.winfo_ismapped():
+                banner_frame.pack_forget()
         s = snap["settings"]  # type: ignore[index]
         binding_var.set(_render_binding(str(s.binding)))
         ptt_var.set(bool(s.push_to_talk))
@@ -136,10 +143,24 @@ def build(notebook: Any) -> None:
 
     def _on_test() -> None:
         snap = ht.daemon_status_snapshot()
-        if snap["pill"] in ("listening", "permission_needed"):
-            messagebox.showinfo("Hotkey", "Daemon received key event ✓")
+        pill = snap["pill"]
+        if pill == "listening":
+            messagebox.showinfo(
+                "Hotkey",
+                "Daemon is running. Press the hotkey to confirm it triggers "
+                "dictation — this button can't observe the global event stream "
+                "directly.",
+            )
+        elif pill == "permission_needed":
+            messagebox.showwarning(
+                "Hotkey",
+                "Daemon is running but a macOS permission is missing. Grant "
+                "Accessibility / Input Monitoring, then try the hotkey.",
+            )
+        elif pill == "paused":
+            messagebox.showwarning("Hotkey", "Daemon is paused — toggle Background daemon on.")
         else:
-            messagebox.showwarning("Hotkey", "Daemon not running — enable Background daemon.")
+            messagebox.showwarning("Hotkey", "Daemon is not installed — toggle Background daemon on.")
 
     def _on_mode_change() -> None:
         current = ht.HotkeyState.from_settings().binding
@@ -147,20 +168,39 @@ def build(notebook: Any) -> None:
         _refresh()
 
     def _on_daemon_toggle() -> None:
+        from agent_doctor import dictate_settings as ds
         if daemon_var.get():
             try:
                 hi.install()
             except hi.HotkeyInstallError as exc:
                 messagebox.showerror("Hotkey", str(exc))
                 daemon_var.set(False)
+                return
+            s = ds.load()
+            ds.save(ds.replace_section(
+                s, hotkey=ds.HotkeySettings(
+                    binding=s.hotkey.binding,
+                    push_to_talk=s.hotkey.push_to_talk,
+                    daemon_enabled=True,
+                )
+            ))
         else:
             hi.uninstall()
+            s = ds.load()
+            ds.save(ds.replace_section(
+                s, hotkey=ds.HotkeySettings(
+                    binding=s.hotkey.binding,
+                    push_to_talk=s.hotkey.push_to_talk,
+                    daemon_enabled=False,
+                )
+            ))
         _refresh()
 
     def _on_show_logs() -> None:
         subprocess.run(["open", "-a", "Console", str(_LOG_PATH)])
 
     def _on_uninstall() -> None:
+        from agent_doctor import dictate_settings as ds
         if not messagebox.askyesno(
             "Stop and remove the hotkey daemon?",
             "This stops the LaunchAgent and deletes the helper. You can re-enable it any time.",
@@ -172,6 +212,14 @@ def build(notebook: Any) -> None:
             hi.DEFAULT_HELPER_PATH.unlink(missing_ok=True)
         except OSError:
             pass
+        s = ds.load()
+        ds.save(ds.replace_section(
+            s, hotkey=ds.HotkeySettings(
+                binding=s.hotkey.binding,
+                push_to_talk=s.hotkey.push_to_talk,
+                daemon_enabled=False,
+            )
+        ))
         daemon_var.set(False)
         _refresh()
 

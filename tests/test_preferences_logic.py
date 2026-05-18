@@ -148,6 +148,24 @@ def test_hotkey_state_modifier_only_coerces_push_to_talk(
     assert loaded.hotkey.push_to_talk is True  # coerced
 
 
+def test_hotkey_state_apply_does_not_reset_daemon_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once daemon_enabled is True, HotkeyState.apply() must preserve it."""
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    # Simulate "daemon installed" state on disk.
+    settings = ds.replace_section(
+        ds.default_settings(),
+        hotkey=ds.HotkeySettings(binding="right_cmd", push_to_talk=True, daemon_enabled=True),
+    )
+    ds.save(settings)
+    # Re-binding should leave daemon_enabled intact.
+    ht.HotkeyState(binding="ctrl+option+space", push_to_talk=False).apply()
+    loaded = ds.load()
+    assert loaded.hotkey.daemon_enabled is True
+
+
 def test_paste_state_disable_round_trip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
