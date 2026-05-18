@@ -25,6 +25,18 @@ MODIFIER_ALIASES = {
 }
 MODIFIER_ORDER = ("cmd", "ctrl", "option", "shift")
 
+MODIFIER_ONLY_TOKENS: dict[str, tuple[str, str | None]] = {
+    "left_cmd":    ("cmd",    "left"),
+    "right_cmd":   ("cmd",    "right"),
+    "left_option": ("option", "left"),
+    "right_option":("option", "right"),
+    "left_ctrl":   ("ctrl",   "left"),
+    "right_ctrl":  ("ctrl",   "right"),
+    "left_shift":  ("shift",  "left"),
+    "right_shift": ("shift",  "right"),
+    "fn":          ("fn",     None),
+}
+
 KEY_TOKENS = frozenset(
     {"space", "return", "enter", "escape", "tab", "delete", "backspace"}
     | {chr(c) for c in range(ord("a"), ord("z") + 1)}
@@ -53,10 +65,20 @@ class HotkeyParseError(ValueError):
 @dataclass(frozen=True)
 class Chord:
     modifiers: Tuple[str, ...]
-    key: str
+    key: str | None = None
+    side: str | None = None
 
     def canonical(self) -> str:
+        if self.key is None:
+            mod = self.modifiers[0]
+            if mod == "fn":
+                return "fn"
+            return f"{self.side}_{mod}"
         return "+".join((*self.modifiers, self.key))
+
+
+def is_modifier_only(chord: "Chord") -> bool:
+    return chord.key is None
 
 
 def parse(raw: str) -> Chord:
@@ -65,6 +87,15 @@ def parse(raw: str) -> Chord:
     tokens = [t.strip().lower() for t in raw.replace(",", "+").split("+") if t.strip()]
     if not tokens:
         raise HotkeyParseError("empty hotkey")
+
+    mo_hits = [t for t in tokens if t in MODIFIER_ONLY_TOKENS]
+    if mo_hits:
+        if len(tokens) != 1:
+            raise HotkeyParseError(
+                f"modifier-only binding {mo_hits[0]!r} cannot be combined with other tokens (got {raw!r})"
+            )
+        mod, side = MODIFIER_ONLY_TOKENS[mo_hits[0]]
+        return Chord(modifiers=(mod,), key=None, side=side)
 
     modifiers: set[str] = set()
     keys: list[str] = []
@@ -92,4 +123,4 @@ def parse(raw: str) -> Chord:
         raise HotkeyParseError(
             f"hotkey {canonical_str} conflicts with a macOS system shortcut"
         )
-    return Chord(modifiers=ordered, key=keys[0])
+    return Chord(modifiers=ordered, key=keys[0], side=None)
