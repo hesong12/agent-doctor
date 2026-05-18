@@ -10,7 +10,9 @@ custom probes for testing.
 from __future__ import annotations
 
 import subprocess
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
 _FIRST_ORDER = ("accessibility", "input_monitoring")
@@ -23,6 +25,13 @@ _URLS = {
         "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
     ),
 }
+
+# If the helper hasn't logged in this window, assume Input Monitoring
+# was revoked. Tuned to balance false positives (user away) vs
+# false negatives (permission lost long ago).
+_INPUT_MONITORING_FRESH_DAYS = 30
+
+_INPUT_MONITORING_LOG_PATH = Path("~/Library/Logs/agent-doctor-hotkey.log").expanduser()
 
 
 @dataclass(frozen=True)
@@ -51,27 +60,26 @@ def _default_accessibility_probe() -> bool:
     return proc.returncode == 0
 
 
-def _default_input_monitoring_probe() -> bool:
+def _default_input_monitoring_probe(
+    log_path: Path = _INPUT_MONITORING_LOG_PATH,
+) -> bool:
     """Return True if a recent run of the hotkey helper succeeded.
 
     Heuristic: presence of the helper log file with non-empty content within
-    the last 30 days. Refined detection requires private APIs we don't ship.
+    the last ``_INPUT_MONITORING_FRESH_DAYS`` days. Refined detection requires
+    private APIs we don't ship.
     """
 
-    from pathlib import Path
-    import time
-
-    log = Path("~/Library/Logs/agent-doctor-hotkey.log").expanduser()
-    if not log.exists():
+    if not log_path.exists():
         return False
     try:
-        stat = log.stat()
+        stat = log_path.stat()
     except OSError:
         return False
     if stat.st_size == 0:
         return False
     age_days = (time.time() - stat.st_mtime) / 86400
-    return age_days < 30
+    return age_days < _INPUT_MONITORING_FRESH_DAYS
 
 
 def check_macos_permissions(
