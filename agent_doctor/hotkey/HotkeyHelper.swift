@@ -29,7 +29,7 @@ func defaultBin() -> String {
 func readConfig() -> Config {
     let path = defaultConfigPath()
     let fallback = Config(
-        binding: "ctrl+option+space",
+        binding: "right_cmd",
         pushToTalk: true,
         agentDoctorBin: defaultBin()
     )
@@ -63,6 +63,25 @@ let KEYCODES: [String: UInt16] = [
     "8": 28, "9": 25,
     "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97,
     "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111,
+    // Modifier-only keycodes — used when the binding is a single modifier
+    // held to dictate (Handy-style). See HotkeyDaemon.installFlagsMonitor.
+    "left_cmd": 55, "right_cmd": 54,
+    "left_option": 58, "right_option": 61,
+    "left_ctrl": 59, "right_ctrl": 62,
+    "left_shift": 56, "right_shift": 60,
+    "fn": 63,
+]
+
+let MODIFIER_ONLY_KEYCODES: Set<UInt16> = [54, 55, 58, 59, 60, 61, 62, 63]
+
+// Map each modifier-only keycode to the corresponding flag bit so the
+// daemon can confirm "this physical key produced this flag change."
+let MODIFIER_FLAG_FOR_KEYCODE: [UInt16: NSEvent.ModifierFlags] = [
+    54: .command, 55: .command,
+    58: .option,  61: .option,
+    59: .control, 62: .control,
+    56: .shift,   60: .shift,
+    63: .function,
 ]
 
 struct ParsedChord {
