@@ -87,3 +87,67 @@ def test_cancel_returns_to_idle_without_commit() -> None:
     ctl.cancel()
     assert ctl.state is hc.State.CANCELLED
     assert ctl.commit_result is None
+
+
+def test_side_modifier_plus_key_normalises_to_canonical_modifier() -> None:
+    ctl = hc.CaptureController()
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="right_cmd"))
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="a"))
+    assert ctl.state is hc.State.CAPTURED_CHORD
+    assert ctl.captured == "cmd+a"
+
+
+def test_two_side_modifiers_plus_key() -> None:
+    ctl = hc.CaptureController()
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="right_cmd"))
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="left_option"))
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="a"))
+    assert ctl.state is hc.State.CAPTURED_CHORD
+    assert ctl.captured == "cmd+option+a"
+
+
+def test_captured_returns_none_in_idle_after_bare_modifier_press() -> None:
+    # A bare canonical-modifier press (e.g. just "shift") is not enough to
+    # form a usable binding -- controller stays IDLE and captured is None.
+    ctl = hc.CaptureController()
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="shift"))
+    assert ctl.state is hc.State.IDLE
+    assert ctl.captured is None
+
+
+def test_commit_in_idle_raises() -> None:
+    ctl = hc.CaptureController()
+    with pytest.raises(RuntimeError, match="nothing captured"):
+        ctl.commit()
+
+
+def test_commit_terminal_is_idempotent() -> None:
+    ctl = hc.CaptureController()
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="ctrl"))
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="space"))
+    ctl.commit()
+    assert ctl.state is hc.State.COMMITTED
+    # second commit should be a no-op, not raise
+    ctl.commit()
+    assert ctl.commit_result == "ctrl+space"
+
+
+def test_negative_held_ms_is_clamped() -> None:
+    ctl = hc.CaptureController(min_hold_ms=400)
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="right_cmd", t_ms=1000))
+    # Release at earlier timestamp -- should not commit (clamped to 0 < 400).
+    ctl.on_key_event(hc.KeyEvent(kind="release", key="right_cmd", t_ms=500))
+    assert ctl.state is hc.State.IDLE
+    assert ctl.commit_result is None
+
+
+def test_chord_sticky_on_modifier_release() -> None:
+    # After a chord lands, releasing the modifier (not the key) keeps the
+    # snapshot stable so the UI can keep showing "ctrl+space" while the user
+    # moves to click Use this chord.
+    ctl = hc.CaptureController()
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="ctrl", t_ms=0))
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="space", t_ms=10))
+    ctl.on_key_event(hc.KeyEvent(kind="release", key="ctrl", t_ms=20))
+    assert ctl.state is hc.State.CAPTURED_CHORD
+    assert ctl.captured == "ctrl+space"

@@ -63,6 +63,8 @@ class CaptureController:
 
     @property
     def captured(self) -> Optional[str]:
+        if self._state in (State.IDLE, State.CANCELLED):
+            return None
         if self._snapshot is not None:
             return self._snapshot
         if not self._held:
@@ -93,7 +95,7 @@ class CaptureController:
             self._refresh_state()
         elif ev.kind == "release":
             press_t = self._press_t_ms.pop(ev.key, 0)
-            held_ms = ev.t_ms - press_t
+            held_ms = max(0, ev.t_ms - press_t)
             if (
                 self._state is State.CAPTURED_MODIFIER
                 and ev.key in hp.MODIFIER_ONLY_TOKENS
@@ -115,9 +117,11 @@ class CaptureController:
     def commit(self) -> None:
         if self._state is State.CONFLICT:
             raise CaptureBlocked(self._conflict_reason or "binding conflicts with system shortcut")
+        if self._state in (State.COMMITTED, State.CANCELLED):
+            return  # idempotent terminal
         result = self._snapshot or (_canonicalise(self._held) if self._held else None)
-        if result is None:
-            return
+        if not result:
+            raise RuntimeError("commit() called with nothing captured")
         self._commit_result = result
         self._state = State.COMMITTED
 
@@ -153,13 +157,24 @@ class CaptureController:
 
 
 def _canonicalise(held: set[str]) -> str:
+    if not held:
+        return ""
     if len(held) == 1:
         (only,) = held
         if only in hp.MODIFIER_ONLY_TOKENS:
             return only
-    mods = [m for m in hp.MODIFIER_ORDER if m in held]
-    keys = [k for k in held if k not in hp.MODIFIER_ALIASES.values()]
-    keys = [k for k in keys if k not in hp.MODIFIER_ONLY_TOKENS]
+    canon_mods: set[str] = set()
+    keys: list[str] = []
+    for tok in held:
+        if tok in hp.MODIFIER_ONLY_TOKENS:
+            canon_mods.add(hp.MODIFIER_ONLY_TOKENS[tok][0])
+        elif tok in hp.MODIFIER_ALIASES.values():
+            canon_mods.add(tok)
+        elif tok in hp.MODIFIER_ALIASES:
+            canon_mods.add(hp.MODIFIER_ALIASES[tok])
+        else:
+            keys.append(tok)
+    mods = [m for m in hp.MODIFIER_ORDER if m in canon_mods]
     return "+".join(mods + sorted(keys))
 
 
