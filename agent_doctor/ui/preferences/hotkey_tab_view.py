@@ -169,7 +169,7 @@ def build(notebook: Any) -> None:
             return
         hi.uninstall()
         try:
-            Path(hi.DEFAULT_HELPER_PATH).unlink(missing_ok=True)
+            hi.DEFAULT_HELPER_PATH.unlink(missing_ok=True)
         except OSError:
             pass
         daemon_var.set(False)
@@ -184,6 +184,8 @@ def build(notebook: Any) -> None:
     uninstall_btn.configure(command=_on_uninstall)
 
     def _poll() -> None:
+        # Poll covers freshness — no separate focus-in binding needed;
+        # bind_all was firing on every Tk focus change across all preference tabs.
         try:
             _refresh()
         finally:
@@ -191,7 +193,6 @@ def build(notebook: Any) -> None:
 
     _refresh()
     frame.after(1000, _poll)
-    frame.bind_all("<FocusIn>", lambda _e: _refresh(), add="+")
 
 
 def _render_binding(canonical: str) -> str:
