@@ -217,3 +217,19 @@ Each row captures the transcript, the final clipboard prompt, mode, backend, whi
   }]
 }
 ```
+
+## Hotkey configuration
+
+Default binding: `right_cmd` (hold Right Command). Override via
+Preferences → Hotkey or by editing `~/.agent-doctor/dictate.json`:
+
+```json
+{ "hotkey": { "binding": "right_option", "push_to_talk": true, "daemon_enabled": true } }
+```
+
+Valid modifier-only tokens: `left_cmd`, `right_cmd`, `left_option`,
+`right_option`, `left_ctrl`, `right_ctrl`, `left_shift`, `right_shift`,
+`fn`. Chord tokens follow the existing `mod+mod+key` format.
+
+The Preferences capture overlay disambiguates left vs right; manual
+JSON edits are the only way to bind `fn` today.
