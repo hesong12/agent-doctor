@@ -25,7 +25,7 @@ def test_defaults_have_expected_shape() -> None:
     assert defaults.llm.api_key_ref is None
     assert defaults.llm.timeout_s == 30
     assert defaults.llm.optimize_prompt is None
-    assert defaults.hotkey.binding == "ctrl+option+space"
+    assert defaults.hotkey.binding == "right_cmd"
     assert defaults.hotkey.push_to_talk is True
     assert defaults.hotkey.daemon_enabled is False
     assert defaults.paste.auto_paste is False

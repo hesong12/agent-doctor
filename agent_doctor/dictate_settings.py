@@ -53,7 +53,7 @@ class LLMSettings:
 
 @dataclass(frozen=True)
 class HotkeySettings:
-    binding: str = "ctrl+option+space"
+    binding: str = "right_cmd"
     push_to_talk: bool = True
     daemon_enabled: bool = False
 
@@ -161,7 +161,7 @@ def _from_dict(payload: dict[str, Any]) -> DictateSettings:
             optimize_prompt=llm_d.get("optimize_prompt"),
         ),
         hotkey=HotkeySettings(
-            binding=h.get("binding", "ctrl+option+space"),
+            binding=h.get("binding", "right_cmd"),
             push_to_talk=bool(h.get("push_to_talk", True)),
             daemon_enabled=bool(h.get("daemon_enabled", False)),
         ),
