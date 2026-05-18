@@ -271,10 +271,18 @@ def _open_capture_overlay(parent: Any) -> str | None:
 
     def _on_focus_out(event: Any) -> None:
         # Spec §5.2: window losing focus = Cancel. Guard against spurious
-        # FocusOut events that fire when a child widget (e.g. a button)
-        # gains focus inside the same Toplevel.
-        if event.widget is dlg:
-            _cancel_and_close(event)
+        # FocusOut events: (a) when a child widget gains focus inside the
+        # same Toplevel (event.widget is not dlg), and (b) when Tk on macOS
+        # delivers a FocusOut to the Toplevel with detail=NotifyInferior /
+        # NotifyAncestor because focus moved to a descendant. Without the
+        # detail check, clicking "Use this chord" cancels the dialog before
+        # the button's command runs.
+        if event.widget is not dlg:
+            return
+        detail = getattr(event, "detail", "")
+        if detail in ("NotifyInferior", "NotifyAncestor"):
+            return
+        _cancel_and_close(event)
 
     dlg.bind("<Key>", _on_key)
     dlg.bind("<KeyRelease>", _on_release)
