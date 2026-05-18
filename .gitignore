@@ -9,3 +9,4 @@ build/
 /agent-doctor-report/
 /uv.lock
 .gitnexus
+.superpowers/
