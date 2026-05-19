@@ -2118,3 +2118,95 @@ def test_cli_dictate_cancel_clears_listening_transient(
     rc = main(["dictate", "cancel"])
     assert rc == 0
     assert _pt.read_transient() is None
+
+
+def test_resolve_language_consults_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI arg None → settings.transcription.language. The daemon-spawned
+    dictate stop must pick up Preferences → Dictation choice; without
+    this, Chinese spoken by user transcribed as English (PR #42 smoke).
+    """
+
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        transcription=ds.TranscriptionSettings(
+            model_id="x", model_path=None, language="zh", extra_buffer_ms=0,
+        ),
+    )
+    ds.save(settings)
+    assert dictate.resolve_language(arg=None) == "zh"
+
+
+def test_resolve_language_auto_returns_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Literal 'auto' means 'let whisper detect' → return None so caller
+    decides whether to omit kwarg or pass 'auto' to backend.
+    """
+
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        transcription=ds.TranscriptionSettings(
+            model_id="x", model_path=None, language="auto", extra_buffer_ms=0,
+        ),
+    )
+    ds.save(settings)
+    assert dictate.resolve_language(arg=None) is None
+
+
+def test_resolve_language_arg_overrides_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        transcription=ds.TranscriptionSettings(
+            model_id="x", model_path=None, language="zh", extra_buffer_ms=0,
+        ),
+    )
+    ds.save(settings)
+    assert dictate.resolve_language(arg="ja") == "ja"
+    assert dictate.resolve_language(arg="auto") is None
+
+
+def test_whisper_cpp_passes_auto_when_language_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without explicit pin, ``_default_transcribe_whisper_cpp`` must
+    pass language='auto' to pywhispercpp instead of letting it default
+    to English. Garbled-English-from-Chinese bug from PR #42.
+    """
+
+    import sys as _sys
+    import types as _types
+
+    captured: dict = {}
+
+    class FakeModel:
+        def __init__(self, *_a: Any, **_kw: Any) -> None:
+            pass
+
+        def transcribe(self, *_a: Any, **kw: Any) -> list:
+            captured.update(kw)
+            class Seg:
+                text = "你好"
+            return [Seg()]
+
+    fake_mod = _types.ModuleType("pywhispercpp.model")
+    fake_mod.Model = FakeModel  # type: ignore[attr-defined]
+    monkeypatch.setitem(_sys.modules, "pywhispercpp", _types.ModuleType("pywhispercpp"))
+    monkeypatch.setitem(_sys.modules, "pywhispercpp.model", fake_mod)
+    dictate._default_transcribe_whisper_cpp(tmp_path / "x.wav", "x.bin", None)
+    assert captured.get("language") == "auto"
