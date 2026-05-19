@@ -11,7 +11,12 @@ Any agent (Claude Code, Codex, sub-agents, Hermes daemons) reading the parent `A
 3. **Required check `harness-evidence`** — PR body must include one of: `ready_for_song` · `job-contract.json` · `closure.json` · `dev-autopilot submit` · `harness-bypass:` · `--no-contract`. Workflow uses hybrid runner (GitHub-hosted primary → Hermes self-hosted fallback) per `docs/operations/ci-self-hosted-fallback.md` in song-ai-harness.
 4. **Review thread resolution** — every review comment must be ACCEPTed (with fix) or REJECTed (with reasoning) AND the corresponding GitHub review thread MUST be marked resolved. `pr-review-loop.sh` does this automatically; manual reviewers must do it explicitly.
 5. **Local codex-review closeout** — before first push of a job-contract execution, run `codex review` per `docs/operations/codex-review-closeout.md` (in song-ai-harness). Loop until clean, then hard-stop.
-6. **Project phase / merge authority** — query orchestrator SSOT (`orchestrator project show <name>`) before assuming AI may merge. `meta-self` and `production` repos require Song approval; `development` repos require all gates green.
+6. **Project phase / merge authority** — run `orchestrator project show <name>` early in any goal and record the phase. Merge authority by phase (per `~/.openclaw/workspace/orchestrator/README.md` and `lib/risk-classifier.mjs`, Song decision 2026-05-16):
+   - `development` → **AI has full merge authority** once gates are green. No schema/migration/secrets/auth/`.github` approval asks. Hard-rule floor does NOT apply. Auto-merge low/medium/high.
+   - `production` → LLM risk classifier; low/medium auto-merge, high escalates. Hard-rule floor applies (schema, secrets, `.github/workflows/*`, IAM, payment, auth/session, destructive DDL → auto-high).
+   - `meta-self` → Song approval always required, regardless of risk.
+
+   The SSOT key is the short project name (e.g. `knokit`, not `knokit-desktop`); list all with `orchestrator project list`. If a goal prompt instructs "ask before push/PR/merge" in a `development` repo, treat that prompt as **overriding** this rule only for that one goal; otherwise default to AI self-merge.
 
 ## Where the canonical rules live
 
