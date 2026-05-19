@@ -45,18 +45,24 @@ def _default_accessibility_probe() -> bool:
     """Return True if the running process can drive the system event stream.
 
     AppleScript ``System Events`` calls fail with osascript exit code 1 when
-    Accessibility is not granted.
+    Accessibility is not granted. We also treat osascript missing, timing
+    out, or any other subprocess failure as "not granted" — the worst that
+    happens is the user sees a "permission needed" pill when they shouldn't,
+    which is better than crashing Preferences.
     """
 
-    proc = subprocess.run(
-        [
-            "osascript",
-            "-e",
-            'tell application "System Events" to get name of first process',
-        ],
-        capture_output=True,
-        timeout=2.0,
-    )
+    try:
+        proc = subprocess.run(
+            [
+                "osascript",
+                "-e",
+                'tell application "System Events" to get name of first process',
+            ],
+            capture_output=True,
+            timeout=2.0,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
     return proc.returncode == 0
 
 

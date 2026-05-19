@@ -186,9 +186,16 @@ def test_daemon_status_snapshot_migrates_running_daemon(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An upgraded install with daemon_enabled=False but daemon actually
-    running should be migrated to daemon_enabled=True on first snapshot."""
+    running should rebuild the helper and migrate the flag to True."""
     from agent_doctor import hotkey_install as hi
 
+    install_calls: list[dict[str, Any]] = []
+
+    def fake_install(**kwargs: Any) -> dict[str, str]:
+        install_calls.append(kwargs)
+        return {"helper": "/tmp/h", "plist": "/tmp/p", "agent_doctor_bin": "/tmp/bin"}
+
+    monkeypatch.setattr(hi, "install", fake_install)
     monkeypatch.setattr(
         hi, "status", lambda: {
             "plist_exists": True,
@@ -213,6 +220,7 @@ def test_daemon_status_snapshot_migrates_running_daemon(
     )
     snap = ht.daemon_status_snapshot()
     assert snap["pill"] == "listening"
+    assert len(install_calls) == 1  # helper was rebuilt
     # The flag should have been persisted as True now.
     after = ds.load()
     assert after.hotkey.daemon_enabled is True

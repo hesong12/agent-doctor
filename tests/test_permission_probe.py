@@ -74,3 +74,18 @@ def test_default_input_monitoring_probe_stale_heartbeat(tmp_path) -> None:
 def test_settings_url_unknown_pane_raises() -> None:
     with pytest.raises(KeyError):
         pp.settings_url("camera")
+
+
+def test_default_accessibility_probe_handles_missing_osascript(monkeypatch) -> None:
+    def boom(*_a, **_k):
+        raise FileNotFoundError("osascript")
+    monkeypatch.setattr(pp.subprocess, "run", boom)
+    assert pp._default_accessibility_probe() is False
+
+
+def test_default_accessibility_probe_handles_timeout(monkeypatch) -> None:
+    def slow(*_a, **_k):
+        import subprocess as _sp
+        raise _sp.TimeoutExpired(cmd="osascript", timeout=2.0)
+    monkeypatch.setattr(pp.subprocess, "run", slow)
+    assert pp._default_accessibility_probe() is False

@@ -99,15 +99,28 @@ def daemon_status_snapshot() -> dict[str, object]:
         perms = pp.PermissionStatus(accessibility=False, input_monitoring=False, first_missing=None)
         return {"pill": pill, "perms": perms, "daemon": daemon, "settings": s.hotkey}
 
-    # Migration: backfill daemon_enabled when LaunchAgent is actually running.
+    # Migration: if the LaunchAgent appears loaded but our stored flag
+    # is False AND the on-disk helper binary may be from a previous
+    # release, rebuild + relaunch the helper so the new binding semantics
+    # take effect. Otherwise the UI would show "Listening" with an old
+    # binary that doesn't understand right_cmd / modifier-only bindings.
     if daemon["running"] and not s.hotkey.daemon_enabled:
-        new = ds.HotkeySettings(
-            binding=s.hotkey.binding,
-            push_to_talk=s.hotkey.push_to_talk,
-            daemon_enabled=True,
-        )
-        s = ds.replace_section(s, hotkey=new)
-        ds.save(s)
+        try:
+            hi.install()  # rebuild + rewrite plist + re-bootstrap
+        except hi.HotkeyInstallError:
+            # If migration fails, fall back to marking it disabled so the
+            # user can manually toggle and see the error.
+            pass
+        else:
+            new = ds.HotkeySettings(
+                binding=s.hotkey.binding,
+                push_to_talk=s.hotkey.push_to_talk,
+                daemon_enabled=True,
+            )
+            s = ds.replace_section(s, hotkey=new)
+            ds.save(s)
+            # Refresh daemon status after restart.
+            daemon = hi.status()
 
     if not daemon["running"] or not s.hotkey.daemon_enabled:
         pill = "paused"
