@@ -778,6 +778,12 @@ class PetView: NSView {
     override func rightMouseDown(with event: NSEvent) {
         let menu = NSMenu(title: "Agent Doctor")
         menu.addItem(
+            withTitle: "Preferences...",
+            action: #selector(openPreferences(_:)),
+            keyEquivalent: ""
+        ).target = self
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(
             withTitle: "Change sprite...",
             action: #selector(changeSprite(_:)),
             keyEquivalent: ""
@@ -1019,6 +1025,65 @@ class PetView: NSView {
 
     @objc func closePetFromMenu(_ sender: Any?) {
         quitPet()
+    }
+
+    /// Launch the Preferences window via `agent-doctor dictate preferences`.
+    /// The Tk app runs its own mainloop, so we wait on the subprocess so
+    /// crashes (e.g. _tkinter missing on a Python built without Tcl/Tk) can
+    /// surface as an NSAlert instead of disappearing silently.
+    @objc func openPreferences(_ sender: Any?) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: pythonExecutable)
+            process.arguments = [
+                "-m",
+                "agent_doctor.cli",
+                "dictate",
+                "preferences"
+            ]
+            let errorPipe = Pipe()
+            let errorCollector = ProcessOutputCollector(errorPipe)
+            process.standardError = errorPipe
+            let outputPipe = Pipe()
+            let outputCollector = ProcessOutputCollector(outputPipe)
+            process.standardOutput = outputPipe
+            do {
+                try process.run()
+            } catch {
+                DispatchQueue.main.async {
+                    self?.showPreferencesLaunchError(error.localizedDescription)
+                }
+                return
+            }
+            process.waitUntilExit()
+            let stderr = errorCollector.finish()
+            _ = outputCollector.finish()
+            if process.terminationStatus != 0 {
+                DispatchQueue.main.async {
+                    self?.showPreferencesLaunchError(stderr)
+                }
+            }
+        }
+    }
+
+    func showPreferencesLaunchError(_ stderr: String) {
+        let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        let alert = NSAlert()
+        alert.messageText = "Could not open Preferences"
+        if trimmed.contains("_tkinter") || trimmed.contains("No module named '_tkinter'") {
+            alert.informativeText = "Your Python install is missing Tk support. Fix with `brew install python-tk@3.13` (or the matching version for your agent-doctor Python), or rebuild pyenv with Tcl/Tk linked."
+        } else {
+            alert.informativeText = trimmed.isEmpty
+                ? "agent-doctor dictate preferences exited with a non-zero status."
+                : short(trimmed, 384)
+        }
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        if let window = self.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.window.makeKeyAndOrderFront(nil)
+        }
     }
 
     func setSprite(_ selectedPath: String) {

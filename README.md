@@ -455,13 +455,22 @@ If the keystroke fails (e.g. permission revoked), the text is still on the clipb
 
 #### Preferences window
 
-Open the GUI:
+The primary entry point is the desktop pet: right-click the sprite and
+choose **Preferences…**. The same window can also be launched from the
+terminal:
 
 ```bash
 agent-doctor dictate preferences
 ```
 
-or right-click the pet sprite and choose "Preferences…". Five tabs:
+> **Note**: the Preferences window uses Tk. If your Python was built
+> without Tcl/Tk (common for `pyenv` installs), launching from the pet
+> shows a "missing Tk support" alert and the CLI exits with
+> `ModuleNotFoundError: No module named '_tkinter'`. Fix with
+> `brew install python-tk@<version>` matching the Python that runs
+> `agent-doctor`, or rebuild pyenv with Tcl/Tk linked.
+
+Five tabs:
 
 - **Dictation** — model, language, extra recording buffer.
 - **LLM** — provider (LM Studio / Ollama / Custom), base URL, model, test connection.
