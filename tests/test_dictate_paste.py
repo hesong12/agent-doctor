@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,45 +13,82 @@ import pytest
 from agent_doctor import dictate_paste as dp
 
 
-def test_paste_invokes_osascript_keystroke() -> None:
-    calls: list[list[str]] = []
+@pytest.fixture
+def fake_helper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Simulate the Swift helper's paste-request file watcher.
 
-    def fake_runner(argv: list[str]) -> int:
-        calls.append(argv)
-        return 0
+    Background thread polls for the paste-request file and deletes it
+    on appearance, exactly like the real helper. Tests using this
+    fixture can call ``dp.paste()`` and have it succeed without a
+    running daemon. Returns the simulator object so tests can also
+    assert "request landed" if they care.
+    """
 
-    dp.paste(runner=fake_runner, delay_seconds=0.0)
-    assert len(calls) == 1
-    argv = calls[0]
-    assert argv[0] == "osascript"
-    assert "-e" in argv
-    script_idx = argv.index("-e") + 1
-    assert 'keystroke "v" using {command down}' in argv[script_idx]
+    import sys as _sys
+    import threading
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    req = tmp_path / "paste-request"
+    monkeypatch.setattr(dp, "PASTE_REQUEST_PATH", req)
+
+    consumed_count = [0]
+    stop_event = threading.Event()
+
+    def watcher() -> None:
+        while not stop_event.is_set():
+            if req.exists():
+                try:
+                    req.unlink()
+                    consumed_count[0] += 1
+                except FileNotFoundError:
+                    pass
+            time.sleep(0.01)
+
+    t = threading.Thread(target=watcher, daemon=True)
+    t.start()
+    yield {"path": req, "consumed_count": consumed_count}
+    stop_event.set()
 
 
-def test_paste_propagates_failure() -> None:
-    def fake_runner(_argv: list[str]) -> int:
-        return 17
+def test_paste_writes_helper_request_file(fake_helper) -> None:
+    """The Python paste API drops a sidecar file the Swift helper
+    polls. Switched from osascript because macOS Accessibility rejects
+    keystroke requests from launchd-spawned osascript chains (error
+    1002 in field), but the helper itself has Accessibility so
+    CGEventPost works."""
 
-    with pytest.raises(dp.PasteError, match="osascript"):
-        dp.paste(runner=fake_runner, delay_seconds=0.0)
+    dp.paste(delay_seconds=0.0)
+    assert fake_helper["consumed_count"][0] >= 1
+
+
+def test_paste_raises_when_helper_does_not_respond(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the helper isn't running (no one consumes the request file
+    within the timeout) paste must raise with a clear error so the
+    caller can surface a notification."""
+
+    import sys as _sys
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.setattr(dp, "PASTE_REQUEST_PATH", tmp_path / "paste-request")
+    # Shorten timeout for the test so it doesn't take 500ms.
+    monkeypatch.setattr(dp, "_PASTE_REQUEST_TIMEOUT_S", 0.1)
+
+    with pytest.raises(dp.PasteError, match="helper did not respond"):
+        dp.paste(delay_seconds=0.0)
 
 
 def test_permission_test_records_timestamp_on_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_helper
 ) -> None:
     from agent_doctor import dictate_settings as ds
 
     monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
 
-    def fake_runner(_argv: list[str]) -> int:
-        return 0
-
     def fake_pbcopy(_argv: list[str], _data: bytes) -> int:
         return 0
 
-    ok = dp.permission_test(runner=fake_runner, clipboard_runner=fake_pbcopy)
+    ok = dp.permission_test(clipboard_runner=fake_pbcopy)
     assert ok is True
     settings = ds.load()
     assert settings.paste.last_permission_check is not None
@@ -59,28 +97,38 @@ def test_permission_test_records_timestamp_on_success(
 def test_enable_requires_passing_permission_test(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """When permission_test fails (no pet-display picks up the paste
+    request within timeout), enable() must raise and NOT flip
+    auto_paste on. Tests isolate the request file to tmp_path so the
+    developer's real pet-display can't accidentally consume it.
+    """
+
+    import sys as _sys
     from agent_doctor import dictate_settings as ds
 
+    monkeypatch.setattr(_sys, "platform", "darwin")
     monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
-
-    def failing_runner(_argv: list[str]) -> int:
-        return 1
+    monkeypatch.setattr(dp, "PASTE_REQUEST_PATH", tmp_path / "paste-request")
+    # Tight timeout so the test finishes quickly. No fake_helper means
+    # nothing consumes the file → paste() raises → permission_test
+    # returns False → enable() raises.
+    monkeypatch.setattr(dp, "_PASTE_REQUEST_TIMEOUT_S", 0.1)
 
     with pytest.raises(dp.PasteError, match="permission"):
-        dp.enable(runner=failing_runner, clipboard_runner=lambda *_: 0)
+        dp.enable(clipboard_runner=lambda *_: 0)
     settings = ds.load()
     assert settings.paste.auto_paste is False
 
 
 def test_enable_flips_settings_on_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_helper
 ) -> None:
     from agent_doctor import dictate_settings as ds
 
     monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
-    dp.enable(runner=lambda _a: 0, clipboard_runner=lambda *_: 0)
+    dp.enable(clipboard_runner=lambda *_: 0)
     settings = ds.load()
     assert settings.paste.auto_paste is True
 
@@ -112,7 +160,7 @@ def test_maybe_auto_paste_noop_when_disabled(
 
 
 def test_maybe_auto_paste_runs_when_enabled(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_helper
 ) -> None:
     from agent_doctor import dictate_settings as ds
 
@@ -123,15 +171,17 @@ def test_maybe_auto_paste_runs_when_enabled(
         paste=ds.PasteSettings(auto_paste=True, paste_delay_ms=0),
     )
     ds.save(settings)
-    called: list[list[str]] = []
-    dp.maybe_auto_paste(runner=lambda argv: (called.append(argv), 0)[1])
-    assert called
+    dp.maybe_auto_paste()
+    assert fake_helper["consumed_count"][0] >= 1
 
 
 def test_dictate_finish_calls_auto_paste_on_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_helper
 ) -> None:
-    """End-to-end: when auto_paste is on and pipeline succeeds, paste fires."""
+    """End-to-end: when auto_paste is on and pipeline succeeds, paste
+    fires. The helper-driven path drops a request file the fake helper
+    fixture consumes, so the assertion checks the consume count
+    instead of an osascript argv list."""
 
     if sys.platform != "darwin":
         pytest.skip("auto-paste short-circuits to no-op off Darwin (dictate_paste.py)")
@@ -169,8 +219,6 @@ def test_dictate_finish_calls_auto_paste_on_success(
     monkeypatch.setattr(_d, "notify", lambda *a, **k: None)
     monkeypatch.setattr(_d, "play_sound", lambda *a, **k: None)
 
-    calls: list[list[str]] = []
-    monkeypatch.setattr(dp, "_default_osascript", lambda argv: (calls.append(argv), 0)[1])
     rc = cli.main(["dictate", "stop"])
     assert rc == 0
-    assert calls  # paste fired
+    assert fake_helper["consumed_count"][0] >= 1  # paste fired

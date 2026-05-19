@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Callable, Optional
 
 ClipboardRunner = Callable[[list[str], bytes], int]
@@ -38,50 +39,85 @@ def _default_pbcopy(argv: list[str], data: bytes) -> int:
     return proc.returncode
 
 
+PASTE_REQUEST_PATH = Path(
+    "~/Library/Application Support/agent-doctor/paste-request"
+).expanduser()
+
+# How long to wait for the helper to pick up the paste request file.
+# The helper polls every 80 ms, so 500 ms is ~6 polls — plenty of
+# margin while still failing fast if the helper isn't running.
+_PASTE_REQUEST_TIMEOUT_S = 0.5
+
+
 def paste(
     *,
     delay_seconds: float = 0.06,
     runner: Optional[OsascriptRunner] = None,
 ) -> None:
-    """Synthesise Cmd+V via osascript. Raises PasteError on non-zero exit.
+    """Trigger Cmd+V via the hotkey helper's CGEventPost path.
 
-    Diagnostic logging on stderr lands in the LaunchAgent log when this
-    path runs daemon-spawned, so the user-flagged "auto-paste needs
-    manual paste" failure mode surfaces with the actual osascript exit
-    code rather than silently succeeding.
+    The previous osascript-based path failed reliably from the
+    daemon-spawned process chain: macOS attributes the keystroke
+    request to ``/usr/bin/osascript`` (a system binary that the user
+    cannot add to Accessibility), so System Events returned
+    ``not allowed to send keystroke`` (error 1002).
+
+    The hotkey helper IS in the user's Accessibility list (same binary
+    they granted Input Monitoring to), and CGEventPost from inside the
+    helper satisfies the TCC check. We coordinate via a sidecar file:
+    Python drops ``~/Library/Application Support/agent-doctor/
+    paste-request`` and the helper's poller picks it up within ~80 ms
+    and synthesises the keystroke from helper context.
+
+    The ``runner`` argument is kept for test backward-compat but
+    unused on the helper-driven path. Tests can monkeypatch
+    ``PASTE_REQUEST_PATH`` instead.
     """
 
-    if sys.platform != "darwin" and runner is None:
+    if sys.platform != "darwin":
         # Cross-platform paste is out of scope for v1; treat as no-op to keep
-        # imports clean on Linux test runners. Tests inject a runner explicitly.
+        # imports clean on Linux test runners.
         return
     if delay_seconds > 0:
         time.sleep(delay_seconds)
-    fn = runner or _default_osascript
-    # Activating the frontmost app before the keystroke makes the
-    # daemon-spawned paste reliable: without it, the in-flight pet pop-up
-    # or any focus drift during whisper/LLM (5-10s pipeline) can swallow
-    # the synthesised Cmd+V. The script asks System Events for whoever
-    # is frontmost right now and activates it before pressing the keys —
-    # which routes the keystroke to the user's text input (Cursor /
-    # Notes / Terminal) instead of e.g. the pet sprite.
-    script = """
-        tell application "System Events"
-            set frontProc to first process whose frontmost is true
-            set frontName to name of frontProc
-        end tell
-        tell application frontName to activate
-        delay 0.05
-        tell application "System Events" to keystroke "v" using {command down}
-    """
-    rc = fn(["osascript", "-e", script])
-    sys.stderr.write(f"[paste] osascript rc={rc}\n")
-    sys.stderr.flush()
-    if rc != 0:
-        raise PasteError(
-            f"osascript paste keystroke exited with {rc} — likely missing "
-            "Accessibility permission"
+    try:
+        PASTE_REQUEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PASTE_REQUEST_PATH.write_text(
+            str(int(time.time())) + "\n", encoding="utf-8"
         )
+    except OSError as exc:
+        sys.stderr.write(f"[paste] could not write request file: {exc}\n")
+        sys.stderr.flush()
+        raise PasteError(
+            f"could not write paste request file ({exc}); helper may "
+            "not be installed"
+        ) from exc
+    # Wait briefly for the helper to consume the request (it deletes
+    # the file after delivering the keystroke). If the file is still
+    # there after the timeout, the helper isn't running and we
+    # surface a clear error.
+    deadline = time.time() + _PASTE_REQUEST_TIMEOUT_S
+    while time.time() < deadline:
+        if not PASTE_REQUEST_PATH.exists():
+            sys.stderr.write("[paste] helper consumed request\n")
+            sys.stderr.flush()
+            return
+        time.sleep(0.05)
+    # Helper never picked it up. Best-effort clean up so the next
+    # paste attempt doesn't see a stale request.
+    try:
+        PASTE_REQUEST_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+    sys.stderr.write(
+        f"[paste] helper did not consume request within "
+        f"{_PASTE_REQUEST_TIMEOUT_S}s — helper not running?\n"
+    )
+    sys.stderr.flush()
+    raise PasteError(
+        "hotkey helper did not respond to paste request; check that "
+        "'agent-doctor dictate hotkey show' reports running: True"
+    )
 
 
 def permission_test(
