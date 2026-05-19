@@ -1147,6 +1147,25 @@ def test_appkit_display_source_has_sprite_context_menu() -> None:
     assert "removeItem(atPath: userSpritePath)" in source
 
 
+def test_appkit_display_source_wires_preferences_menu_item() -> None:
+    # README and docs/dictate.md advertise "right-click pet → Preferences…"
+    # as the primary GUI entry point. This invariant locks the menu item +
+    # CLI subprocess + missing-Tk NSAlert path so the entry point cannot
+    # silently regress (the original bug this test guards against).
+    source = pet_display._appkit_source()
+
+    assert 'withTitle: "Preferences..."' in source
+    assert "@objc func openPreferences" in source
+    # The subprocess invokes the same CLI command the docs document, so the
+    # CLI path and the GUI path stay in lock-step.
+    assert '"dictate"' in source
+    assert '"preferences"' in source
+    # _tkinter is the symptom users see on pyenv-built Pythons without
+    # Tcl/Tk; the NSAlert must keep the friendly hint for that case.
+    assert "_tkinter" in source
+    assert "showPreferencesLaunchError" in source
+
+
 def test_pet_panel_keeps_idle_controls_to_hide_or_quit_only() -> None:
     snapshot = snapshot_from_payload(
         {
