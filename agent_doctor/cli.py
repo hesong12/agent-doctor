@@ -2106,16 +2106,34 @@ def _dictate_finish(args: argparse.Namespace) -> int:
 
         from . import dictate_paste as _dp
         paste_err = _dp.maybe_auto_paste()
+        # Diagnostic logging on stderr (lands in launchd log when
+        # daemon-spawned). Captures: auto_paste setting state at the
+        # moment of the call, the resolved paste_err result. Lets us
+        # tell "paste skipped because off" from "paste ran but did
+        # nothing visible" from "paste raised". Costs one log line per
+        # dictate stop, no user-visible effect.
+        try:
+            from . import dictate_settings as _ds_paste
+            _auto_on = _ds_paste.load().paste.auto_paste
+            sys.stderr.write(
+                f"[dictate] paste auto_paste={_auto_on} err={paste_err!r}\n"
+            )
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 - logging must never break dictate
+            pass
         if paste_err is not None:
             _d.notify(
                 "agent-doctor",
                 "Auto-paste failed — text is on the clipboard, paste manually.",
             )
 
-        _d.notify(
-            "Dictate ready" if result.enhanced else "Dictate (raw)",
-            f"{len(result.prompt)} chars on clipboard ({result.mode})",
-        )
+        # Suppress the "Dictate ready" success notification. The pet's
+        # listening → thinking → idle ring transitions already tell the
+        # user the pipeline finished, and the prompt landing in the
+        # focused text field (via auto_paste) is the real signal. The
+        # banner just adds noise (user-flagged 2026-05-19).
+        # Only the error notification above remains, so failures still
+        # surface as a banner the user can act on.
 
         if play_audio:
             _d.play_sound(_d.DEFAULT_DONE_SOUND)

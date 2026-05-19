@@ -43,7 +43,13 @@ def paste(
     delay_seconds: float = 0.06,
     runner: Optional[OsascriptRunner] = None,
 ) -> None:
-    """Synthesise Cmd+V via osascript. Raises PasteError on non-zero exit."""
+    """Synthesise Cmd+V via osascript. Raises PasteError on non-zero exit.
+
+    Diagnostic logging on stderr lands in the LaunchAgent log when this
+    path runs daemon-spawned, so the user-flagged "auto-paste needs
+    manual paste" failure mode surfaces with the actual osascript exit
+    code rather than silently succeeding.
+    """
 
     if sys.platform != "darwin" and runner is None:
         # Cross-platform paste is out of scope for v1; treat as no-op to keep
@@ -52,13 +58,25 @@ def paste(
     if delay_seconds > 0:
         time.sleep(delay_seconds)
     fn = runner or _default_osascript
-    rc = fn(
-        [
-            "osascript",
-            "-e",
-            'tell application "System Events" to keystroke "v" using {command down}',
-        ]
-    )
+    # Activating the frontmost app before the keystroke makes the
+    # daemon-spawned paste reliable: without it, the in-flight pet pop-up
+    # or any focus drift during whisper/LLM (5-10s pipeline) can swallow
+    # the synthesised Cmd+V. The script asks System Events for whoever
+    # is frontmost right now and activates it before pressing the keys —
+    # which routes the keystroke to the user's text input (Cursor /
+    # Notes / Terminal) instead of e.g. the pet sprite.
+    script = """
+        tell application "System Events"
+            set frontProc to first process whose frontmost is true
+            set frontName to name of frontProc
+        end tell
+        tell application frontName to activate
+        delay 0.05
+        tell application "System Events" to keystroke "v" using {command down}
+    """
+    rc = fn(["osascript", "-e", script])
+    sys.stderr.write(f"[paste] osascript rc={rc}\n")
+    sys.stderr.flush()
     if rc != 0:
         raise PasteError(
             f"osascript paste keystroke exited with {rc} — likely missing "
