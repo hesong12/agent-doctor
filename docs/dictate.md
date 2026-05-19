@@ -220,8 +220,10 @@ Each row captures the transcript, the final clipboard prompt, mode, backend, whi
 
 ## Hotkey configuration
 
-Default binding: `right_cmd` (hold Right Command). Override via
-Preferences → Hotkey or by editing `~/.agent-doctor/dictate.json`:
+Default binding: `right_cmd` (hold Right Command). Open Preferences by
+right-clicking the desktop pet sprite and choosing **Preferences…**,
+then switch to the **Hotkey** tab. You can also override via
+`~/.agent-doctor/dictate.json`:
 
 ```json
 { "hotkey": { "binding": "right_option", "push_to_talk": true, "daemon_enabled": true } }
