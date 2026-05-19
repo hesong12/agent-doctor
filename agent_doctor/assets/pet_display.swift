@@ -35,6 +35,34 @@ func stringValue(_ dict: [String: Any], _ key: String, _ fallback: String) -> St
     return fallback
 }
 
+// Transient dictate state file written by `agent-doctor dictate start /
+// stop`. We poll this in parallel with pet-status.json so the desktop
+// pet visibly reacts ("listening" while recording, "thinking" while the
+// LLM enhances) instead of looking idle through the whole pipeline —
+// the gap the user reported in PR #40 smoke test.
+let transientPath: String = {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    return home.appendingPathComponent(".agent-doctor/pet/pet-transient.json").path
+}()
+
+// Returns the transient state ("listening" or "thinking") if the file
+// exists and has not expired, else nil. We compute expiry against the
+// Swift-side clock so a desynchronised clock between processes still
+// fails closed (no surprise listening indicator after a crash).
+func loadTransientState() -> String? {
+    let url = URL(fileURLWithPath: transientPath)
+    guard let data = try? Data(contentsOf: url) else { return nil }
+    guard
+        let obj = try? JSONSerialization.jsonObject(with: data),
+        let dict = obj as? [String: Any],
+        let state = dict["state"] as? String,
+        let expiresAt = dict["expires_at"] as? Double
+    else { return nil }
+    if Date().timeIntervalSince1970 >= expiresAt { return nil }
+    if state != "listening" && state != "thinking" { return nil }
+    return state
+}
+
 func loadStatus() -> [String: String] {
     let url = URL(fileURLWithPath: statusPath)
     guard let data = try? Data(contentsOf: url) else {
@@ -1891,12 +1919,27 @@ class PetView: NSView {
     }
 
     func applyStatusReload(_ nextStatus: [String: String], _ now: Date) {
-        if shouldKeepCurrentIncident(nextStatus) {
+        var merged = nextStatus
+        // Transient dictate states override the autopilot status so the
+        // pet visibly reacts during voice capture / LLM enhancement.
+        // When the user is actively dictating we explicitly bypass the
+        // incident-keep early-return so listening/thinking always wins
+        // over a stale concerned/intervening incident (codex P2 round 1).
+        let transient = loadTransientState()
+        if let t = transient {
+            merged["state"] = t
+            merged["action"] = "dictate"
+            status = merged
             lastStatusReload = now
             needsDisplay = true
             return
         }
-        status = nextStatus
+        if shouldKeepCurrentIncident(merged) {
+            lastStatusReload = now
+            needsDisplay = true
+            return
+        }
+        status = merged
         lastStatusReload = now
     }
 
@@ -1988,6 +2031,29 @@ class PetView: NSView {
 
     func drawEffects(_ state: String, _ t: Double, _ accent: NSColor, _ glow: NSColor) {
         let p = pulse(t, 2.0)
+        if state == "listening" {
+            // Red pulsing ring + soft inner glow so the user can see at a
+            // glance that audio is being captured. PR #43 — gap surfaced
+            // during PR #40 smoke when user pressed right_cmd and got
+            // no visible feedback during recording.
+            let size = 108 + (14 * p)
+            oval(95 - size / 2, 87 - size / 2, size, size,
+                 color("#ef4444").withAlphaComponent(0.08 + (0.10 * p)),
+                 color("#ef4444").withAlphaComponent(0.78), 3)
+            oval(62, 50, 66, 66, color("#fecaca").withAlphaComponent(0.18), NSColor.clear, 0)
+            return
+        }
+        if state == "thinking" {
+            // Yellow/amber pulsing ring while whisper transcribes and the
+            // LLM rewrites the prompt. Same shape as listening so the
+            // transition reads as "still working, different stage".
+            let size = 108 + (12 * p)
+            oval(95 - size / 2, 87 - size / 2, size, size,
+                 color("#f59e0b").withAlphaComponent(0.08 + (0.08 * p)),
+                 color("#f59e0b").withAlphaComponent(0.72), 3)
+            oval(62, 50, 66, 66, color("#fde68a").withAlphaComponent(0.18), NSColor.clear, 0)
+            return
+        }
         if state == "idle" {
             oval(39, 35, 112, 112, glow.withAlphaComponent(0.12 + (0.07 * p)), NSColor.clear, 0)
             oval(62, 50, 66, 66, glow.withAlphaComponent(0.08), NSColor.clear, 0)
@@ -2110,6 +2176,12 @@ class PetView: NSView {
         }
         if state == "watching" {
             return chinese ? "监控中" : "Watching"
+        }
+        if state == "listening" {
+            return chinese ? "听写中" : "Listening"
+        }
+        if state == "thinking" {
+            return chinese ? "整理中" : "Thinking"
         }
         return chinese ? "健康" : "Idle"
     }

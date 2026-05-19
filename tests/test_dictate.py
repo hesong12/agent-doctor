@@ -2044,3 +2044,77 @@ def test_dictate_finish_emits_listening_state(
     rc = cli.main(["dictate", "stop"])
     assert rc == 0
     assert "listening" in states_observed
+
+
+def test_cli_dictate_start_writes_listening_transient_for_pet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``dictate start`` MUST surface a "listening" transient state to
+    the desktop pet so the user can see at a glance that audio is being
+    captured. Without this the pet keeps showing the autopilot's idle
+    state through the entire recording phase — the gap the user
+    reported during the PR #40 end-to-end smoke ("我作为用户完全没有
+    任何的感知").
+    """
+
+    from agent_doctor import dictate as _d
+    from agent_doctor import pet_transient as _pt
+
+    # Isolate transient + state dirs so we don't touch the developer's
+    # real ~/.agent-doctor/.
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(_pt, "DEFAULT_TRANSIENT_DIR", tmp_path / "pet")
+
+    # Stub the actual sox spawn so this test runs in CI without a mic.
+    captured_state: dict = {}
+
+    def fake_start_recording(**_kw: Any) -> _d.DictateState:
+        return _d.DictateState(
+            pid=99999,
+            audio_path=str(tmp_path / "fake.wav"),
+            mode="optimize",
+            started_at=time.time(),
+            recorder="sox",
+            extras={},
+        )
+
+    monkeypatch.setattr(_d, "start_recording", fake_start_recording)
+    monkeypatch.setattr(_d, "play_sound", lambda *a, **k: None)
+    monkeypatch.setattr(_d, "beep_enabled", lambda *_a: False)
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "start"])
+    assert rc == 0
+    # Transient file exists with state=listening and a future expiry.
+    payload = _pt.read_transient()
+    assert payload is not None
+    assert payload["state"] == "listening"
+    assert payload["expires_at"] > time.time()
+
+
+def test_cli_dictate_cancel_clears_listening_transient(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancel MUST clear the pet's listening transient or the pet keeps
+    showing 'listening' for the full TTL (120s) after recording stopped.
+    Codex P2 caught this gap in the listening-feedback PR.
+    """
+
+    from agent_doctor import dictate as _d
+    from agent_doctor import pet_transient as _pt
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(_pt, "DEFAULT_TRANSIENT_DIR", tmp_path / "pet")
+
+    # Simulate the "user pressed and immediately cancelled" state.
+    _pt.write_transient(state="listening", ttl_seconds=120.0)
+    assert _pt.read_transient() is not None
+
+    from agent_doctor.cli import main
+
+    # No real recording in flight — cancel must still clear the
+    # transient so the pet stops showing listening.
+    rc = main(["dictate", "cancel"])
+    assert rc == 0
+    assert _pt.read_transient() is None
