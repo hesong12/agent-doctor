@@ -49,26 +49,89 @@ def test_settings_url_for_known_panes() -> None:
     assert "ListenEvent" in pp.settings_url("input_monitoring")
 
 
-def test_default_input_monitoring_probe_no_heartbeat(tmp_path) -> None:
-    # No heartbeat = events not flowing = IM not confirmed.
-    assert pp._default_input_monitoring_probe(heartbeat_path=tmp_path / "absent") is False
+def test_default_input_monitoring_probe_no_startup_legacy_fallback(tmp_path) -> None:
+    """Pre-PRα-3 helpers write only heartbeat. The probe must NOT
+    suddenly start reporting "permission needed" for users who upgrade
+    the Python package without re-installing the LaunchAgent — that
+    would manufacture a false negative on every upgrade. Codex P2
+    regression caught during PRα review.
+    """
 
-
-def test_default_input_monitoring_probe_fresh_heartbeat(tmp_path) -> None:
     hb = tmp_path / "im-heartbeat"
     hb.write_text("1\n")
-    assert pp._default_input_monitoring_probe(heartbeat_path=hb) is True
+    assert pp._default_input_monitoring_probe(
+        heartbeat_path=hb, startup_path=tmp_path / "absent-startup"
+    ) is True
 
 
-def test_default_input_monitoring_probe_stale_heartbeat(tmp_path) -> None:
+def test_default_input_monitoring_probe_no_heartbeat(tmp_path) -> None:
+    # Daemon started but no event yet = not confirmed.
+    sp = tmp_path / "im-startup"
+    sp.write_text("1\n")
+    assert pp._default_input_monitoring_probe(
+        heartbeat_path=tmp_path / "absent", startup_path=sp
+    ) is False
+
+
+def test_default_input_monitoring_probe_heartbeat_predates_startup(tmp_path) -> None:
+    """The exact false-positive that motivated PRα-3: a leftover
+    heartbeat from a previous daemon lifetime is on disk, but the
+    current daemon's startup stamp is newer — meaning the user may have
+    revoked IM since the last events arrived. Probe MUST return False.
+    """
+
     import os
 
     hb = tmp_path / "im-heartbeat"
     hb.write_text("1\n")
-    # Backdate mtime by 5 minutes.
-    old = hb.stat().st_mtime - 300
-    os.utime(hb, (old, old))
-    assert pp._default_input_monitoring_probe(heartbeat_path=hb) is False
+    sp = tmp_path / "im-startup"
+    sp.write_text("1\n")
+    # Backdate heartbeat to before startup.
+    hb_old = sp.stat().st_mtime - 60
+    os.utime(hb, (hb_old, hb_old))
+    assert pp._default_input_monitoring_probe(
+        heartbeat_path=hb, startup_path=sp
+    ) is False
+
+
+def test_default_input_monitoring_probe_fresh_heartbeat_after_startup(tmp_path) -> None:
+    """Heartbeat strictly newer than startup AND within freshness window
+    = real event flow = True."""
+
+    import os
+
+    sp = tmp_path / "im-startup"
+    sp.write_text("1\n")
+    hb = tmp_path / "im-heartbeat"
+    hb.write_text("1\n")
+    # Move heartbeat slightly ahead.
+    sp_mtime = sp.stat().st_mtime
+    os.utime(hb, (sp_mtime + 1, sp_mtime + 1))
+    assert pp._default_input_monitoring_probe(
+        heartbeat_path=hb, startup_path=sp
+    ) is True
+
+
+def test_default_input_monitoring_probe_stale_heartbeat(tmp_path) -> None:
+    """Heartbeat newer than startup but older than freshness window =
+    daemon used to receive events but has gone silent → revoked or
+    crashed → False."""
+
+    import os
+
+    sp = tmp_path / "im-startup"
+    sp.write_text("1\n")
+    # Backdate startup so we can put heartbeat after it but still in the
+    # stale window.
+    sp_old = sp.stat().st_mtime - 600
+    os.utime(sp, (sp_old, sp_old))
+    hb = tmp_path / "im-heartbeat"
+    hb.write_text("1\n")
+    hb_old = sp_old + 60  # 60s after startup, but 540s ago
+    os.utime(hb, (hb_old, hb_old))
+    assert pp._default_input_monitoring_probe(
+        heartbeat_path=hb, startup_path=sp
+    ) is False
 
 
 def test_settings_url_unknown_pane_raises() -> None:
