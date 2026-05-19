@@ -531,3 +531,50 @@ def test_reset_migration_failure_flag_allows_retry(
     ht.reset_migration_failure_flag()
     ht.daemon_status_snapshot()
     assert len(install_calls) == 2
+
+
+# ---------------------------------------------------------------- PRβ
+# UI string contracts — render_binding + status pill labels. These are
+# pure-data assertions so they run headless (no Tk display required).
+
+def test_render_binding_modifier_only_uses_side_first_order() -> None:
+    """English reading order ('Right ⌘') replaces the original
+    symbol-first rendering ('⌘ Right'). User feedback during PR #34
+    smoke flagged the original as awkward when shown as the keycap's
+    only label.
+    """
+
+    from agent_doctor.ui.preferences import hotkey_tab_view as htv
+
+    assert htv._render_binding("right_cmd") == "Right ⌘"
+    assert htv._render_binding("left_option") == "Left ⌥"
+    assert htv._render_binding("right_shift") == "Right ⇧"
+
+
+def test_render_binding_chord_keeps_symbol_first_order() -> None:
+    """Multi-key chord tokens still render symbol-first because they
+    read as the canonical key sequence."""
+
+    from agent_doctor.ui.preferences import hotkey_tab_view as htv
+
+    assert htv._render_binding("ctrl+option+space") == "⌃ ⌥ Space"
+
+
+def test_pill_text_aligns_with_spec_four_states() -> None:
+    """Spec §10 defines exactly four pill states: Active / Paused /
+    Missing helper / Permission needed. The original implementation
+    had a fifth state 'Daemon stopped' that confused users; PRβ
+    renames it to 'Missing helper' to match the spec.
+    """
+
+    from agent_doctor.ui.preferences import hotkey_tab_view as htv
+
+    labels = {pill_key: text for pill_key, (text, *_rest) in htv._PILL_TEXT.items()}
+    assert labels["listening"] == "Active"
+    assert labels["paused"] == "Paused"
+    assert labels["daemon_stopped"] == "Missing helper"
+    assert labels["permission_needed"] == "Permission needed"
+    # No off-spec extras.
+    assert set(labels.keys()) == {
+        "listening", "paused", "daemon_stopped", "permission_needed"
+    }
