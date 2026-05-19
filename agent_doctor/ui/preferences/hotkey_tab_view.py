@@ -58,7 +58,7 @@ def build(notebook: Any) -> None:
     # "voice transcription works" is visible at a glance.
     ttk.Label(
         frame,
-        text="①  Click Record to set a key    ②  Turn on Background daemon    ③  Grant Input Monitoring when asked",
+        text="①  Click Record to set a key    ②  Turn on 'Run hotkey listener in background'    ③  Grant Input Monitoring when asked",
         foreground="#555",
         font=("Helvetica", 11),
     ).pack(anchor="w", pady=(0, 10))
@@ -79,7 +79,7 @@ def build(notebook: Any) -> None:
     # hint label as its own row under the controls. The previous design
     # crammed all three (keycap + hint + buttons) into one horizontal
     # row, which on Aqua often clipped "Record…" down to a tiny
-    # unlabeled square (reported in PR #34 smoke). Width=10 forces the
+    # unlabeled square (reported in PR #34 smoke). Width=12 forces the
     # button to render its label fully even when packed in a narrow
     # cell.
     tile = ttk.LabelFrame(frame, text="Shortcut")
