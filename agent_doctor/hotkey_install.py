@@ -14,6 +14,7 @@ All shell-outs go through ``_run_launchctl`` so tests can stub them.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import plistlib
 import shutil
@@ -104,8 +105,81 @@ def _domain_target() -> str:
     return f"gui/{os.getuid()}"
 
 
-def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, str]:
-    """Build the helper, write the plist, and launchctl-bootstrap it.
+def _source_fingerprint(src: Path) -> str:
+    """SHA-256 hex digest of the Swift source. Content-based so it is
+    immune to mtime perturbations from tarball restore, scp -p, package
+    extraction, etc. — see codex review feedback that motivated the
+    switch from mtime to hash."""
+
+    h = hashlib.sha256()
+    with src.open("rb") as fp:
+        for chunk in iter(lambda: fp.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _fingerprint_sidecar(helper: Path) -> Path:
+    return helper.with_name(helper.name + ".source-sha256")
+
+
+def _should_rebuild(src: Path, helper: Path) -> bool:
+    """Return True if ``helper`` needs to be rebuilt from ``src``.
+
+    Rebuild when ANY of:
+    - ``helper`` does not exist (fresh install),
+    - ``helper`` is not a regular file (broken/replaced by directory etc.),
+    - ``helper`` is missing the user-execute bit (a previous restore
+      stripped permissions and only ``build()`` chmods 0o755),
+    - the sidecar fingerprint is missing or does not match the current
+      source hash (upgrade path — bundled Swift bumped since last build).
+
+    Otherwise the existing helper was compiled from this exact source
+    revision, so we leave the file untouched. This is the whole point of
+    the function: an unchanged binary keeps the same cdhash, and macOS
+    Input Monitoring (TCC) tracks adhoc-signed binaries by cdhash. Any
+    rebuild — even producing a byte-identical binary — silently
+    invalidates the user's previously-granted Input Monitoring
+    permission.
+    """
+
+    try:
+        helper_stat = helper.stat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return True
+    if not helper.is_file():
+        return True
+    # 0o100 == owner-execute bit; launchd cannot exec a non-executable file
+    # so a helper without it would silently fail at bootstrap time.
+    if not helper_stat.st_mode & 0o100:
+        return True
+    sidecar = _fingerprint_sidecar(helper)
+    try:
+        recorded = sidecar.read_text(encoding="utf-8").strip()
+    except OSError:
+        # No sidecar means we don't know what source built this helper.
+        # Safer to rebuild than to assume it matches.
+        return True
+    try:
+        current = _source_fingerprint(src)
+    except OSError:
+        # Source unreadable but helper is executable + has a recorded
+        # fingerprint. Prefer reusing what's on disk over failing the
+        # install entirely; launchd will surface a real exec error if
+        # the helper itself turns out to be corrupt.
+        return False
+    return recorded != current
+
+
+def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, object]:
+    """Build the helper if needed, write the plist, and launchctl-bootstrap it.
+
+    Rebuild policy: only recompile when :func:`_should_rebuild` says the
+    on-disk helper is stale relative to the Swift source. Skipping the
+    rebuild when the binary is already current preserves its cdhash so
+    macOS Input Monitoring (TCC) does not silently invalidate the user's
+    granted permission on every Background-daemon toggle.
 
     If ``agent_doctor_bin`` is not provided and an existing plist is on
     disk, reuse the value from that plist — preserves a power user's
@@ -122,7 +196,21 @@ def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, str]:
         or shutil.which("agent-doctor")
         or "/usr/local/bin/agent-doctor"
     )
-    build(SWIFT_SOURCE, helper)
+    rebuilt = False
+    if _should_rebuild(SWIFT_SOURCE, helper):
+        build(SWIFT_SOURCE, helper)
+        # Record the source fingerprint next to the helper so the next
+        # install() call can decide "rebuild or reuse" by content rather
+        # than mtime (which restores/copies can perturb).
+        try:
+            _fingerprint_sidecar(helper).write_text(
+                _source_fingerprint(SWIFT_SOURCE), encoding="utf-8"
+            )
+        except OSError:
+            # Sidecar write failure is non-fatal — the next install()
+            # will just rebuild again, which is correct behavior.
+            pass
+        rebuilt = True
     write_plist(plist, helper, bin_path)
     # Best-effort bootout in case a stale agent is loaded; ignore its rc.
     _run_launchctl(["launchctl", "bootout", f"{_domain_target()}/{LABEL}"])
@@ -138,6 +226,7 @@ def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, str]:
         "helper": str(helper),
         "plist": str(plist),
         "agent_doctor_bin": bin_path,
+        "rebuilt": rebuilt,
     }
 
 
@@ -162,17 +251,17 @@ def pause() -> bool:
     return proc.returncode == 0
 
 
-def resume(*, agent_doctor_bin: Optional[str] = None) -> dict[str, str]:
-    """Rebuild the helper from current Swift source, write the plist, and
-    bootstrap. Equivalent to :func:`install` — kept as a named alias so the
-    UI/CLI can distinguish "resume from pause" intent from "fresh install"
-    in their messaging.
+def resume(*, agent_doctor_bin: Optional[str] = None) -> dict[str, object]:
+    """Delegate to :func:`install`. Kept as a named alias so the UI/CLI can
+    distinguish "resume from pause" intent from "fresh install" in their
+    messaging.
 
-    Both paths must rebuild so an upgraded user with a stale on-disk helper
-    from a previous version gets the current Swift source compiled (e.g.
-    pre-Handy-UX helpers don't understand ``right_cmd`` and would silently
-    fail). The extra ``swiftc`` cost on resume is multi-second but is worth
-    the correctness guarantee.
+    The upgrade-safety concern (a pre-Handy-UX helper sitting on disk that
+    doesn't understand ``right_cmd``) is now handled inside
+    :func:`install` via :func:`_should_rebuild`: when the bundled Swift
+    source is newer than the on-disk helper, install rebuilds; when they
+    match, install reuses the binary so its cdhash — and the user's
+    Input Monitoring grant — survive.
     """
 
     return install(agent_doctor_bin=agent_doctor_bin)
