@@ -125,7 +125,10 @@ def _login_keychain_path() -> Optional[Path]:
             capture_output=True,
             check=False,
         )
-    except (FileNotFoundError, OSError):
+    except OSError:
+        # FileNotFoundError is a subclass of OSError, so OSError alone
+        # covers both the "binary disappeared between which() and run()"
+        # race and generic exec failures.
         return None
     if proc.returncode != 0:
         return None
@@ -490,6 +493,17 @@ def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, object]:
         # — without this clear, a transient failure would leave the
         # rebuilt-but-unsigned binary stranded with a stale marker
         # claiming it had the stable identity.
+        #
+        # Deliberately NOT wrapped in try/except: if the marker file
+        # cannot be removed (permission-denied, chflags +immutable,
+        # filesystem read-only), we must not continue past this point.
+        # Suppressing the failure would reintroduce exactly the bug
+        # this clear was meant to fix — the original Codex P1 finding
+        # against PR #37. Raising here is also safer than the
+        # alternative "leave the install half-done with a stale
+        # marker": the user sees a clear, actionable error rather
+        # than a silent regression of the Input Monitoring guarantee
+        # on the next install() run.
         _signature_marker(helper).unlink(missing_ok=True)
         # Record the source fingerprint next to the helper so the next
         # install() call can decide "rebuild or reuse" by content rather
