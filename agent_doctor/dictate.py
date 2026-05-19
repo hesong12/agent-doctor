@@ -557,6 +557,32 @@ def resolve_whisper_model(*, arg: Optional[str]) -> str:
     )
 
 
+def resolve_language(*, arg: Optional[str]) -> Optional[str]:
+    """Resolve the effective whisper language hint.
+
+    Precedence: CLI arg > settings.transcription.language > None.
+
+    Returns None for the "let whisper auto-detect" case (no setting, or
+    the canonical "auto" string from Preferences). Returns the language
+    code (e.g. "zh", "en") when pinned. The daemon's launchd-spawned
+    ``dictate stop`` runs without CLI args, so without this lookup it
+    falls back to None which pywhispercpp interprets as English — broke
+    Chinese transcription in PR #42 smoke.
+    """
+
+    if arg:
+        return None if arg == "auto" else arg
+    try:
+        from . import dictate_settings as _ds
+        settings = _ds.load()
+    except Exception:  # noqa: BLE001 - settings must never break dictate
+        return None
+    lang = settings.transcription.language
+    if not lang or lang == "auto":
+        return None
+    return lang
+
+
 def _default_transcribe(
     audio_path: Path,
     model_name: str,
@@ -622,8 +648,12 @@ def _default_transcribe_whisper_cpp(
     # do the transcription with redirected fds — left as a follow-up.
     model = Model(model_path, n_threads=n_threads, print_progress=False)
     kwargs: Dict[str, Any] = {}
-    if language:
-        kwargs["language"] = language
+    # Pin language only when the caller has explicitly chosen one. With
+    # no language passed, pywhispercpp defaults to "en" — which breaks
+    # multilingual users (PR #42 smoke: user spoke Chinese, transcript
+    # came back English). Passing language="auto" tells whisper.cpp to
+    # run its built-in language detection on the first 30s of audio.
+    kwargs["language"] = language if language else "auto"
     segments = model.transcribe(str(audio_path), **kwargs)
     text = "".join(segment.text for segment in segments)
     return text

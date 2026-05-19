@@ -2023,7 +2023,11 @@ def _dictate_finish(args: argparse.Namespace) -> int:
     whisper_model = _d.resolve_whisper_model(
         arg=getattr(args, "whisper_model", None)
     )
-    language = getattr(args, "language", None)
+    # Same precedence pattern: CLI arg > settings.language > None (auto).
+    # Without this the daemon-spawned dictate stop fell back to English
+    # even when Preferences → Dictation specified zh / Chinese (PR #42
+    # smoke).
+    language = _d.resolve_language(arg=getattr(args, "language", None))
     backend_choice = (
         getattr(args, "backend", None)
         or os.environ.get(_d.ENV_BACKEND)
