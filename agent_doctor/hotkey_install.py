@@ -19,6 +19,7 @@ import os
 import plistlib
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +29,20 @@ DEFAULT_HELPER_PATH = Path(
 ).expanduser()
 DEFAULT_PLIST_PATH = Path(f"~/Library/LaunchAgents/{LABEL}.plist").expanduser()
 SWIFT_SOURCE = Path(__file__).with_name("hotkey") / "HotkeyHelper.swift"
+
+# Stable identifier the Swift helper is signed with. macOS TCC tracks
+# signed binaries by (cert, identifier) rather than cdhash, so as long as
+# the user's keychain has the same signing cert and we always pass this
+# identifier to codesign, an agent-doctor upgrade can ship a new Swift
+# source — and produce a new cdhash — without invalidating the user's
+# Input Monitoring grant.
+HELPER_BUNDLE_ID = "com.agent-doctor.hotkey"
+
+# Common Name of the self-signed code-signing cert created in the user's
+# login keychain. Matches the keychain identity passed to ``codesign
+# -s``. Stable for the lifetime of the keychain; not tied to Apple
+# Developer ID so works on machines without an Apple Developer account.
+SIGNING_IDENTITY = "agent-doctor-hotkey-signing"
 
 
 class HotkeyInstallError(RuntimeError):
@@ -65,6 +80,209 @@ def build(src: Path, dest: Path) -> Path:
         )
     dest.chmod(0o755)
     return dest
+
+
+def _find_openssl() -> str:
+    """Locate an openssl binary suitable for PKCS12 export.
+
+    Prefers Homebrew's OpenSSL 3 over macOS' bundled LibreSSL because
+    Homebrew tracks upstream more closely and accepts the same flags.
+    Both work for the explicit PBE-SHA1-3DES path we use, so falling
+    back to LibreSSL is fine.
+    """
+
+    for candidate in (
+        "/opt/homebrew/bin/openssl",  # Apple Silicon Homebrew
+        "/usr/local/bin/openssl",     # Intel Homebrew
+    ):
+        if Path(candidate).exists():
+            return candidate
+    found = shutil.which("openssl")
+    if found:
+        return found
+    raise HotkeyInstallError(
+        "openssl not found on PATH; required to generate the helper "
+        "signing certificate. Install with `brew install openssl`."
+    )
+
+
+def _signing_identity_exists(identity: str = SIGNING_IDENTITY) -> bool:
+    """Return True if a code-signing certificate matching ``identity`` is
+    already present in the user's keychain.
+
+    Uses ``security find-certificate -c <CN>`` rather than the more
+    common ``find-identity -p codesigning`` because the latter filters
+    by trust-settings policy and self-signed certs without explicit
+    "trust for code signing" entries don't appear there. ``codesign``
+    itself still uses the cert successfully because the private key is
+    in the keychain and ACL-allowed for codesign — so detection has to
+    match what codesign can use, not what the policy filter shows.
+    """
+
+    try:
+        result = subprocess.run(
+            ["security", "find-certificate", "-c", identity],
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0
+
+
+def ensure_signing_identity(identity: str = SIGNING_IDENTITY) -> None:
+    """Create a self-signed code-signing cert in the user's login keychain
+    if one matching ``identity`` does not already exist.
+
+    The cert has ``extendedKeyUsage = codeSigning`` and a 100-year expiry
+    so the helper signature does not silently rot under the user. The
+    private key is imported with ``-T /usr/bin/codesign`` so codesign
+    can use it without re-prompting after the first "Always Allow"
+    keychain dialog. Idempotent — re-entry on an existing cert is a
+    cheap ``find-identity`` lookup that returns immediately.
+    """
+
+    if _signing_identity_exists(identity):
+        return
+    openssl = _find_openssl()
+    sec = shutil.which("security")
+    if sec is None:
+        raise HotkeyInstallError(
+            "security CLI not found; this command is part of macOS — "
+            "agent-doctor's hotkey daemon only runs on Darwin."
+        )
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        key_path = tmp_path / "key.pem"
+        cert_path = tmp_path / "cert.pem"
+        p12_path = tmp_path / "cert.p12"
+        config_path = tmp_path / "openssl.cnf"
+        config_path.write_text(
+            "[ req ]\n"
+            "distinguished_name = req_dn\n"
+            "prompt = no\n"
+            "x509_extensions = v3_codesign\n"
+            "\n"
+            "[ req_dn ]\n"
+            f"CN = {identity}\n"
+            "\n"
+            "[ v3_codesign ]\n"
+            "basicConstraints = critical, CA:false\n"
+            "keyUsage = critical, digitalSignature\n"
+            "extendedKeyUsage = critical, codeSigning\n",
+            encoding="utf-8",
+        )
+        gen = subprocess.run(
+            [
+                openssl, "req",
+                "-newkey", "rsa:2048",
+                "-nodes",
+                "-keyout", str(key_path),
+                "-x509",
+                "-days", "36500",
+                "-out", str(cert_path),
+                "-config", str(config_path),
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if gen.returncode != 0:
+            raise HotkeyInstallError(
+                f"openssl req failed (rc={gen.returncode}): "
+                f"{gen.stderr.decode('utf-8', 'replace')}"
+            )
+        # macOS' security tool refuses PKCS12 files with an empty password
+        # because the HMAC verification step uses the password as the key;
+        # ``pass:`` ends up generating a key that doesn't match the file,
+        # so we use a non-empty placeholder consistently on both sides.
+        # The placeholder is not a secret — the private key is intended
+        # to live only on this machine, only ever used by codesign.
+        p12_password = "agent-doctor-keychain"
+        # macOS' security tool only supports the older PKCS12 algorithms
+        # (PBES1/PBKDF1 + 3DES). OpenSSL 3.x defaults to PBES2/PBKDF2 +
+        # AES-256, which security rejects with a (misleading)
+        # "MAC verification failed" error. We force the older format
+        # via explicit -keypbe / -certpbe / -macalg args instead of
+        # OpenSSL 3's -legacy flag, because LibreSSL (which ships as
+        # /usr/bin/openssl on stock macOS) doesn't accept -legacy.
+        # The explicit-algorithm form works on both LibreSSL and
+        # OpenSSL 3.
+        pkg = subprocess.run(
+            [
+                openssl, "pkcs12",
+                "-export",
+                "-in", str(cert_path),
+                "-inkey", str(key_path),
+                "-out", str(p12_path),
+                "-password", f"pass:{p12_password}",
+                "-name", identity,
+                "-keypbe", "PBE-SHA1-3DES",
+                "-certpbe", "PBE-SHA1-3DES",
+                "-macalg", "sha1",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if pkg.returncode != 0:
+            raise HotkeyInstallError(
+                f"openssl pkcs12 failed (rc={pkg.returncode}): "
+                f"{pkg.stderr.decode('utf-8', 'replace')}"
+            )
+        login_keychain = (
+            Path.home() / "Library" / "Keychains" / "login.keychain-db"
+        )
+        imp = subprocess.run(
+            [
+                sec, "import", str(p12_path),
+                "-k", str(login_keychain),
+                "-P", p12_password,
+                "-T", "/usr/bin/codesign",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if imp.returncode != 0:
+            raise HotkeyInstallError(
+                f"security import failed (rc={imp.returncode}): "
+                f"{imp.stderr.decode('utf-8', 'replace')}"
+            )
+
+
+def sign_helper(
+    helper: Path,
+    identity: str = SIGNING_IDENTITY,
+    bundle_id: str = HELPER_BUNDLE_ID,
+) -> None:
+    """Apply a stable code signature to ``helper`` using ``identity``.
+
+    The combination of a stable signing identity and a stable
+    ``--identifier`` is what lets macOS TCC carry the user's Input
+    Monitoring grant across rebuilds — without it every recompile
+    produces a new adhoc signature whose cdhash invalidates the grant.
+    """
+
+    codesign = shutil.which("codesign")
+    if codesign is None:
+        raise HotkeyInstallError(
+            "codesign not found on PATH; required to sign the hotkey helper. "
+            "Install Xcode Command Line Tools with `xcode-select --install`."
+        )
+    proc = subprocess.run(
+        [
+            codesign, "--force",
+            "-s", identity,
+            "--identifier", bundle_id,
+            "--options", "library",
+            str(helper),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise HotkeyInstallError(
+            f"codesign failed (rc={proc.returncode}): "
+            f"{proc.stderr.decode('utf-8', 'replace')}"
+        )
 
 
 def write_plist(path: Path, helper: Path, agent_doctor_bin: str) -> Path:
@@ -120,6 +338,26 @@ def _source_fingerprint(src: Path) -> str:
 
 def _fingerprint_sidecar(helper: Path) -> Path:
     return helper.with_name(helper.name + ".source-sha256")
+
+
+def _signature_marker(helper: Path) -> Path:
+    """Sidecar file recording which signing identity last touched the
+    helper. Lets install() detect "already signed with the stable
+    agent-doctor identity" without parsing codesign output."""
+
+    return helper.with_name(helper.name + ".signed-by")
+
+
+def _is_signed_with_stable_identity(helper: Path) -> bool:
+    """Return True iff our signature marker records the current stable
+    identity. Marker missing or mismatched → caller will sign and
+    refresh the marker."""
+
+    try:
+        recorded = _signature_marker(helper).read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return recorded == SIGNING_IDENTITY
 
 
 def _should_rebuild(src: Path, helper: Path) -> bool:
@@ -197,6 +435,7 @@ def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, object]:
         or "/usr/local/bin/agent-doctor"
     )
     rebuilt = False
+    signed = False
     if _should_rebuild(SWIFT_SOURCE, helper):
         build(SWIFT_SOURCE, helper)
         # Record the source fingerprint next to the helper so the next
@@ -211,6 +450,24 @@ def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, object]:
             # will just rebuild again, which is correct behavior.
             pass
         rebuilt = True
+    # Signing path:
+    # - If we just rebuilt, the helper bytes changed so swiftc's default
+    #   adhoc signature is back regardless of the on-disk marker — we
+    #   must re-sign to restore the stable identity.
+    # - If we did not rebuild but the marker is missing/stale, this is
+    #   the upgrade path: existing users with a pre-stable-signing
+    #   helper get migrated without first forcing a recompile.
+    # - Otherwise the marker is current → signing is idempotent.
+    if rebuilt or not _is_signed_with_stable_identity(helper):
+        ensure_signing_identity()
+        sign_helper(helper)
+        try:
+            _signature_marker(helper).write_text(SIGNING_IDENTITY, encoding="utf-8")
+        except OSError:
+            # Marker write failure is non-fatal — the next install() will
+            # re-sign, which is wasteful but correct.
+            pass
+        signed = True
     write_plist(plist, helper, bin_path)
     # Best-effort bootout in case a stale agent is loaded; ignore its rc.
     _run_launchctl(["launchctl", "bootout", f"{_domain_target()}/{LABEL}"])
@@ -227,6 +484,7 @@ def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, object]:
         "plist": str(plist),
         "agent_doctor_bin": bin_path,
         "rebuilt": rebuilt,
+        "signed": signed,
     }
 
 
