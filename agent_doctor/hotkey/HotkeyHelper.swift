@@ -176,6 +176,12 @@ class HotkeyDaemon {
     // pressed the other physical key of the same modifier-type (e.g. left
     // Cmd) while the flag is already on."
     var lastFlagOn = false
+    // Pending delayed `dictate start` work item for modifier-only bindings.
+    // We defer `start` by ~150ms so we can observe whether a non-modifier
+    // keyDown follows (in which case the user is doing a system shortcut,
+    // not dictating). This avoids the start/cancel race that left a stale
+    // recording active when cancel arrived before start had written state.
+    var pendingStartWork: DispatchWorkItem? = nil
 
     func reload() {
         config = readConfig()
@@ -186,6 +192,8 @@ class HotkeyDaemon {
         }
         keyDown = false
         lastFlagOn = false
+        pendingStartWork?.cancel()
+        pendingStartWork = nil
         guard let c = chord else {
             fputs("hotkey: could not parse binding \(config.binding)\n", stderr)
             return
@@ -233,9 +241,18 @@ class HotkeyDaemon {
         monitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] ev in
             touchHeartbeat()
             guard let self = self else { return }
+
             if ev.type == .keyDown {
-                // Any non-modifier key while recording → user is doing a
-                // shortcut, not dictating. Cancel the recording.
+                // Non-modifier key arrived. If a start is pending (within
+                // the 150ms intent-confirmation window), the user is doing
+                // a shortcut, not dictating — cancel before it ever fires.
+                // This avoids the start/cancel race where cancel could
+                // observe "no recording" and no-op before start wrote state.
+                if let pending = self.pendingStartWork {
+                    pending.cancel()
+                    self.pendingStartWork = nil
+                }
+                // If we already started, kill the recording.
                 if self.keyDown {
                     self.keyDown = false
                     run([self.config.agentDoctorBin, "dictate", "cancel"])
@@ -254,16 +271,44 @@ class HotkeyDaemon {
             self.lastFlagOn = myFlagOn
 
             if isOurKey && myFlagOn && !anyOther && !wasOn {
-                if !self.keyDown {
-                    self.keyDown = true
-                    run([self.config.agentDoctorBin, "dictate", "start"])
+                // Bound key just pressed alone. Schedule a delayed start —
+                // cancelled if a non-modifier key follows within 150ms (=
+                // system shortcut) or the key is released within 150ms (=
+                // accidental tap).
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self = self else { return }
+                    self.pendingStartWork = nil
+                    if !self.keyDown {
+                        self.keyDown = true
+                        run([self.config.agentDoctorBin, "dictate", "start"])
+                    }
                 }
-            } else if isOurKey && myFlagOn && !anyOther && wasOn && self.keyDown {
+                self.pendingStartWork?.cancel()
+                self.pendingStartWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150), execute: work)
+                return
+            }
+
+            if isOurKey && myFlagOn && !anyOther && wasOn && self.keyDown {
                 self.keyDown = false
                 run([self.config.agentDoctorBin, "dictate", "stop"])
-            } else if self.keyDown && (!myFlagOn || anyOther) {
+                return
+            }
+
+            // Stop branch — recording is active but the bound flag dropped
+            // or another modifier intruded.
+            if self.keyDown && (!myFlagOn || anyOther) {
                 self.keyDown = false
                 run([self.config.agentDoctorBin, "dictate", "stop"])
+                return
+            }
+
+            // If the bound key was released within the intent-confirmation
+            // window (< 150ms tap), cancel the pending start entirely —
+            // neither start nor stop fires.
+            if isOurKey && !myFlagOn && self.pendingStartWork != nil {
+                self.pendingStartWork?.cancel()
+                self.pendingStartWork = nil
             }
         }
     }

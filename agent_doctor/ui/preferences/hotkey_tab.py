@@ -10,6 +10,25 @@ from agent_doctor import hotkey_parse as hp
 from agent_doctor.ui.preferences import permission_probe as pp
 
 
+# Set once a migration attempt has failed. Prevents the 1Hz snapshot poll
+# from repeatedly invoking swiftc when the helper source is broken. Reset
+# only by an explicit user toggle via the UI (handled by
+# ``hotkey_tab_view._on_daemon_toggle`` on the success path).
+_migration_failed: bool = False
+
+
+def reset_migration_failure_flag() -> None:
+    """Allow the next migration attempt to run again.
+
+    Called by the UI when the user explicitly toggles the daemon — the
+    user is taking deliberate action, so any prior swiftc failure should
+    no longer suppress the migration retry.
+    """
+
+    global _migration_failed
+    _migration_failed = False
+
+
 class HotkeyStateError(ValueError):
     pass
 
@@ -105,25 +124,30 @@ def daemon_status_snapshot() -> dict[str, object]:
     # take effect. Otherwise the UI would show "Listening" with an old
     # binary that doesn't understand right_cmd / modifier-only bindings.
     if daemon["running"] and not s.hotkey.daemon_enabled:
-        # Preserve any power-user custom --agent-doctor-bin from the existing
-        # plist so migration doesn't silently overwrite it with the default.
-        existing_bin = hi.read_agent_doctor_bin()
-        try:
-            hi.install(agent_doctor_bin=existing_bin)  # rebuild + rewrite plist + re-bootstrap
-        except hi.HotkeyInstallError:
-            # If migration fails, fall back to marking it disabled so the
-            # user can manually toggle and see the error.
-            pass
-        else:
-            new = ds.HotkeySettings(
-                binding=s.hotkey.binding,
-                push_to_talk=s.hotkey.push_to_talk,
-                daemon_enabled=True,
-            )
-            s = ds.replace_section(s, hotkey=new)
-            ds.save(s)
-            # Refresh daemon status after restart.
-            daemon = hi.status()
+        global _migration_failed
+        if not _migration_failed:
+            # Preserve any power-user custom --agent-doctor-bin from the
+            # existing plist so migration doesn't silently overwrite it
+            # with the default.
+            existing_bin = hi.read_agent_doctor_bin()
+            try:
+                hi.install(agent_doctor_bin=existing_bin)  # rebuild + rewrite plist + re-bootstrap
+            except hi.HotkeyInstallError:
+                # If migration fails (e.g. swiftc missing / source broken),
+                # latch the failure so the 1Hz poll doesn't keep retrying
+                # an expensive swiftc invocation. The user can clear this
+                # by explicitly toggling the daemon via the UI.
+                _migration_failed = True
+            else:
+                new = ds.HotkeySettings(
+                    binding=s.hotkey.binding,
+                    push_to_talk=s.hotkey.push_to_talk,
+                    daemon_enabled=True,
+                )
+                s = ds.replace_section(s, hotkey=new)
+                ds.save(s)
+                # Refresh daemon status after restart.
+                daemon = hi.status()
 
     if not daemon["running"] or not s.hotkey.daemon_enabled:
         pill = "paused"

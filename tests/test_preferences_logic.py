@@ -189,6 +189,10 @@ def test_daemon_status_snapshot_migrates_running_daemon(
     running should rebuild the helper and migrate the flag to True."""
     from agent_doctor import hotkey_install as hi
 
+    # Migration-failure latch is module-state; reset so this test is
+    # independent of preceding failure-path tests.
+    ht.reset_migration_failure_flag()
+
     install_calls: list[dict[str, Any]] = []
 
     def fake_install(**kwargs: Any) -> dict[str, str]:
@@ -446,3 +450,81 @@ def test_hotkey_daemon_status_snapshot_paused_when_user_disabled(
     ds.save(settings)
     snap = ht.daemon_status_snapshot()
     assert snap["pill"] == "paused"
+
+
+def test_daemon_status_snapshot_does_not_retry_failed_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a migration attempt raises HotkeyInstallError, subsequent
+    snapshot calls should not re-attempt the install — swiftc is
+    expensive and the 1Hz poll would otherwise hammer it."""
+    from agent_doctor import hotkey_install as hi
+
+    ht.reset_migration_failure_flag()  # ensure clean state
+    install_calls: list[int] = []
+
+    def fake_install(**_kwargs: Any) -> dict[str, str]:
+        install_calls.append(1)
+        raise hi.HotkeyInstallError("swiftc missing")
+
+    monkeypatch.setattr(hi, "install", fake_install)
+    monkeypatch.setattr(hi, "read_agent_doctor_bin", lambda: None)
+    monkeypatch.setattr(
+        hi, "status", lambda: {
+            "plist_exists": True,
+            "helper_exists": True,
+            "running": True,
+            "plist": "/tmp/x.plist",
+            "helper": "/tmp/x",
+        }
+    )
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        hotkey=ds.HotkeySettings(binding="right_cmd", push_to_talk=True, daemon_enabled=False),
+    )
+    ds.save(settings)
+    ht.daemon_status_snapshot()  # first call — migration attempted, fails
+    ht.daemon_status_snapshot()  # second call — should NOT retry
+    ht.daemon_status_snapshot()  # third call — same
+    assert len(install_calls) == 1
+
+
+def test_reset_migration_failure_flag_allows_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After explicit reset (called by the daemon toggle), the next
+    snapshot call should retry the migration."""
+    from agent_doctor import hotkey_install as hi
+
+    ht.reset_migration_failure_flag()
+    install_calls: list[int] = []
+
+    def fake_install(**_kwargs: Any) -> dict[str, str]:
+        install_calls.append(1)
+        raise hi.HotkeyInstallError("still broken")
+
+    monkeypatch.setattr(hi, "install", fake_install)
+    monkeypatch.setattr(hi, "read_agent_doctor_bin", lambda: None)
+    monkeypatch.setattr(
+        hi, "status", lambda: {
+            "plist_exists": True,
+            "helper_exists": True,
+            "running": True,
+            "plist": "/tmp/x.plist",
+            "helper": "/tmp/x",
+        }
+    )
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        hotkey=ds.HotkeySettings(binding="right_cmd", push_to_talk=True, daemon_enabled=False),
+    )
+    ds.save(settings)
+    ht.daemon_status_snapshot()
+    assert len(install_calls) == 1
+    ht.reset_migration_failure_flag()
+    ht.daemon_status_snapshot()
+    assert len(install_calls) == 2

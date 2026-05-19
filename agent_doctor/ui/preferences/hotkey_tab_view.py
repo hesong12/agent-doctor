@@ -194,6 +194,10 @@ def build(notebook: Any) -> None:
                     messagebox.showerror("Hotkey", str(exc))
                     daemon_var.set(False)
                     return
+            # Explicit user action — clear any stale migration-failure
+            # latch so the snapshot poll can re-attempt migration if the
+            # daemon ever falls into the running+disabled state again.
+            ht.reset_migration_failure_flag()
             s = ds.load()
             ds.save(ds.replace_section(
                 s, hotkey=ds.HotkeySettings(
