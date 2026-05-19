@@ -138,6 +138,11 @@ class HotkeyDaemon {
     var chord: ParsedChord? = nil
     var monitor: Any? = nil
     var keyDown = false
+    // State of the bound modifier flag before the current event. Used to
+    // distinguish "user just pressed the bound physical key" from "user
+    // pressed the other physical key of the same modifier-type (e.g. left
+    // Cmd) while the flag is already on."
+    var lastFlagOn = false
 
     func reload() {
         config = readConfig()
@@ -146,6 +151,8 @@ class HotkeyDaemon {
             NSEvent.removeMonitor(m)
             monitor = nil
         }
+        keyDown = false
+        lastFlagOn = false
         guard let c = chord else {
             fputs("hotkey: could not parse binding \(config.binding)\n", stderr)
             return
@@ -202,12 +209,27 @@ class HotkeyDaemon {
             // bound modifier" would never release.
             let isOurKey = ev.keyCode == keyCode
 
-            if myFlagOn && !anyOther && isOurKey {
+            // Capture the pre-event state of the bound flag for the
+            // "flag was already on (held by the other physical key of the
+            // same modifier-type)" check. macOS reports a single .command
+            // bit regardless of whether left or right Cmd is held, so we
+            // need this to avoid Left Cmd → Right Cmd triggering start.
+            let wasOn = self.lastFlagOn
+            self.lastFlagOn = myFlagOn
+
+            // Start only when:
+            //  - Our physical key is the one that changed (isOurKey)
+            //  - Flag is currently on (myFlagOn)
+            //  - No other modifier is held (alone-key)
+            //  - The flag JUST turned on (i.e. wasn't already held by the
+            //    other same-type physical key)
+            if isOurKey && myFlagOn && !anyOther && !wasOn {
                 if !self.keyDown {
                     self.keyDown = true
                     run([self.config.agentDoctorBin, "dictate", "start"])
                 }
-            } else if self.keyDown {
+            } else if self.keyDown && (!myFlagOn || anyOther) {
+                // Release-equivalent: flag dropped OR another modifier joined.
                 self.keyDown = false
                 run([self.config.agentDoctorBin, "dictate", "stop"])
             }

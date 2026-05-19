@@ -83,6 +83,10 @@ class CaptureController:
         if self._state in (State.COMMITTED, State.CANCELLED):
             return
         if ev.kind == "press":
+            # Key-repeat for an already-held key is a no-op; don't reset
+            # sticky state or duplicate the press.
+            if ev.key in self._held:
+                return
             # A new press during a sticky chord/conflict state clears the
             # snapshot -- the user is re-capturing.
             if self._state in (State.CAPTURED_CHORD, State.CONFLICT):

@@ -151,3 +151,17 @@ def test_chord_sticky_on_modifier_release() -> None:
     ctl.on_key_event(hc.KeyEvent(kind="release", key="ctrl", t_ms=20))
     assert ctl.state is hc.State.CAPTURED_CHORD
     assert ctl.captured == "ctrl+space"
+
+
+def test_key_repeat_preserves_captured_chord() -> None:
+    """Tk emits key-repeat presses for held keys -- must not reset capture."""
+    ctl = hc.CaptureController()
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="ctrl", t_ms=0))
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="space", t_ms=10))
+    assert ctl.state is hc.State.CAPTURED_CHORD
+    assert ctl.captured == "ctrl+space"
+    # Simulate space key-repeat while still held.
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="space", t_ms=200))
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="space", t_ms=300))
+    assert ctl.state is hc.State.CAPTURED_CHORD
+    assert ctl.captured == "ctrl+space"

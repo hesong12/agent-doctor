@@ -171,15 +171,19 @@ def build(notebook: Any) -> None:
         from agent_doctor import dictate_settings as ds
         if daemon_var.get():
             # Turning ON: bootstrap if plist exists, else fresh install.
-            try:
-                if hi.DEFAULT_PLIST_PATH.exists():
-                    hi.resume()
-                else:
-                    hi.install()
-            except hi.HotkeyInstallError as exc:
-                messagebox.showerror("Hotkey", str(exc))
-                daemon_var.set(False)
-                return
+            # If the agent is already loaded (e.g. upgrade from old install),
+            # don't try to bootstrap again -- just flip the persisted flag.
+            status = hi.status()
+            if not status["running"]:
+                try:
+                    if hi.DEFAULT_PLIST_PATH.exists():
+                        hi.resume()
+                    else:
+                        hi.install()
+                except hi.HotkeyInstallError as exc:
+                    messagebox.showerror("Hotkey", str(exc))
+                    daemon_var.set(False)
+                    return
             s = ds.load()
             ds.save(ds.replace_section(
                 s, hotkey=ds.HotkeySettings(
@@ -192,7 +196,15 @@ def build(notebook: Any) -> None:
             # Turning OFF: bootout the agent but keep the plist (so we can
             # resume without a rebuild). Uninstall (separate button) is the
             # only path that removes the plist.
-            hi.pause()
+            if not hi.pause():
+                messagebox.showerror(
+                    "Hotkey",
+                    "Could not stop the hotkey daemon. The LaunchAgent may still "
+                    "be running -- check Activity Monitor or run `launchctl print "
+                    "gui/$(id -u)/com.agent-doctor.hotkey`.",
+                )
+                daemon_var.set(True)  # restore the switch
+                return
             s = ds.load()
             ds.save(ds.replace_section(
                 s, hotkey=ds.HotkeySettings(
