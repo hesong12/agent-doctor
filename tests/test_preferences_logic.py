@@ -166,6 +166,58 @@ def test_hotkey_state_apply_does_not_reset_daemon_enabled(
     assert loaded.hotkey.daemon_enabled is True
 
 
+def test_hotkey_state_from_settings_with_invalid_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An invalid binding on disk should not raise when reading state."""
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        hotkey=ds.HotkeySettings(binding="bogus_invalid_binding", push_to_talk=True),
+    )
+    ds.save(settings)
+    # HotkeyState.from_settings should not raise; it returns raw values.
+    state = ht.HotkeyState.from_settings()
+    assert state.binding == "bogus_invalid_binding"
+
+
+def test_daemon_status_snapshot_migrates_running_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An upgraded install with daemon_enabled=False but daemon actually
+    running should be migrated to daemon_enabled=True on first snapshot."""
+    from agent_doctor import hotkey_install as hi
+
+    monkeypatch.setattr(
+        hi, "status", lambda: {
+            "plist_exists": True,
+            "helper_exists": True,
+            "running": True,
+            "plist": "/tmp/x.plist",
+            "helper": "/tmp/x",
+        }
+    )
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        hotkey=ds.HotkeySettings(binding="right_cmd", push_to_talk=True, daemon_enabled=False),
+    )
+    ds.save(settings)
+    # Force perms granted for determinism.
+    from agent_doctor.ui.preferences import permission_probe as pp
+    monkeypatch.setattr(
+        pp, "check_macos_permissions",
+        lambda **_: pp.PermissionStatus(accessibility=True, input_monitoring=True, first_missing=None),
+    )
+    snap = ht.daemon_status_snapshot()
+    assert snap["pill"] == "listening"
+    # The flag should have been persisted as True now.
+    after = ds.load()
+    assert after.hotkey.daemon_enabled is True
+
+
 def test_paste_state_disable_round_trip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -341,15 +393,20 @@ def test_hotkey_daemon_status_snapshot_paused_when_not_running(
 def test_hotkey_daemon_status_snapshot_paused_when_user_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Pause branch B: daemon is happily running, but the user explicitly
-    # toggled the Background daemon switch off. Pill should be "paused".
+    # Pause branch B: the user toggled the Background daemon switch off,
+    # which boots out the LaunchAgent. Plist remains on disk, daemon not
+    # running, daemon_enabled flag persisted as False. Pill should be
+    # "paused". Note: per P4-4 migration semantics, running=True +
+    # daemon_enabled=False is treated as an upgrade artifact and migrated
+    # to True, so the "user disabled" intent must be expressed with the
+    # daemon actually stopped.
     from agent_doctor import hotkey_install as hi
 
     monkeypatch.setattr(
         hi, "status", lambda: {
             "plist_exists": True,
             "helper_exists": True,
-            "running": True,
+            "running": False,
             "plist": "/tmp/x.plist",
             "helper": "/tmp/x",
         }

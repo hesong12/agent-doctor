@@ -124,14 +124,24 @@ def build(notebook: Any) -> None:
             if banner_frame.winfo_ismapped():
                 banner_frame.pack_forget()
         s = snap["settings"]  # type: ignore[index]
-        binding_var.set(_render_binding(str(s.binding)))
-        ptt_var.set(bool(s.push_to_talk))
-        chord = hp.parse(str(s.binding))
-        if hp.is_modifier_only(chord):
+        try:
+            chord = hp.parse(str(s.binding))
+        except hp.HotkeyParseError:
+            chord = None
+        if chord is None:
+            # Stored binding is invalid (manual JSON edit / legacy value).
+            # Surface the raw value and steer the user to Record…
+            binding_var.set(f"⚠ {s.binding}  (invalid — click Record)")
+            ptt_var.set(bool(s.push_to_talk))
             toggle_radio.state(["disabled"])
-            ptt_var.set(True)
         else:
-            toggle_radio.state(["!disabled"])
+            binding_var.set(_render_binding(str(s.binding)))
+            ptt_var.set(bool(s.push_to_talk))
+            if hp.is_modifier_only(chord):
+                toggle_radio.state(["disabled"])
+                ptt_var.set(True)
+            else:
+                toggle_radio.state(["!disabled"])
         daemon_var.set(bool(s.daemon_enabled and bool(snap["daemon"]["running"])))  # type: ignore[index]
 
     def _on_record() -> None:

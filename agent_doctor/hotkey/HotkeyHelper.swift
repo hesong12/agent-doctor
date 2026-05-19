@@ -126,9 +126,22 @@ let HEARTBEAT_PATH: URL = {
     return dir.appendingPathComponent("im-heartbeat")
 }()
 
+// Minimum interval between heartbeat writes (seconds). The probe needs
+// freshness within 60s, so writing every 5s gives plenty of margin while
+// avoiding per-keystroke disk I/O on chord bindings whose monitor sees
+// every keyDown/keyUp in the system.
+let HEARTBEAT_MIN_INTERVAL_S: TimeInterval = 5.0
+
+// MARK: - Heartbeat (main-thread only)
+var lastHeartbeatAt: TimeInterval = 0
+
 func touchHeartbeat() {
-    let now = Date()
-    if let data = "\(Int(now.timeIntervalSince1970))\n".data(using: .utf8) {
+    let now = Date().timeIntervalSince1970
+    if now - lastHeartbeatAt < HEARTBEAT_MIN_INTERVAL_S {
+        return
+    }
+    lastHeartbeatAt = now
+    if let data = "\(Int(now))\n".data(using: .utf8) {
         try? data.write(to: HEARTBEAT_PATH, options: .atomic)
     }
 }
