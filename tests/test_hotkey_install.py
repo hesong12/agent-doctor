@@ -179,3 +179,31 @@ def test_status_handles_missing_launchctl(
     assert status["running"] is False
     assert status["plist_exists"] is False
     assert status["helper_exists"] is False
+
+
+def test_read_agent_doctor_bin_from_existing_plist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plist_path = tmp_path / "test.plist"
+    plistlib.dump(
+        {"EnvironmentVariables": {"AGENT_DOCTOR_BIN": "/custom/path/agent-doctor"}},
+        plist_path.open("wb"),
+    )
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", plist_path)
+    assert hi.read_agent_doctor_bin() == "/custom/path/agent-doctor"
+
+
+def test_read_agent_doctor_bin_returns_none_for_missing_plist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "absent.plist")
+    assert hi.read_agent_doctor_bin() is None
+
+
+def test_read_agent_doctor_bin_returns_none_when_env_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plist_path = tmp_path / "test.plist"
+    plistlib.dump({"Label": "x"}, plist_path.open("wb"))
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", plist_path)
+    assert hi.read_agent_doctor_bin() is None

@@ -165,3 +165,11 @@ def test_key_repeat_preserves_captured_chord() -> None:
     ctl.on_key_event(hc.KeyEvent(kind="press", key="space", t_ms=300))
     assert ctl.state is hc.State.CAPTURED_CHORD
     assert ctl.captured == "ctrl+space"
+
+
+def test_capture_chord_with_escape_key() -> None:
+    ctl = hc.CaptureController()
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="ctrl"))
+    ctl.on_key_event(hc.KeyEvent(kind="press", key="escape"))
+    assert ctl.state is hc.State.CAPTURED_CHORD
+    assert ctl.captured == "ctrl+escape"

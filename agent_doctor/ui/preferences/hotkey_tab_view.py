@@ -374,9 +374,20 @@ def _open_capture_overlay(parent: Any) -> str | None:
             return
         _cancel_and_close(event)
 
+    def _on_escape(event: Any) -> None:
+        # Escape alone = cancel. Escape with any modifier = part of a chord
+        # (e.g. ctrl+escape, option+escape are valid bindings).
+        # Tk event.state modifier bits:
+        #   0x1=shift, 0x4=ctrl, 0x8=option/alt, 0x10=alt(some macs),
+        #   0x10000=cmd, 0x20000=fn (varies). Test any of the standard 4.
+        if event.state & (0x10000 | 0x4 | 0x8 | 0x10 | 0x1):
+            _on_key(event)
+        else:
+            _cancel_and_close(event)
+
     dlg.bind("<Key>", _on_key)
     dlg.bind("<KeyRelease>", _on_release)
-    dlg.bind("<Escape>", _cancel_and_close)
+    dlg.bind("<Escape>", _on_escape)
     dlg.bind("<FocusOut>", _on_focus_out)
 
     use_btn = tk.Button(dlg, text="Use this chord", command=_commit_and_close)

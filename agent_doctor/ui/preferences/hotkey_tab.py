@@ -105,8 +105,11 @@ def daemon_status_snapshot() -> dict[str, object]:
     # take effect. Otherwise the UI would show "Listening" with an old
     # binary that doesn't understand right_cmd / modifier-only bindings.
     if daemon["running"] and not s.hotkey.daemon_enabled:
+        # Preserve any power-user custom --agent-doctor-bin from the existing
+        # plist so migration doesn't silently overwrite it with the default.
+        existing_bin = hi.read_agent_doctor_bin()
         try:
-            hi.install()  # rebuild + rewrite plist + re-bootstrap
+            hi.install(agent_doctor_bin=existing_bin)  # rebuild + rewrite plist + re-bootstrap
         except hi.HotkeyInstallError:
             # If migration fails, fall back to marking it disabled so the
             # user can manually toggle and see the error.

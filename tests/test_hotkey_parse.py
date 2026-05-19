@@ -86,3 +86,9 @@ def test_chord_canonical_unchanged_for_multi_key() -> None:
     assert chord.canonical() == "ctrl+option+space"
     assert chord.key == "space"
     assert chord.side is None
+
+
+def test_parse_chord_with_escape_key() -> None:
+    chord = hp.parse("ctrl+escape")
+    assert chord.canonical() == "ctrl+escape"
+    assert chord.key == "escape"

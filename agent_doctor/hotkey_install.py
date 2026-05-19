@@ -179,6 +179,27 @@ def uninstall() -> dict[str, str]:
     return {"plist_removed": str(plist)}
 
 
+def read_agent_doctor_bin() -> Optional[str]:
+    """Read the AGENT_DOCTOR_BIN value from the currently-installed plist.
+
+    Returns None if the plist doesn't exist or the value isn't present.
+    Used by migration paths to avoid overwriting a power-user's custom
+    --agent-doctor-bin choice when rebuilding the helper.
+    """
+
+    plist = DEFAULT_PLIST_PATH
+    if not plist.exists():
+        return None
+    try:
+        with plist.open("rb") as fp:
+            payload = plistlib.load(fp)
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    env = payload.get("EnvironmentVariables") or {}
+    bin_path = env.get("AGENT_DOCTOR_BIN")
+    return bin_path if isinstance(bin_path, str) else None
+
+
 def status() -> dict[str, object]:
     """Report whether the plist, helper, and running agent are present.
 

@@ -205,54 +205,43 @@ class HotkeyDaemon {
 
     private func installFlagsMonitor(for keyCode: UInt16) {
         guard let myFlag = MODIFIER_FLAG_FOR_KEYCODE[keyCode] else { return }
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] ev in
+        // We need BOTH event streams: .flagsChanged for the bound modifier
+        // press/release, and .keyDown so that a non-modifier key arriving
+        // while we're recording (= a system shortcut, not dictation) can
+        // cancel the recording before it captures audio of the shortcut.
+        let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown]
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] ev in
             touchHeartbeat()
             guard let self = self else { return }
+            if ev.type == .keyDown {
+                // Any non-modifier key while recording → user is doing a
+                // shortcut, not dictating. Cancel the recording.
+                if self.keyDown {
+                    self.keyDown = false
+                    run([self.config.agentDoctorBin, "dictate", "cancel"])
+                }
+                return
+            }
+            // .flagsChanged from here on.
             let flags = ev.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let myFlagOn = flags.contains(myFlag)
             var others: NSEvent.ModifierFlags = [.command, .option, .control, .shift, .function]
             others.remove(myFlag)
             let anyOther = !flags.intersection(others).isEmpty
-
-            // Start requires the event to originate from the BOUND physical
-            // key (so left_cmd doesn't accidentally trigger a right_cmd
-            // binding). Stop must fire on ANY flagsChanged event that
-            // invalidates the alone-key state — including events from other
-            // modifier keys, otherwise "user pressed Shift while holding the
-            // bound modifier" would never release.
             let isOurKey = ev.keyCode == keyCode
 
-            // Capture the pre-event state of the bound flag for the
-            // "flag was already on (held by the other physical key of the
-            // same modifier-type)" check. macOS reports a single .command
-            // bit regardless of whether left or right Cmd is held, so we
-            // need this to avoid Left Cmd → Right Cmd triggering start.
             let wasOn = self.lastFlagOn
             self.lastFlagOn = myFlagOn
 
-            // Start only when:
-            //  - Our physical key is the one that changed (isOurKey)
-            //  - Flag is currently on (myFlagOn)
-            //  - No other modifier is held (alone-key)
-            //  - The flag JUST turned on (i.e. wasn't already held by the
-            //    other same-type physical key)
             if isOurKey && myFlagOn && !anyOther && !wasOn {
                 if !self.keyDown {
                     self.keyDown = true
                     run([self.config.agentDoctorBin, "dictate", "start"])
                 }
             } else if isOurKey && myFlagOn && !anyOther && wasOn && self.keyDown {
-                // Bound key released while another same-type modifier key
-                // (e.g. Left Cmd while bound to right_cmd) still holds the
-                // aggregate flag. macOS does not differentiate left/right
-                // in modifierFlags, so we detect this by seeing a
-                // flagsChanged event for our keyCode with no aggregate
-                // state change. Without this branch, recording would stay
-                // stuck on until the user also releases the other key.
                 self.keyDown = false
                 run([self.config.agentDoctorBin, "dictate", "stop"])
             } else if self.keyDown && (!myFlagOn || anyOther) {
-                // Release-equivalent: flag dropped OR another modifier joined.
                 self.keyDown = false
                 run([self.config.agentDoctorBin, "dictate", "stop"])
             }
