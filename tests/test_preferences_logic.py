@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -244,6 +245,8 @@ def test_paste_state_disable_round_trip(
 def test_paste_state_enable_requires_permission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    if sys.platform != "darwin":
+        pytest.skip("paste permission probe short-circuits off Darwin (dictate_paste.py)")
     monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
     monkeypatch.setattr(

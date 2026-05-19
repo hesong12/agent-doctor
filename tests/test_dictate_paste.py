@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +132,9 @@ def test_dictate_finish_calls_auto_paste_on_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """End-to-end: when auto_paste is on and pipeline succeeds, paste fires."""
+
+    if sys.platform != "darwin":
+        pytest.skip("auto-paste short-circuits to no-op off Darwin (dictate_paste.py)")
 
     import os, time
 
