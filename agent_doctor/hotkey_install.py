@@ -106,6 +106,43 @@ def _find_openssl() -> str:
     )
 
 
+def _login_keychain_path() -> Optional[Path]:
+    """Return the path to the user's login keychain, or None if unknown.
+
+    Queries ``security login-keychain`` rather than hardcoding
+    ``~/Library/Keychains/login.keychain-db`` because the path is not
+    guaranteed: legacy installs may still use the older ``.keychain``
+    extension, and FileVault-migrated accounts can put the keychain in
+    a non-default location. ``security`` always knows the truth.
+    """
+
+    sec = shutil.which("security")
+    if sec is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [sec, "login-keychain"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        # FileNotFoundError is a subclass of OSError, so OSError alone
+        # covers both the "binary disappeared between which() and run()"
+        # race and generic exec failures.
+        return None
+    if proc.returncode != 0:
+        return None
+    # security prints the path quoted on its own line; strip whitespace
+    # and surrounding double quotes before turning into a Path.
+    line = proc.stdout.decode("utf-8", "replace").strip().splitlines()
+    if not line:
+        return None
+    raw = line[0].strip().strip('"').strip()
+    if not raw:
+        return None
+    return Path(raw)
+
+
 def _signing_identity_exists(identity: str = SIGNING_IDENTITY) -> bool:
     """Return True if a code-signing certificate matching ``identity`` is
     already present in the user's keychain.
@@ -228,16 +265,21 @@ def ensure_signing_identity(identity: str = SIGNING_IDENTITY) -> None:
                 f"openssl pkcs12 failed (rc={pkg.returncode}): "
                 f"{pkg.stderr.decode('utf-8', 'replace')}"
             )
-        login_keychain = (
-            Path.home() / "Library" / "Keychains" / "login.keychain-db"
-        )
+        # Build the import argv. Prefer the path that ``security
+        # login-keychain`` reports; if that lookup fails (sandboxed env,
+        # custom keychain config), omit ``-k`` so ``security import``
+        # uses the user's default keychain — which is the login
+        # keychain in practice for user-run processes.
+        import_argv = [sec, "import", str(p12_path)]
+        login_keychain = _login_keychain_path()
+        if login_keychain is not None:
+            import_argv += ["-k", str(login_keychain)]
+        import_argv += [
+            "-P", p12_password,
+            "-T", "/usr/bin/codesign",
+        ]
         imp = subprocess.run(
-            [
-                sec, "import", str(p12_path),
-                "-k", str(login_keychain),
-                "-P", p12_password,
-                "-T", "/usr/bin/codesign",
-            ],
+            import_argv,
             capture_output=True,
             check=False,
         )
@@ -259,6 +301,12 @@ def sign_helper(
     ``--identifier`` is what lets macOS TCC carry the user's Input
     Monitoring grant across rebuilds — without it every recompile
     produces a new adhoc signature whose cdhash invalidates the grant.
+
+    No extra ``--options`` flag is needed for the TCC tracking
+    behavior: ``library`` is intended for dynamic libraries (enforces
+    Library Validation on load), and ``runtime`` is only useful when
+    notarizing through Apple. The helper is a self-signed standalone
+    executable, so a plain signature is correct and sufficient.
     """
 
     codesign = shutil.which("codesign")
@@ -272,7 +320,6 @@ def sign_helper(
             codesign, "--force",
             "-s", identity,
             "--identifier", bundle_id,
-            "--options", "library",
             str(helper),
         ],
         capture_output=True,
@@ -438,6 +485,26 @@ def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, object]:
     signed = False
     if _should_rebuild(SWIFT_SOURCE, helper):
         build(SWIFT_SOURCE, helper)
+        # The new binary inherits swiftc's adhoc signature, so any
+        # pre-existing marker is stale by definition. Clear it now,
+        # BEFORE attempting sign_helper(): if signing later raises
+        # (locked keychain, ACL prompt declined, etc.), the absence of
+        # the marker forces the next install() to retry the sign step
+        # — without this clear, a transient failure would leave the
+        # rebuilt-but-unsigned binary stranded with a stale marker
+        # claiming it had the stable identity.
+        #
+        # Deliberately NOT wrapped in try/except: if the marker file
+        # cannot be removed (permission-denied, chflags +immutable,
+        # filesystem read-only), we must not continue past this point.
+        # Suppressing the failure would reintroduce exactly the bug
+        # this clear was meant to fix — the original Codex P1 finding
+        # against PR #37. Raising here is also safer than the
+        # alternative "leave the install half-done with a stale
+        # marker": the user sees a clear, actionable error rather
+        # than a silent regression of the Input Monitoring guarantee
+        # on the next install() run.
+        _signature_marker(helper).unlink(missing_ok=True)
         # Record the source fingerprint next to the helper so the next
         # install() call can decide "rebuild or reuse" by content rather
         # than mtime (which restores/copies can perturb).

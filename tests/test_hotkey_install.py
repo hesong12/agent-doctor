@@ -553,6 +553,122 @@ def test_sign_helper_surfaces_codesign_failure(
         hi.sign_helper(helper)
 
 
+def test_sign_helper_does_not_use_options_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--options library`` enables Library Validation, which only makes
+    sense for dynamic libraries — for a standalone executable it's the
+    wrong flag (and was raised in code review). The helper is signed
+    plain; the (cert, identifier) tuple is what TCC tracks.
+    """
+
+    helper = tmp_path / "helper"
+    helper.write_text("#!/bin/sh\n")
+    helper.chmod(0o755)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/codesign")
+    captured: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kw: Any) -> subprocess.CompletedProcess:
+        captured.append(argv)
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    hi.sign_helper(helper)
+    assert len(captured) == 1
+    argv = captured[0]
+    assert "library" not in argv
+    assert "--options" not in argv
+
+
+def test_install_clears_stale_marker_on_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a stale ``.signed-by`` marker survives from a previous install
+    and the helper gets rebuilt, the marker must be cleared BEFORE the
+    sign step runs. Otherwise a transient codesign failure (locked
+    keychain, declined ACL prompt) would leave the new adhoc-signed
+    binary on disk paired with a marker that lies about the binary's
+    identity — and the next ``install()`` run would short-circuit the
+    sign step entirely, stranding the user without the stable identity.
+    """
+
+    bin_dir = _make_fake_swiftc(tmp_path)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    helper = tmp_path / "helper"
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", helper)
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "plist")
+    src = tmp_path / "HotkeyHelper.swift"
+    monkeypatch.setattr(hi, "SWIFT_SOURCE", src)
+    src.write_text("// source")
+    marker = helper.with_name(helper.name + ".signed-by")
+    # Pre-existing stale marker from a previous build that has since
+    # been invalidated by source change. Helper does not exist yet so
+    # _should_rebuild returns True.
+    marker.write_text(hi.SIGNING_IDENTITY, encoding="utf-8")
+
+    # Simulate transient codesign failure on this install() pass: the
+    # marker must be gone after the failure so the next install retries.
+    monkeypatch.setattr(hi, "ensure_signing_identity", lambda *_a, **_kw: None)
+
+    def fail_sign(*_a: Any, **_kw: Any) -> None:
+        raise hi.HotkeyInstallError("codesign failed: keychain locked")
+
+    monkeypatch.setattr(hi, "sign_helper", fail_sign)
+    monkeypatch.setattr(
+        hi,
+        "_run_launchctl",
+        lambda argv, **_kw: subprocess.CompletedProcess(argv, 0, b"", b""),
+    )
+
+    with pytest.raises(hi.HotkeyInstallError, match="keychain locked"):
+        hi.install(agent_doctor_bin="/usr/local/bin/agent-doctor")
+
+    # The stale marker has been removed; next install() will retry the
+    # sign step (rather than trust the marker and skip).
+    assert not marker.exists()
+
+
+def test_login_keychain_path_returns_none_without_security_cli(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``security`` is not on PATH (sandboxed env, non-macOS), the
+    helper must return None so callers fall back to "omit -k" rather
+    than passing a hardcoded path.
+    """
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert hi._login_keychain_path() is None
+
+
+def test_ensure_signing_identity_omits_k_flag_when_login_keychain_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``security login-keychain`` cannot report a path (returns
+    non-zero, or empty stdout), the ``security import`` argv must omit
+    the ``-k`` flag so import falls back to the user's default keychain
+    instead of failing on a missing hardcoded path.
+    """
+
+    monkeypatch.setattr(hi, "_signing_identity_exists", lambda *_a, **_kw: False)
+    monkeypatch.setattr(hi, "_find_openssl", lambda: "/usr/bin/openssl")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(hi, "_login_keychain_path", lambda: None)
+    captured: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kw: Any) -> subprocess.CompletedProcess:
+        captured.append(argv)
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    hi.ensure_signing_identity()
+    # The third subprocess call is the ``security import``; verify its
+    # argv shape.
+    import_argv = next(
+        argv for argv in captured if argv[:2] == ["/usr/bin/security", "import"]
+    )
+    assert "-k" not in import_argv
+
+
 def test_install_rebuilds_when_helper_is_not_a_regular_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
