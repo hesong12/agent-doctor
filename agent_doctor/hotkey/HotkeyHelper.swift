@@ -128,8 +128,15 @@ func run(_ argv: [String]) {
     let proc = Process()
     proc.launchPath = argv[0]
     proc.arguments = Array(argv.dropFirst())
-    proc.standardOutput = FileHandle.nullDevice
-    proc.standardError = FileHandle.nullDevice
+    // Inherit the helper's own stdout/stderr instead of black-holing
+    // the child's output to /dev/null. The launchd plist redirects
+    // those file descriptors to
+    // ~/Library/Logs/agent-doctor-hotkey{,.err}.log, so any stderr
+    // line from `agent-doctor dictate start/stop` (whisper.cpp init
+    // logs, paste osascript exit codes, traceback on failure) lands
+    // in a file we can read after the fact. Silent failures were the
+    // root cause of multiple "doesn't work" reports during PR #44/#45
+    // smoke — there was no on-disk evidence whatsoever.
     do { try proc.run() } catch {
         fputs("hotkey: failed to launch \(argv): \(error)\n", stderr)
     }
@@ -162,6 +169,99 @@ func writeStartupStamp() {
     let now = Date().timeIntervalSince1970
     if let data = "\(Int(now))\n".data(using: .utf8) {
         try? data.write(to: STARTUP_STAMP_PATH, options: .atomic)
+    }
+}
+
+// Paste signal file. Python's `dictate stop` writes this after the
+// optimized prompt lands on the clipboard. The helper polls for it
+// and, when present, synthesises Cmd+V via CGEventPost — which goes
+// through the helper's own Accessibility grant rather than through
+// osascript's (which is unreachable from a launchd-spawned process
+// chain, error -1002).
+let PASTE_REQUEST_PATH: URL = {
+    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    let dir = appSupport.appendingPathComponent("agent-doctor")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir.appendingPathComponent("paste-request")
+}()
+
+// V on the US ANSI layout. Same keycode the AppleScript shim used.
+let KEYCODE_V: CGKeyCode = 9
+
+// Left Command physical keycode. Matches what enigo (the Rust crate
+// Handy uses) sends for Key::Meta on macOS. Posting key events for
+// this code rather than `.flagsChanged` events is what makes Electron
+// apps (Cursor, VS Code, Slack, Discord) actually honour the
+// synthesised ⌘V — they treat flagsChanged as decorative state but
+// only react to real key events with the Cmd modifier bit set.
+let KEYCODE_LEFT_CMD: CGKeyCode = 55
+
+// Undocumented but mandatory flag bit. enigo (and reverse-engineered
+// macOS event traces) sets this on every synthesised CGEvent because
+// "correct events have it set" — without it, Electron / Chromium apps
+// silently ignore the keystroke. Suspected name is something like
+// kCGEventFlagDeviceTrusted; the constant doesn't appear in Apple's
+// public headers but apps that consume CGEvents (Cursor, VS Code,
+// Slack) check it before honouring the modifier mask.
+//
+// See enigo's src/macos/macos_impl.rs around line 537:
+//     event_flags.set(CGEventFlags::from_bits_retain(0x2000_0000), true);
+//     // "I don't know if this is needed or what this flag does.
+//     //  Correct events have it set so we also do it"
+let CGEVENT_TRUSTED_BIT: UInt64 = 0x2000_0000
+
+func sendCmdV() {
+    // Sequence patterned on enigo's macOS impl (cf. Handy's
+    // src-tauri/src/input.rs send_paste_ctrl_v):
+    //   1. Cmd key DOWN
+    //   2. V key DOWN with cmd flag
+    //   3. V key UP with cmd flag
+    //   4. 100 ms wait (apps' run-loops process the press)
+    //   5. Cmd key UP
+    // The earlier flagsChanged + V approach posted to the cghid tap
+    // successfully but Cursor never saw a paste — Electron's keyboard
+    // bridge appears to require literal key events for the modifier,
+    // not flag transitions.
+    let source = CGEventSource(stateID: .combinedSessionState)
+    fputs("hotkey: sendCmdV source=\(source != nil)\n", stderr)
+    // Helper closure: set the trusted bit + maskCommand on flags as
+    // appropriate, then post. Centralised so we can't forget one path.
+    func postKey(_ keyCode: CGKeyCode, _ down: Bool, _ withCmdFlag: Bool) {
+        guard let ev = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: down) else {
+            fputs("hotkey: failed to create CGEvent kc=\(keyCode) down=\(down)\n", stderr)
+            return
+        }
+        var flagBits: UInt64 = CGEVENT_TRUSTED_BIT
+        if withCmdFlag {
+            flagBits |= CGEventFlags.maskCommand.rawValue
+        }
+        ev.flags = CGEventFlags(rawValue: flagBits)
+        ev.post(tap: .cgSessionEventTap)
+    }
+    postKey(KEYCODE_LEFT_CMD, true, true)
+    fputs("hotkey: posted Cmd keyDown\n", stderr)
+    postKey(KEYCODE_V, true, true)
+    fputs("hotkey: posted V keyDown\n", stderr)
+    postKey(KEYCODE_V, false, true)
+    fputs("hotkey: posted V keyUp\n", stderr)
+    // Match enigo's 100 ms pause before releasing the modifier so the
+    // target app has time to dispatch the V before the Cmd flag clears.
+    usleep(100_000)
+    postKey(KEYCODE_LEFT_CMD, false, false)
+    fputs("hotkey: posted Cmd keyUp\n", stderr)
+}
+
+func startPasteRequestWatcher() {
+    // Polling cadence: 80 ms. Tradeoffs: 50 ms drains battery on idle
+    // hours; 200 ms feels laggy after a 5-10 s pipeline. 80 ms gives a
+    // perceived ~instant response with negligible CPU.
+    Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { _ in
+        let path = PASTE_REQUEST_PATH.path
+        if !FileManager.default.fileExists(atPath: path) { return }
+        // Remove first so any concurrent retry doesn't race us into
+        // double-pasting.
+        try? FileManager.default.removeItem(atPath: path)
+        sendCmdV()
     }
 }
 
@@ -343,6 +443,14 @@ class HotkeyDaemon {
 // (= IM granted) from "heartbeat from a previous lifetime still on disk"
 // (= IM might be revoked since).
 writeStartupStamp()
+
+// Paste request watcher MOVED to pet_display.swift. macOS silently
+// rejects keystroke synthesis from launchd-spawned process contexts
+// (verified empirically: the same CGEventPost code works from a
+// Terminal-spawned CLI Swift script but no-ops from this helper even
+// with Accessibility granted). The pet-display Swift process IS
+// spawned by the user's shell, so it handles paste-request signals
+// instead. See pet_display.swift's "Paste-request watcher" section.
 
 let daemon = HotkeyDaemon()
 daemon.reload()

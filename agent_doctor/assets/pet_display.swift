@@ -2411,4 +2411,50 @@ Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { _ in
     }
 }
 
+// MARK: - Paste-request watcher (helper-driven Cmd+V)
+//
+// The hotkey helper is a launchd-spawned binary; macOS silently
+// rejects keystroke synthesis from launchd contexts even when the
+// helper has Accessibility granted (verified by side-by-side test:
+// same CGEventPost code works from Terminal-spawned CLI but no-ops
+// from launchd). The pet-display process IS spawned by the user's
+// shell / autopilot (not launchd), so CGEventPost from here actually
+// delivers keystrokes. We poll the paste-request file the helper
+// used to consume — the protocol is identical, just the consumer
+// moved to a process context that macOS trusts.
+
+let PASTE_REQUEST_FILE: URL = {
+    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    return appSupport.appendingPathComponent("agent-doctor/paste-request")
+}()
+let KEYCODE_V_PD: CGKeyCode = 9
+let KEYCODE_LCMD_PD: CGKeyCode = 55
+// Undocumented bit that synthesised events must carry for Electron /
+// Chromium apps (Cursor, VS Code, Slack) to honour the modifier.
+// enigo sets the same bit; the macOS API doesn't expose a constant.
+let CGEVENT_TRUSTED_BIT_PD: UInt64 = 0x2000_0000
+
+func sendCmdVFromPetDisplay() {
+    let source = CGEventSource(stateID: .combinedSessionState)
+    func postKey(_ kc: CGKeyCode, _ down: Bool, _ withCmd: Bool) {
+        guard let ev = CGEvent(keyboardEventSource: source, virtualKey: kc, keyDown: down) else { return }
+        var flagBits: UInt64 = CGEVENT_TRUSTED_BIT_PD
+        if withCmd { flagBits |= CGEventFlags.maskCommand.rawValue }
+        ev.flags = CGEventFlags(rawValue: flagBits)
+        ev.post(tap: .cgSessionEventTap)
+    }
+    postKey(KEYCODE_LCMD_PD, true, true)
+    postKey(KEYCODE_V_PD, true, true)
+    postKey(KEYCODE_V_PD, false, true)
+    usleep(100_000)
+    postKey(KEYCODE_LCMD_PD, false, false)
+}
+
+Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { _ in
+    let path = PASTE_REQUEST_FILE.path
+    if !FileManager.default.fileExists(atPath: path) { return }
+    try? FileManager.default.removeItem(atPath: path)
+    sendCmdVFromPetDisplay()
+}
+
 app.run()
