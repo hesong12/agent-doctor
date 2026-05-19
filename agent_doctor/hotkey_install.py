@@ -407,16 +407,17 @@ def _is_signed_with_stable_identity(helper: Path) -> bool:
     return recorded == SIGNING_IDENTITY
 
 
-def _should_rebuild(src: Path, helper: Path) -> bool:
-    """Return True if ``helper`` needs to be rebuilt from ``src``.
+def _should_rebuild(helper: Path, source_hash: str) -> bool:
+    """Return True if ``helper`` needs to be rebuilt against ``source_hash``.
 
     Rebuild when ANY of:
     - ``helper`` does not exist (fresh install),
     - ``helper`` is not a regular file (broken/replaced by directory etc.),
     - ``helper`` is missing the user-execute bit (a previous restore
       stripped permissions and only ``build()`` chmods 0o755),
-    - the sidecar fingerprint is missing or does not match the current
-      source hash (upgrade path — bundled Swift bumped since last build).
+    - the sidecar fingerprint is missing or does not match
+      ``source_hash`` (upgrade path — bundled Swift bumped since last
+      build).
 
     Otherwise the existing helper was compiled from this exact source
     revision, so we leave the file untouched. This is the whole point of
@@ -425,6 +426,12 @@ def _should_rebuild(src: Path, helper: Path) -> bool:
     rebuild — even producing a byte-identical binary — silently
     invalidates the user's previously-granted Input Monitoring
     permission.
+
+    The caller is responsible for computing ``source_hash`` once and
+    threading it through to :func:`install` so the hash used for the
+    decision is the same one written into the sidecar — eliminates a
+    second source read and the race where the source could be modified
+    between the check and the sidecar write.
     """
 
     try:
@@ -441,20 +448,16 @@ def _should_rebuild(src: Path, helper: Path) -> bool:
         return True
     sidecar = _fingerprint_sidecar(helper)
     try:
-        recorded = sidecar.read_text(encoding="utf-8").strip()
+        # errors="replace" so a corrupted (non-UTF-8) sidecar surfaces as a
+        # hash mismatch and triggers a rebuild, rather than crashing the
+        # install flow with UnicodeDecodeError (which is a ValueError, not
+        # OSError, so the bare ``except OSError`` below would not catch it).
+        recorded = sidecar.read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
         # No sidecar means we don't know what source built this helper.
         # Safer to rebuild than to assume it matches.
         return True
-    try:
-        current = _source_fingerprint(src)
-    except OSError:
-        # Source unreadable but helper is executable + has a recorded
-        # fingerprint. Prefer reusing what's on disk over failing the
-        # install entirely; launchd will surface a real exec error if
-        # the helper itself turns out to be corrupt.
-        return False
-    return recorded != current
+    return recorded != source_hash
 
 
 def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, object]:
@@ -481,9 +484,23 @@ def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, object]:
         or shutil.which("agent-doctor")
         or "/usr/local/bin/agent-doctor"
     )
+    # Compute the source fingerprint exactly once and thread it through
+    # both the rebuild decision and the sidecar write. This (a) avoids a
+    # second source read and (b) closes the race where the file could
+    # change between the staleness check and the sidecar write, leaving
+    # the sidecar referring to a revision the binary was not built from.
+    # If the source is unreadable we fail loudly here — silently treating
+    # a possibly-stale helper as current would defeat the upgrade-safety
+    # guarantee this function exists to provide.
+    try:
+        source_hash = _source_fingerprint(SWIFT_SOURCE)
+    except OSError as exc:
+        raise HotkeyInstallError(
+            f"cannot read Swift source at {SWIFT_SOURCE}: {exc}"
+        ) from exc
     rebuilt = False
     signed = False
-    if _should_rebuild(SWIFT_SOURCE, helper):
+    if _should_rebuild(helper, source_hash):
         build(SWIFT_SOURCE, helper)
         # The new binary inherits swiftc's adhoc signature, so any
         # pre-existing marker is stale by definition. Clear it now,
@@ -509,9 +526,7 @@ def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, object]:
         # install() call can decide "rebuild or reuse" by content rather
         # than mtime (which restores/copies can perturb).
         try:
-            _fingerprint_sidecar(helper).write_text(
-                _source_fingerprint(SWIFT_SOURCE), encoding="utf-8"
-            )
+            _fingerprint_sidecar(helper).write_text(source_hash, encoding="utf-8")
         except OSError:
             # Sidecar write failure is non-fatal — the next install()
             # will just rebuild again, which is correct behavior.

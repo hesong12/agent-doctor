@@ -695,7 +695,62 @@ def test_install_rebuilds_when_helper_is_not_a_regular_file(
     # actual swiftc call would fail on a directory target, but that's
     # acceptable: the user gets a clear HotkeyInstallError instead of a
     # silently bootstrapped broken daemon.
-    assert hi._should_rebuild(src, helper) is True
+    assert hi._should_rebuild(helper, hi._source_fingerprint(src)) is True
+
+
+def test_install_raises_when_swift_source_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the bundled Swift source is missing/unreadable (packaging or
+    permission regression), ``install()`` must fail loudly rather than
+    silently bootstrap a possibly-stale helper. Caught by codex P2 review
+    on PR #35: the prior implementation returned False from
+    ``_should_rebuild`` on unreadable source, which made install/resume
+    silently reuse an arbitrary on-disk helper and defeated the
+    upgrade-safety guarantee this module exists to provide.
+    """
+
+    bin_dir = _make_fake_swiftc(tmp_path)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    helper = tmp_path / "helper"
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", helper)
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "plist")
+    # Point at a Swift source path that does not exist.
+    monkeypatch.setattr(hi, "SWIFT_SOURCE", tmp_path / "missing.swift")
+    # Pre-existing helper + a sidecar that would otherwise mark the helper
+    # as fresh; the missing source must override that and surface an error.
+    helper.write_text("#!/bin/sh\necho stale\n")
+    helper.chmod(0o755)
+    sidecar = helper.with_name(helper.name + ".source-sha256")
+    sidecar.write_text("a" * 64, encoding="utf-8")
+
+    monkeypatch.setattr(
+        hi,
+        "_run_launchctl",
+        lambda argv, **_kw: subprocess.CompletedProcess(argv, 0, b"", b""),
+    )
+    with pytest.raises(hi.HotkeyInstallError, match="Swift source"):
+        hi.install(agent_doctor_bin="/usr/local/bin/agent-doctor")
+
+
+def test_should_rebuild_treats_corrupt_sidecar_as_mismatch(
+    tmp_path: Path,
+) -> None:
+    """A sidecar containing invalid UTF-8 (disk corruption, manual
+    tampering) must surface as a hash mismatch and trigger a rebuild —
+    not crash with UnicodeDecodeError. Caught by Gemini high-priority
+    review on PR #35: ``ValueError`` is not a subclass of ``OSError``,
+    so the prior ``except OSError`` block let the exception escape and
+    crash the install/resume flow.
+    """
+
+    helper = tmp_path / "helper"
+    helper.write_text("#!/bin/sh\n")
+    helper.chmod(0o755)
+    sidecar = helper.with_name(helper.name + ".source-sha256")
+    # Invalid UTF-8 byte sequence.
+    sidecar.write_bytes(b"\xff\xfe\xfd not utf-8")
+    assert hi._should_rebuild(helper, "deadbeef" * 8) is True
 
 
 def test_status_handles_missing_launchctl(
