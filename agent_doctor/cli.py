@@ -22,6 +22,7 @@ import os
 import platform
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from . import __version__
@@ -2715,13 +2716,9 @@ def _cmd_dictate_hotkey_install(args: argparse.Namespace) -> int:
     # treat the daemon as live after install (otherwise the pill flips
     # to "paused" immediately).
     s = _ds.load()
-    _ds.save(_ds.replace_section(
-        s, hotkey=_ds.HotkeySettings(
-            binding=s.hotkey.binding,
-            push_to_talk=s.hotkey.push_to_talk,
-            daemon_enabled=True,
-        )
-    ))
+    _ds.save(
+        _ds.replace_section(s, hotkey=replace(s.hotkey, daemon_enabled=True))
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     print(
         "\nNext: grant 'Input Monitoring' permission.\n"
@@ -2799,13 +2796,9 @@ def _cmd_dictate_hotkey_uninstall(_args: argparse.Namespace) -> int:
     # Persist daemon_enabled=False so subsequent snapshots/UI reads agree
     # with the on-disk LaunchAgent state.
     s = _ds.load()
-    _ds.save(_ds.replace_section(
-        s, hotkey=_ds.HotkeySettings(
-            binding=s.hotkey.binding,
-            push_to_talk=s.hotkey.push_to_talk,
-            daemon_enabled=False,
-        )
-    ))
+    _ds.save(
+        _ds.replace_section(s, hotkey=replace(s.hotkey, daemon_enabled=False))
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 

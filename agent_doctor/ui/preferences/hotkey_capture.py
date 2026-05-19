@@ -172,9 +172,9 @@ def _canonicalise(held: set[str]) -> str:
     for tok in held:
         if tok in hp.MODIFIER_ONLY_TOKENS:
             canon_mods.add(hp.MODIFIER_ONLY_TOKENS[tok][0])
-        elif tok in hp.MODIFIER_ALIASES.values():
-            canon_mods.add(tok)
         elif tok in hp.MODIFIER_ALIASES:
+            # Covers both aliases ("command" -> "cmd") and canonical names
+            # ("cmd" -> "cmd"), since MODIFIER_ALIASES holds identity rows.
             canon_mods.add(hp.MODIFIER_ALIASES[tok])
         else:
             keys.append(tok)

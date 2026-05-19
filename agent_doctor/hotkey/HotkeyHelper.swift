@@ -289,6 +289,11 @@ class HotkeyDaemon {
                 return
             }
 
+            // Same-modifier release: recording is active and the bound
+            // key fired flagsChanged again while its flag bit is still on
+            // (e.g. user held right_cmd, then released it while pressing
+            // left_cmd — the cmd flag stays on but the bound-side keycode
+            // changed). Treat that as a release and stop dictation.
             if isOurKey && myFlagOn && !anyOther && wasOn && self.keyDown {
                 self.keyDown = false
                 run([self.config.agentDoctorBin, "dictate", "stop"])
