@@ -105,12 +105,20 @@ def _domain_target() -> str:
 
 
 def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, str]:
-    """Build the helper, write the plist, and launchctl-bootstrap it."""
+    """Build the helper, write the plist, and launchctl-bootstrap it.
+
+    If ``agent_doctor_bin`` is not provided and an existing plist is on
+    disk, reuse the value from that plist — preserves a power user's
+    custom ``--agent-doctor-bin`` choice across resume/migration paths.
+    Only falls back to ``which agent-doctor`` when there's no existing
+    plist (i.e. true fresh install).
+    """
 
     helper = DEFAULT_HELPER_PATH
     plist = DEFAULT_PLIST_PATH
     bin_path = (
         agent_doctor_bin
+        or read_agent_doctor_bin()
         or shutil.which("agent-doctor")
         or "/usr/local/bin/agent-doctor"
     )

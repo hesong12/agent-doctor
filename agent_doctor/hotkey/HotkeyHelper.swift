@@ -91,6 +91,26 @@ struct ParsedChord {
 
 func parse(_ binding: String) -> ParsedChord? {
     let tokens = binding.lowercased().split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) }
+    if tokens.isEmpty { return nil }
+
+    // Reject any binding that mixes a modifier-only token with anything
+    // else (matches the Python parser's contract). Without this guard a
+    // typo like "right_cmd+space" silently registers Space-alone as the
+    // global hotkey, because the modifier-only keycode would be overwritten
+    // by the trailing "space" lookup below.
+    let modifierOnlyTokens: Set<String> = [
+        "left_cmd", "right_cmd",
+        "left_option", "right_option",
+        "left_ctrl", "right_ctrl",
+        "left_shift", "right_shift",
+        "fn",
+    ]
+    let modOnlyHits = tokens.filter { modifierOnlyTokens.contains($0) }
+    if !modOnlyHits.isEmpty && tokens.count != 1 {
+        fputs("hotkey: modifier-only binding \(modOnlyHits[0]) cannot mix with other tokens (got \(binding))\n", stderr)
+        return nil
+    }
+
     var mods: NSEvent.ModifierFlags = []
     var keyCode: UInt16? = nil
     for tok in tokens {

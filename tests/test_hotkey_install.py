@@ -207,3 +207,47 @@ def test_read_agent_doctor_bin_returns_none_when_env_missing(
     plistlib.dump({"Label": "x"}, plist_path.open("wb"))
     monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", plist_path)
     assert hi.read_agent_doctor_bin() is None
+
+
+def test_install_preserves_existing_agent_doctor_bin_when_none_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When agent_doctor_bin=None and a plist exists, install() must
+    preserve the existing AGENT_DOCTOR_BIN env var instead of falling
+    back to `which agent-doctor`. This protects power users who installed
+    with --agent-doctor-bin /custom/... and later pause/resume via the UI.
+    """
+
+    # Set up an existing plist with a custom binary path.
+    plist_path = tmp_path / "existing.plist"
+    plistlib.dump(
+        {
+            "Label": "com.agent-doctor.hotkey",
+            "ProgramArguments": ["/tmp/old-helper"],
+            "EnvironmentVariables": {"AGENT_DOCTOR_BIN": "/custom/path/agent-doctor"},
+        },
+        plist_path.open("wb"),
+    )
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", plist_path)
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", tmp_path / "helper")
+
+    bin_dir = _make_fake_swiftc(tmp_path)
+    import os
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    monkeypatch.setattr(hi, "SWIFT_SOURCE", tmp_path / "src.swift")
+    (tmp_path / "src.swift").write_text("// fake")
+    monkeypatch.setattr(
+        hi,
+        "_run_launchctl",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0, b"", b""),
+    )
+
+    result = hi.install()  # no agent_doctor_bin kwarg
+    assert result["agent_doctor_bin"] == "/custom/path/agent-doctor"
+
+    # The written plist must also contain the preserved custom path.
+    parsed = plistlib.loads(plist_path.read_bytes())
+    assert (
+        parsed["EnvironmentVariables"]["AGENT_DOCTOR_BIN"]
+        == "/custom/path/agent-doctor"
+    )
