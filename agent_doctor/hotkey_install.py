@@ -154,25 +154,20 @@ def pause() -> bool:
     return proc.returncode == 0
 
 
-def resume() -> dict[str, str]:
-    """Re-bootstrap an existing plist (no rebuild).
+def resume(*, agent_doctor_bin: Optional[str] = None) -> dict[str, str]:
+    """Rebuild the helper from current Swift source, write the plist, and
+    bootstrap. Equivalent to :func:`install` — kept as a named alias so the
+    UI/CLI can distinguish "resume from pause" intent from "fresh install"
+    in their messaging.
 
-    Raises :class:`HotkeyInstallError` if the plist is missing — callers
-    should fall back to :func:`install` in that case.
+    Both paths must rebuild so an upgraded user with a stale on-disk helper
+    from a previous version gets the current Swift source compiled (e.g.
+    pre-Handy-UX helpers don't understand ``right_cmd`` and would silently
+    fail). The extra ``swiftc`` cost on resume is multi-second but is worth
+    the correctness guarantee.
     """
 
-    plist = DEFAULT_PLIST_PATH
-    if not plist.exists():
-        raise HotkeyInstallError(
-            f"plist not found at {plist}; run install first"
-        )
-    proc = _run_launchctl(["launchctl", "bootstrap", _domain_target(), str(plist)])
-    if proc.returncode != 0:
-        raise HotkeyInstallError(
-            f"launchctl bootstrap failed (rc={proc.returncode}): "
-            f"{proc.stderr.decode('utf-8', 'replace')}"
-        )
-    return {"plist": str(plist)}
+    return install(agent_doctor_bin=agent_doctor_bin)
 
 
 def uninstall() -> dict[str, str]:
@@ -185,14 +180,23 @@ def uninstall() -> dict[str, str]:
 
 
 def status() -> dict[str, object]:
-    """Report whether the plist, helper, and running agent are present."""
+    """Report whether the plist, helper, and running agent are present.
+
+    Defensive against missing ``launchctl`` (non-macOS, sandboxed env, broken
+    PATH): if the subprocess raises :class:`FileNotFoundError` or other OS
+    errors, treat the agent as "not running" rather than crashing the
+    caller.
+    """
 
     plist_exists = DEFAULT_PLIST_PATH.exists()
     helper_exists = DEFAULT_HELPER_PATH.exists()
-    proc = _run_launchctl(
-        ["launchctl", "print", f"{_domain_target()}/{LABEL}"]
-    )
-    running = proc.returncode == 0
+    try:
+        proc = _run_launchctl(
+            ["launchctl", "print", f"{_domain_target()}/{LABEL}"]
+        )
+        running = proc.returncode == 0
+    except (FileNotFoundError, OSError):
+        running = False
     return {
         "plist": str(DEFAULT_PLIST_PATH),
         "plist_exists": plist_exists,

@@ -64,9 +64,34 @@ def daemon_status_snapshot() -> dict[str, object]:
     daemon_enabled as True (and persist the correction) even if the user's
     dictate.json still has the old default False — happens on upgrade
     from the pre-Handy-UX branch.
+
+    Defensive: if ``hi.status()`` raises (e.g. ``launchctl`` not on PATH on
+    non-macOS or sandboxed environments), report a ``daemon_stopped``
+    snapshot so the rest of Preferences stays usable.
     """
 
-    daemon = hi.status()
+    try:
+        daemon = hi.status()
+    except (FileNotFoundError, OSError):
+        # launchctl not available — treat the daemon as stopped. Only the
+        # hotkey toggle path is non-functional; other tabs render normally.
+        synthetic_daemon: dict[str, object] = {
+            "plist_exists": False,
+            "helper_exists": False,
+            "running": False,
+            "plist": "",
+            "helper": "",
+        }
+        perms = pp.PermissionStatus(
+            accessibility=False, input_monitoring=False, first_missing=None
+        )
+        s = ds.load()
+        return {
+            "pill": "daemon_stopped",
+            "perms": perms,
+            "daemon": synthetic_daemon,
+            "settings": s.hotkey,
+        }
     s = ds.load()
     if not daemon["plist_exists"]:
         pill = "daemon_stopped"

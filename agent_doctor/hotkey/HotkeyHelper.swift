@@ -241,6 +241,16 @@ class HotkeyDaemon {
                     self.keyDown = true
                     run([self.config.agentDoctorBin, "dictate", "start"])
                 }
+            } else if isOurKey && myFlagOn && !anyOther && wasOn && self.keyDown {
+                // Bound key released while another same-type modifier key
+                // (e.g. Left Cmd while bound to right_cmd) still holds the
+                // aggregate flag. macOS does not differentiate left/right
+                // in modifierFlags, so we detect this by seeing a
+                // flagsChanged event for our keyCode with no aggregate
+                // state change. Without this branch, recording would stay
+                // stuck on until the user also releases the other key.
+                self.keyDown = false
+                run([self.config.agentDoctorBin, "dictate", "stop"])
             } else if self.keyDown && (!myFlagOn || anyOther) {
                 // Release-equivalent: flag dropped OR another modifier joined.
                 self.keyDown = false

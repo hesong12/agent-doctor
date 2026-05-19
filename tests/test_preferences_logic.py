@@ -390,6 +390,24 @@ def test_hotkey_daemon_status_snapshot_paused_when_not_running(
     assert snap["pill"] == "paused"
 
 
+def test_daemon_status_snapshot_handles_launchctl_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``hi.status()`` raises (e.g. launchctl missing on non-macOS),
+    the snapshot must degrade to ``daemon_stopped`` rather than crash."""
+    from agent_doctor import hotkey_install as hi
+
+    def boom(*_a: Any, **_k: Any) -> dict[str, object]:
+        raise FileNotFoundError("no launchctl")
+
+    monkeypatch.setattr(hi, "status", boom)
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    snap = ht.daemon_status_snapshot()
+    assert snap["pill"] == "daemon_stopped"
+    assert snap["perms"].first_missing is None
+
+
 def test_hotkey_daemon_status_snapshot_paused_when_user_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

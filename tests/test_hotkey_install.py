@@ -131,11 +131,19 @@ def test_pause_runs_bootout_without_removing_plist(
     assert (tmp_path / "x.plist").exists()
 
 
-def test_resume_runs_bootstrap_when_plist_exists(
+def test_resume_rebuilds_and_bootstraps(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "x.plist")
-    (tmp_path / "x.plist").write_text("dummy")
+    """``resume()`` is an alias for ``install()`` — both paths must rebuild
+    the helper so upgraded users with stale on-disk binaries from previous
+    versions get the current Swift source recompiled."""
+
+    bin_dir = _make_fake_swiftc(tmp_path)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", tmp_path / "helper")
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "plist")
+    monkeypatch.setattr(hi, "SWIFT_SOURCE", tmp_path / "HotkeyHelper.swift")
+    (tmp_path / "HotkeyHelper.swift").write_text("// fake source")
 
     calls: list[list[str]] = []
 
@@ -145,13 +153,29 @@ def test_resume_runs_bootstrap_when_plist_exists(
 
     monkeypatch.setattr(hi, "_run_launchctl", fake_run)
     result = hi.resume()
-    assert "plist" in result
+    # Rebuilt helper exists.
+    assert (tmp_path / "helper").exists()
+    # Plist was written.
+    assert (tmp_path / "plist").exists()
+    # launchctl bootstrap was called.
     assert any(arg[:2] == ["launchctl", "bootstrap"] for arg in calls)
+    assert "helper" in result and "plist" in result
 
 
-def test_resume_raises_when_plist_missing(
+def test_status_handles_missing_launchctl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """``status()`` must report ``running=False`` rather than crash when
+    ``launchctl`` is unavailable (non-macOS, sandboxed env, broken PATH)."""
+
     monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "absent.plist")
-    with pytest.raises(hi.HotkeyInstallError, match="not found"):
-        hi.resume()
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", tmp_path / "absent.helper")
+
+    def boom(*_a: Any, **_k: Any) -> subprocess.CompletedProcess:
+        raise FileNotFoundError("launchctl not on PATH")
+
+    monkeypatch.setattr(hi, "_run_launchctl", boom)
+    status = hi.status()
+    assert status["running"] is False
+    assert status["plist_exists"] is False
+    assert status["helper_exists"] is False
