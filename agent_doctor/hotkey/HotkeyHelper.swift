@@ -146,6 +146,21 @@ let HEARTBEAT_PATH: URL = {
     return dir.appendingPathComponent("im-heartbeat")
 }()
 
+// Startup stamp. Rewritten on every monitor (re)install so the Python probe
+// can distinguish "leftover heartbeat from a previous run before IM was
+// revoked" from "heartbeat written after the current monitor came up".
+// Python requires heartbeat.mtime > startup.mtime; if no events arrive after
+// install, the stamp stays newer and the probe returns False — even when an
+// old heartbeat is still on disk. Without this, a user who revokes IM and
+// relaunches the helper would see a stale "fresh" heartbeat for up to 60s
+// and the Preferences pane would falsely report "Listening".
+let STARTUP_PATH: URL = {
+    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    let dir = appSupport.appendingPathComponent("agent-doctor")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir.appendingPathComponent("im-startup")
+}()
+
 // Minimum interval between heartbeat writes (seconds). The probe needs
 // freshness within 60s, so writing every 5s gives plenty of margin while
 // avoiding per-keystroke disk I/O on chord bindings whose monitor sees
@@ -163,6 +178,21 @@ func touchHeartbeat() {
     lastHeartbeatAt = now
     if let data = "\(Int(now))\n".data(using: .utf8) {
         try? data.write(to: HEARTBEAT_PATH, options: .atomic)
+    }
+}
+
+// Called exactly once per monitor install (i.e. once per reload). The Python
+// probe compares heartbeat.mtime > startup.mtime so any heartbeat written
+// before this call is treated as stale. Reset lastHeartbeatAt too so the
+// first event after install always writes a fresh heartbeat regardless of
+// how recently the previous run wrote one — without this, a SIGHUP-driven
+// reload within 5s of the previous heartbeat would silently swallow the
+// next event's update and leave the probe seeing a pre-install heartbeat.
+func touchStartupStamp() {
+    let now = Date().timeIntervalSince1970
+    lastHeartbeatAt = 0
+    if let data = "\(Int(now))\n".data(using: .utf8) {
+        try? data.write(to: STARTUP_PATH, options: .atomic)
     }
 }
 
@@ -198,6 +228,12 @@ class HotkeyDaemon {
             fputs("hotkey: could not parse binding \(config.binding)\n", stderr)
             return
         }
+        // Stamp the startup file BEFORE installing the monitor. The Python
+        // probe requires heartbeat.mtime > startup.mtime, so any leftover
+        // heartbeat from a previous run (or from before IM was revoked) is
+        // automatically classified as stale until the new monitor produces
+        // its first event.
+        touchStartupStamp()
         if c.modifiers.isEmpty && MODIFIER_ONLY_KEYCODES.contains(c.keyCode) {
             installFlagsMonitor(for: c.keyCode)
         } else {

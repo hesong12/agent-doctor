@@ -1094,7 +1094,13 @@ def test_default_transcribe_whisper_cpp_raises_if_pywhispercpp_missing(
 def test_suppress_native_output_restores_fds(tmp_path: Path) -> None:
     """The fd-level suppression context must restore stdout/stderr on exit
     even when the wrapped block raises, so the user's terminal does not
-    stay redirected to /dev/null after a transcription failure."""
+    stay redirected to /dev/null after a transcription failure.
+
+    We keep the helper in the codebase for future callers (and for the
+    regression test below), but it is no longer used on the whisper-cpp
+    transcribe path — see
+    ``test_default_transcribe_whisper_cpp_does_not_wrap_fd_redirect``.
+    """
 
     import os
 
@@ -1110,6 +1116,99 @@ def test_suppress_native_output_restores_fds(tmp_path: Path) -> None:
     # to a captured pipe via os.write would touch real stdout; instead,
     # confirm fd 1 is still valid by calling os.fstat.
     os.fstat(1)  # would raise OSError if fd 1 had been closed
+
+
+def test_default_transcribe_whisper_cpp_does_not_wrap_fd_redirect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the whisper-cpp transcribe path must NOT wrap pywhispercpp
+    in ``_maybe_suppress_native_output``. The dup2(/dev/null, 1/2) wrapper
+    SIGSEGVs ggml_metal_init on Apple Silicon, which breaks the default
+    install's voice-to-prompt flow whenever the user picks a GGML model.
+
+    We verify by spying on the suppress helper: if it's invoked at all
+    during ``_default_transcribe_whisper_cpp``, the regression is back.
+    """
+
+    import sys as _sys
+    import types
+
+    fake_module = types.ModuleType("pywhispercpp.model")
+
+    class _FakeModel:
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        def transcribe(self, *a: Any, **kw: Any) -> List[Any]:
+            class _Seg:
+                text = "ok"
+
+            return [_Seg()]
+
+    fake_module.Model = _FakeModel  # type: ignore[attr-defined]
+    monkeypatch.setitem(_sys.modules, "pywhispercpp", types.ModuleType("pywhispercpp"))
+    monkeypatch.setitem(_sys.modules, "pywhispercpp.model", fake_module)
+
+    suppress_calls: List[bool] = []
+    orig = dictate._maybe_suppress_native_output
+
+    def spy(*, suppress: bool):
+        suppress_calls.append(suppress)
+        return orig(suppress=False)  # never actually redirect from the test
+
+    monkeypatch.setattr(dictate, "_maybe_suppress_native_output", spy)
+
+    out = dictate._default_transcribe_whisper_cpp(tmp_path / "a.wav", "x.bin", None)
+    assert out == "ok"
+    assert suppress_calls == [], (
+        "whisper-cpp transcribe path must not invoke _maybe_suppress_native_output; "
+        "the dup2 wrapper SIGSEGVs ggml_metal_init on Apple Silicon"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# resolve_whisper_model — shared precedence between CLI history + transcribe  #
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_whisper_model_cli_arg_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(dictate.ENV_WHISPER_MODEL, "from-env")
+    assert dictate.resolve_whisper_model("from-cli") == "from-cli"
+
+
+def test_resolve_whisper_model_env_wins_over_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(dictate.ENV_WHISPER_MODEL, "from-env")
+    monkeypatch.setattr(dictate, "_settings_model_path", lambda: "from-settings")
+    assert dictate.resolve_whisper_model(None) == "from-env"
+
+
+def test_resolve_whisper_model_settings_wins_over_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: the daemon-spawned ``dictate stop`` receives no CLI arg
+    and no env var, but the user has run ``dictate models set <path>``.
+    The CLI used to skip settings.transcription.model_path and silently
+    fall back to the faster-whisper alias, which routed transcription
+    through the wrong backend and tagged history rows with the wrong
+    model. resolve_whisper_model() must pick the settings value here."""
+
+    monkeypatch.delenv(dictate.ENV_WHISPER_MODEL, raising=False)
+    monkeypatch.setattr(
+        dictate, "_settings_model_path", lambda: "/Users/x/ggml-large.bin"
+    )
+    assert (
+        dictate.resolve_whisper_model(None) == "/Users/x/ggml-large.bin"
+    )
+
+
+def test_resolve_whisper_model_falls_through_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(dictate.ENV_WHISPER_MODEL, raising=False)
+    monkeypatch.setattr(dictate, "_settings_model_path", lambda: None)
+    assert dictate.resolve_whisper_model(None) == dictate.DEFAULT_WHISPER_MODEL
 
 
 # --------------------------------------------------------------------------- #
@@ -1635,8 +1734,17 @@ def test_cli_dictate_stop_records_effective_whisper_model_and_backend(
     """Gemini medium #2: when the user passes neither --whisper-model nor
     --backend, the history row must record the EFFECTIVE values
     (DEFAULT_WHISPER_MODEL and detect_backend(DEFAULT_WHISPER_MODEL)),
-    not literal Nones."""
+    not literal Nones.
 
+    Settings must be isolated to ``tmp_path`` because the CLI now
+    consults ``settings.transcription.model_path`` (via
+    resolve_whisper_model) — without isolation the dev's real
+    ~/.agent-doctor/dictate.json leaks into the assertion."""
+
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
     monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
     monkeypatch.delenv("AGENT_DOCTOR_DICTATE_WHISPER_MODEL", raising=False)
     monkeypatch.delenv("AGENT_DOCTOR_DICTATE_BACKEND", raising=False)
@@ -1703,6 +1811,68 @@ def test_cli_dictate_stop_records_explicit_whisper_model(
     rows = dictate.read_history(state_dir=tmp_path, limit=10)
     assert rows[0]["whisper_model"] == "/path/to/ggml-large-v3-turbo.bin"
     # detect_backend on a .bin path -> 'whisper-cpp'
+    assert rows[0]["backend"] == "whisper-cpp"
+
+
+def test_cli_dictate_stop_picks_up_settings_model_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the daemon-spawned ``dictate stop`` receives no
+    --whisper-model and no env var. Before resolve_whisper_model() was
+    threaded through cli.py, ``record_history`` saw DEFAULT_WHISPER_MODEL
+    ("small") and the transcribe call used the same — silently bypassing
+    the GGML path the user configured via ``dictate models set``.
+
+    After the fix the history row must reflect the configured settings
+    path, and the backend must be detected from that path (whisper-cpp
+    for a .bin file)."""
+
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    model_file = tmp_path / "ggml-large-v3.bin"
+    model_file.write_bytes(b"\x00")  # exists so detect_backend can stat it
+    settings = ds.replace_section(
+        ds.default_settings(),
+        transcription=ds.TranscriptionSettings(
+            model_id="ggml-large-v3",
+            model_path=str(model_file),
+        ),
+    )
+    ds.save(settings)
+
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_WHISPER_MODEL", raising=False)
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_BACKEND", raising=False)
+
+    audio = tmp_path / "rec.wav"
+    audio.write_bytes(b"RIFF....fake")
+    write_state(
+        DictateState(
+            pid=99999, audio_path=str(audio), mode="chat",
+            started_at=time.time(), recorder="sox", extras={},
+        ),
+        state_dir=tmp_path,
+    )
+
+    monkeypatch.setattr(dictate, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(dictate, "stop_recording", lambda **kw: audio)
+    monkeypatch.setattr(dictate, "transcribe", lambda *a, **kw: "hello")
+    monkeypatch.setattr(dictate, "enhance_prompt", lambda *a, **kw: "Hello.")
+    monkeypatch.setattr(dictate, "copy_to_clipboard", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "notify", lambda *a, **kw: None)
+    monkeypatch.setattr(dictate, "maybe_sleep_for_buffer", lambda *a, **kw: None)
+
+    from agent_doctor.cli import main
+
+    rc = main(["dictate", "stop"])
+    assert rc == 0
+
+    rows = dictate.read_history(state_dir=tmp_path, limit=10)
+    assert len(rows) == 1
+    assert rows[0]["whisper_model"] == str(model_file)
+    # .bin path routes to whisper-cpp under auto-detect.
     assert rows[0]["backend"] == "whisper-cpp"
 
 

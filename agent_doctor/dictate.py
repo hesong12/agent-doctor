@@ -485,12 +485,7 @@ def transcribe(
     the rest of the test suite relies on.
     """
 
-    chosen_model = (
-        model_name
-        or os.environ.get(ENV_WHISPER_MODEL)
-        or _settings_model_path()
-        or DEFAULT_WHISPER_MODEL
-    )
+    chosen_model = resolve_whisper_model(model_name)
 
     if transcriber is not None:
         text = transcriber(audio_path, chosen_model, language)
@@ -516,6 +511,34 @@ def transcribe(
     else:  # pragma: no cover - unreachable; validated above
         raise DictateError(f"backend {chosen_backend!r} not implemented")
     return text.strip()
+
+
+def resolve_whisper_model(cli_value: Optional[str]) -> str:
+    """Return the effective whisper model name with the canonical precedence.
+
+    Order:
+        1. ``cli_value`` (e.g. ``args.whisper_model`` from argparse)
+        2. ``AGENT_DOCTOR_DICTATE_WHISPER_MODEL`` env var
+        3. ``settings.transcription.model_path`` / ``model_id`` written by
+           ``dictate models set``
+        4. :data:`DEFAULT_WHISPER_MODEL`
+
+    Shared with :func:`transcribe` so the daemon-spawned ``dictate stop`` path
+    (which records history metadata before calling ``transcribe``) sees the
+    same effective model as the transcription itself. Previously the CLI
+    skipped step (3), so a user who ran ``dictate models set ggml-large.bin``
+    would still get history rows tagged ``"small"`` and — worse — whisper-cpp
+    backend selection that should have routed to the GGML file was silently
+    bypassed because the model name handed to :func:`transcribe` was the
+    faster-whisper alias.
+    """
+
+    return (
+        cli_value
+        or os.environ.get(ENV_WHISPER_MODEL)
+        or _settings_model_path()
+        or DEFAULT_WHISPER_MODEL
+    )
 
 
 def _settings_model_path() -> Optional[str]:
@@ -582,19 +605,21 @@ def _default_transcribe_whisper_cpp(
     n_threads = os.cpu_count() or 4
 
     # whisper.cpp's C-level printf logging is verbose (Metal init, model
-    # metadata) and bypasses Python's logging. Redirect fds 1/2 to /dev/null
-    # around model load + transcribe so the user's terminal stays clean.
-    # We do NOT suppress when AGENT_DOCTOR_DICTATE_DEBUG=1 so power users can
-    # still see the underlying engine output when diagnosing perf or accuracy.
-    debug = os.environ.get("AGENT_DOCTOR_DICTATE_DEBUG") == "1"
-    with _maybe_suppress_native_output(suppress=not debug):
-        model = Model(model_path, n_threads=n_threads, print_progress=False)
-        kwargs: Dict[str, Any] = {}
-        if language:
-            kwargs["language"] = language
-        segments = model.transcribe(str(audio_path), **kwargs)
-        text = "".join(segment.text for segment in segments)
-    return text
+    # metadata) and bypasses Python's logging. We previously wrapped both
+    # Model() load and transcribe() in _maybe_suppress_native_output, which
+    # dup2's /dev/null over fds 1/2. On Apple Silicon that collides with
+    # whisper.cpp's Metal init (the framework opens diagnostic descriptors
+    # that don't survive the dup2) and crashes the process with SIGSEGV
+    # inside ggml_metal_init. We accept slightly noisier logs in exchange
+    # for not crashing the dictate pipeline on the daemon path that ships
+    # by default. AGENT_DOCTOR_DICTATE_DEBUG remains a no-op for symmetry
+    # with the rest of the codebase; the engine prints regardless.
+    model = Model(model_path, n_threads=n_threads, print_progress=False)
+    kwargs: Dict[str, Any] = {}
+    if language:
+        kwargs["language"] = language
+    segments = model.transcribe(str(audio_path), **kwargs)
+    return "".join(segment.text for segment in segments)
 
 
 @contextmanager

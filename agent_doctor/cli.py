@@ -1995,15 +1995,14 @@ def _dictate_finish(args: argparse.Namespace) -> int:
         api_key=getattr(args, "llm_key", None),
     )
     # Resolve effective whisper model + backend so the history metadata
-    # reflects what actually ran, not what the user happened to type. The
-    # precedence (CLI > env > default) is the same order ``transcribe()``
-    # uses internally; we compute it here too so ``record_history`` gets
-    # the real values when neither CLI nor env was supplied.
-    whisper_model = (
-        getattr(args, "whisper_model", None)
-        or os.environ.get(_d.ENV_WHISPER_MODEL)
-        or _d.DEFAULT_WHISPER_MODEL
-    )
+    # reflects what actually ran, not what the user happened to type, and
+    # so the daemon-spawned ``dictate stop`` (which receives neither CLI
+    # arg nor env) still picks up the model the user set via
+    # ``dictate models set``. We delegate to ``resolve_whisper_model`` so
+    # transcribe() and the history row see identical inputs — previously
+    # the CLI skipped settings.transcription.model_path and silently fell
+    # back to the faster-whisper alias on the hotkey daemon path.
+    whisper_model = _d.resolve_whisper_model(getattr(args, "whisper_model", None))
     language = getattr(args, "language", None)
     backend_choice = (
         getattr(args, "backend", None)

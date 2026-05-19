@@ -31,6 +31,10 @@ _INPUT_MONITORING_HEARTBEAT_PATH = Path(
     "~/Library/Application Support/agent-doctor/im-heartbeat"
 ).expanduser()
 
+_INPUT_MONITORING_STARTUP_PATH = Path(
+    "~/Library/Application Support/agent-doctor/im-startup"
+).expanduser()
+
 _INPUT_MONITORING_HEARTBEAT_FRESH_S = 60
 
 
@@ -68,6 +72,7 @@ def _default_accessibility_probe() -> bool:
 
 def _default_input_monitoring_probe(
     heartbeat_path: Path = _INPUT_MONITORING_HEARTBEAT_PATH,
+    startup_path: Path = _INPUT_MONITORING_STARTUP_PATH,
 ) -> bool:
     """Return True iff the helper has written a heartbeat in the last N seconds.
 
@@ -76,6 +81,19 @@ def _default_input_monitoring_probe(
     in turn requires Input Monitoring permission to be granted on macOS.
     Missing or stale heartbeat means either the helper isn't running or
     IM is revoked.
+
+    The helper also writes a one-shot ``im-startup`` stamp right before
+    installing its event monitor. We require ``heartbeat.mtime >
+    startup.mtime``: if the helper just relaunched (e.g. because the user
+    revoked IM and the install flow re-bootstrapped the LaunchAgent) and no
+    events have arrived since, the heartbeat carries forward from the
+    previous run but the startup stamp is newer — the probe reports IM as
+    "not confirmed" rather than echoing the stale signal back as "granted".
+
+    Backward compatibility: if ``startup_path`` does not exist (a helper
+    binary that predates the startup stamp is still installed on the
+    user's machine), we fall back to the original "fresh heartbeat alone"
+    check so we don't regress upgrade-in-place users.
 
     Note: a freshly installed helper that has not yet received any event
     will have no heartbeat — the probe correctly reports IM as "not yet
@@ -89,10 +107,25 @@ def _default_input_monitoring_probe(
     if not heartbeat_path.exists():
         return False
     try:
-        age_s = time.time() - heartbeat_path.stat().st_mtime
+        heartbeat_mtime = heartbeat_path.stat().st_mtime
     except OSError:
         return False
-    return age_s < _INPUT_MONITORING_HEARTBEAT_FRESH_S
+
+    age_s = time.time() - heartbeat_mtime
+    if age_s >= _INPUT_MONITORING_HEARTBEAT_FRESH_S:
+        return False
+
+    # Legacy fallback: helper without the startup stamp (pre-this-PR) gets
+    # the original behavior — fresh heartbeat alone is sufficient.
+    if not startup_path.exists():
+        return True
+    try:
+        startup_mtime = startup_path.stat().st_mtime
+    except OSError:
+        # Startup stat failed but heartbeat is fresh — be conservative and
+        # treat as not-confirmed rather than falsely-confirmed.
+        return False
+    return heartbeat_mtime > startup_mtime
 
 
 def check_macos_permissions(
