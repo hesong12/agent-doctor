@@ -146,6 +146,25 @@ let HEARTBEAT_PATH: URL = {
     return dir.appendingPathComponent("im-heartbeat")
 }()
 
+// Startup stamp. Written once before the event monitor is installed. The
+// Python probe compares (heartbeat mtime) > (startup mtime) to decide if
+// genuine events have flowed since this daemon started — eliminates the
+// false positive where heartbeat from a previous daemon lifetime makes
+// IM look granted when it has been revoked since.
+let STARTUP_STAMP_PATH: URL = {
+    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    let dir = appSupport.appendingPathComponent("agent-doctor")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir.appendingPathComponent("im-startup")
+}()
+
+func writeStartupStamp() {
+    let now = Date().timeIntervalSince1970
+    if let data = "\(Int(now))\n".data(using: .utf8) {
+        try? data.write(to: STARTUP_STAMP_PATH, options: .atomic)
+    }
+}
+
 // Minimum interval between heartbeat writes (seconds). The probe needs
 // freshness within 60s, so writing every 5s gives plenty of margin while
 // avoiding per-keystroke disk I/O on chord bindings whose monitor sees
@@ -318,6 +337,12 @@ class HotkeyDaemon {
         }
     }
 }
+
+// Stamp startup before installing the event monitor, so the Python probe
+// can distinguish "events have flowed since *this* daemon started"
+// (= IM granted) from "heartbeat from a previous lifetime still on disk"
+// (= IM might be revoked since).
+writeStartupStamp()
 
 let daemon = HotkeyDaemon()
 daemon.reload()

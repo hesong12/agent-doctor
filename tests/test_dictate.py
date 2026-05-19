@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -1091,6 +1092,154 @@ def test_default_transcribe_whisper_cpp_raises_if_pywhispercpp_missing(
         dictate._default_transcribe_whisper_cpp(tmp_path / "x.wav", "x.bin", None)
 
 
+def test_resolve_whisper_model_consults_settings_before_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a user has configured a model_path via settings (e.g. via
+    Preferences → Dictation), ``dictate stop`` with no --whisper-model
+    flag must use that path instead of falling back to
+    DEFAULT_WHISPER_MODEL ("small", a faster-whisper alias). This is
+    the root cause of "faster-whisper is not installed" when the user
+    actually has a whisper-cpp .bin model selected.
+    """
+
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    bin_path = tmp_path / "ggml-large-v3-turbo.bin"
+    bin_path.write_bytes(b"\x00")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        transcription=ds.TranscriptionSettings(
+            model_id="ggml-large-v3-turbo",
+            model_path=str(bin_path),
+            language="auto",
+            extra_buffer_ms=150,
+        ),
+    )
+    ds.save(settings)
+
+    # Clear env so settings take effect.
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_WHISPER_MODEL", raising=False)
+    resolved = dictate.resolve_whisper_model(arg=None)
+    assert resolved == str(bin_path), (
+        "resolve_whisper_model should fall through to settings.model_path "
+        "before DEFAULT_WHISPER_MODEL"
+    )
+
+
+def test_resolve_whisper_model_arg_beats_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit --whisper-model still takes precedence over settings."""
+
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        transcription=ds.TranscriptionSettings(
+            model_id="ggml-large-v3-turbo",
+            model_path="/tmp/from-settings.bin",
+            language="auto",
+            extra_buffer_ms=150,
+        ),
+    )
+    ds.save(settings)
+
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_WHISPER_MODEL", raising=False)
+    resolved = dictate.resolve_whisper_model(arg="explicit-override")
+    assert resolved == "explicit-override"
+
+
+def test_resolve_whisper_model_env_beats_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The env var still wins over settings (matches transcribe() order)."""
+
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    settings = ds.replace_section(
+        ds.default_settings(),
+        transcription=ds.TranscriptionSettings(
+            model_id="ggml-large-v3-turbo",
+            model_path="/tmp/from-settings.bin",
+            language="auto",
+            extra_buffer_ms=150,
+        ),
+    )
+    ds.save(settings)
+    monkeypatch.setenv("AGENT_DOCTOR_DICTATE_WHISPER_MODEL", "from-env")
+    resolved = dictate.resolve_whisper_model(arg=None)
+    assert resolved == "from-env"
+
+
+def test_resolve_whisper_model_falls_back_to_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no arg / env / settings, falls back to the historical
+    DEFAULT_WHISPER_MODEL so existing behavior is preserved."""
+
+    from agent_doctor import dictate_settings as ds
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    # Default settings have no model_path.
+    ds.save(ds.default_settings())
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_WHISPER_MODEL", raising=False)
+    resolved = dictate.resolve_whisper_model(arg=None)
+    assert resolved == dictate.DEFAULT_WHISPER_MODEL
+
+
+def test_whisper_cpp_does_not_wrap_with_suppress_native_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fd-level suppress trick (os.dup2 over fds 1/2) makes
+    pywhispercpp's Metal/GGML init SIGSEGV on macOS — verified
+    repeatable on Apple Silicon during PR #38 smoke testing. Whisper-cpp
+    path must NOT activate suppress regardless of the DEBUG env var.
+    """
+
+    suppress_called = [False]
+
+    @contextmanager
+    def fake_suppress(*, suppress: bool):
+        suppress_called[0] = suppress_called[0] or suppress
+        yield
+
+    monkeypatch.setattr(dictate, "_maybe_suppress_native_output", fake_suppress)
+
+    class FakeModel:
+        def __init__(self, *_a: Any, **_kw: Any) -> None:
+            pass
+
+        def transcribe(self, *_a: Any, **_kw: Any) -> list:
+            class Seg:
+                text = "ok"
+            return [Seg()]
+
+    # Inject pywhispercpp.model.Model via sys.modules so the import works
+    import sys as _sys
+    import types as _types
+    fake_module = _types.ModuleType("pywhispercpp.model")
+    fake_module.Model = FakeModel  # type: ignore[attr-defined]
+    monkeypatch.setitem(_sys.modules, "pywhispercpp", _types.ModuleType("pywhispercpp"))
+    monkeypatch.setitem(_sys.modules, "pywhispercpp.model", fake_module)
+
+    # Default-mode (DEBUG unset) used to call suppress(True) and trigger SIGSEGV.
+    monkeypatch.delenv("AGENT_DOCTOR_DICTATE_DEBUG", raising=False)
+    result = dictate._default_transcribe_whisper_cpp(tmp_path / "x.wav", "x.bin", None)
+    assert result == "ok"
+    assert suppress_called[0] is False, (
+        "whisper-cpp path must never activate fd-level suppression "
+        "(pywhispercpp SIGSEGVs under dup2(devnull, 1))"
+    )
+
+
 def test_suppress_native_output_restores_fds(tmp_path: Path) -> None:
     """The fd-level suppression context must restore stdout/stderr on exit
     even when the wrapped block raises, so the user's terminal does not
@@ -1637,9 +1786,16 @@ def test_cli_dictate_stop_records_effective_whisper_model_and_backend(
     (DEFAULT_WHISPER_MODEL and detect_backend(DEFAULT_WHISPER_MODEL)),
     not literal Nones."""
 
+    from agent_doctor import dictate_settings as ds
+
     monkeypatch.setenv("AGENT_DOCTOR_DICTATE_STATE_DIR", str(tmp_path))
     monkeypatch.delenv("AGENT_DOCTOR_DICTATE_WHISPER_MODEL", raising=False)
     monkeypatch.delenv("AGENT_DOCTOR_DICTATE_BACKEND", raising=False)
+    # Isolate settings so resolve_whisper_model() can't pick up the
+    # developer's real ~/.agent-doctor/dictate.json (settings precedence
+    # was added in PRα so the test must scope it to tmp_path).
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
 
     audio = tmp_path / "rec.wav"
     audio.write_bytes(b"RIFF....fake")

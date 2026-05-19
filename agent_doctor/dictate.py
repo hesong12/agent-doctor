@@ -533,6 +533,30 @@ def _settings_model_path() -> Optional[str]:
     return settings.transcription.model_path or settings.transcription.model_id
 
 
+def resolve_whisper_model(*, arg: Optional[str]) -> str:
+    """Resolve the effective whisper model name.
+
+    Precedence: CLI arg > env var > settings.transcription.model_path
+    > DEFAULT_WHISPER_MODEL.
+
+    Returns the model spec — either a model identifier (e.g.
+    "large-v3-turbo" for faster-whisper) or an absolute path to a .bin
+    file (for whisper-cpp). detect_backend() routes appropriately.
+
+    The CLI and the daemon both go through this so they pick up
+    settings written via Preferences → Dictation tab without forcing
+    the user to also set AGENT_DOCTOR_DICTATE_WHISPER_MODEL or pass
+    --whisper-model on the daemon's launchd-spawned commands.
+    """
+
+    return (
+        arg
+        or os.environ.get(ENV_WHISPER_MODEL)
+        or _settings_model_path()
+        or DEFAULT_WHISPER_MODEL
+    )
+
+
 def _default_transcribe(
     audio_path: Path,
     model_name: str,
@@ -581,19 +605,27 @@ def _default_transcribe_whisper_cpp(
     model_path = str(Path(model_name).expanduser())
     n_threads = os.cpu_count() or 4
 
-    # whisper.cpp's C-level printf logging is verbose (Metal init, model
-    # metadata) and bypasses Python's logging. Redirect fds 1/2 to /dev/null
-    # around model load + transcribe so the user's terminal stays clean.
-    # We do NOT suppress when AGENT_DOCTOR_DICTATE_DEBUG=1 so power users can
-    # still see the underlying engine output when diagnosing perf or accuracy.
-    debug = os.environ.get("AGENT_DOCTOR_DICTATE_DEBUG") == "1"
-    with _maybe_suppress_native_output(suppress=not debug):
-        model = Model(model_path, n_threads=n_threads, print_progress=False)
-        kwargs: Dict[str, Any] = {}
-        if language:
-            kwargs["language"] = language
-        segments = model.transcribe(str(audio_path), **kwargs)
-        text = "".join(segment.text for segment in segments)
+    # whisper.cpp prints verbose Metal init + model metadata via C printf,
+    # which bypasses Python's stdout abstraction. The obvious fix is to
+    # dup2(devnull, 1) for the duration of the call (see
+    # _maybe_suppress_native_output), but doing so reliably SIGSEGVs
+    # pywhispercpp's Metal init on Apple Silicon — verified on M5 Max
+    # during PR #38 smoke testing. The crash appears to be a race between
+    # GGML's GPU init thread writing to fd 1 and the dup2 race window.
+    #
+    # So we intentionally do NOT suppress here. The noise lands in:
+    # - launchd stdout log when invoked via the hotkey daemon (harmless,
+    #   bounded by KeepAlive log rotation), and
+    # - the user's terminal on direct CLI invocation (one-time, noisy).
+    #
+    # Suppressing this output cleanly requires forking a child process to
+    # do the transcription with redirected fds — left as a follow-up.
+    model = Model(model_path, n_threads=n_threads, print_progress=False)
+    kwargs: Dict[str, Any] = {}
+    if language:
+        kwargs["language"] = language
+    segments = model.transcribe(str(audio_path), **kwargs)
+    text = "".join(segment.text for segment in segments)
     return text
 
 

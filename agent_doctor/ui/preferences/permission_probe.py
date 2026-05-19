@@ -31,6 +31,10 @@ _INPUT_MONITORING_HEARTBEAT_PATH = Path(
     "~/Library/Application Support/agent-doctor/im-heartbeat"
 ).expanduser()
 
+_INPUT_MONITORING_STARTUP_PATH = Path(
+    "~/Library/Application Support/agent-doctor/im-startup"
+).expanduser()
+
 _INPUT_MONITORING_HEARTBEAT_FRESH_S = 60
 
 
@@ -68,31 +72,54 @@ def _default_accessibility_probe() -> bool:
 
 def _default_input_monitoring_probe(
     heartbeat_path: Path = _INPUT_MONITORING_HEARTBEAT_PATH,
+    startup_path: Path = _INPUT_MONITORING_STARTUP_PATH,
 ) -> bool:
-    """Return True iff the helper has written a heartbeat in the last N seconds.
+    """Return True iff the helper has received events since *this* daemon
+    started, AND the latest event was within the freshness window.
 
-    The helper touches the heartbeat file on every global event it receives.
-    A fresh heartbeat (default: within 60s) means events are flowing, which
-    in turn requires Input Monitoring permission to be granted on macOS.
-    Missing or stale heartbeat means either the helper isn't running or
-    IM is revoked.
+    The helper writes ``im-startup`` once at process start (before
+    installing the event monitor) and refreshes ``im-heartbeat`` on
+    every global event. Comparing the two mtimes eliminates the false
+    positive where a leftover heartbeat from a previous daemon lifetime
+    makes IM look granted after the user has revoked it — the symptom
+    that motivated this rewrite (PRα-3).
 
-    Note: a freshly installed helper that has not yet received any event
-    will have no heartbeat — the probe correctly reports IM as "not yet
-    confirmed" (False). Users will see "Permission needed" until they
-    press a key while the helper is registered. This is the conservative
-    direction: false negatives (you see Permission needed but IM is OK
-    and you just haven't pressed anything yet) are fine; false positives
-    (you see Listening but no events flow) are not.
+    Decision matrix:
+    - startup missing            → daemon never started cleanly → False
+    - heartbeat missing          → daemon started, no event yet → False
+    - heartbeat <= startup       → only old events on disk      → False
+    - heartbeat fresher than the freshness window               → True
+    - heartbeat older than the freshness window                 → False
+
+    First-install UX: user sees "Permission needed" until they press
+    the bound key once, even though IM may already be granted. This is
+    the safer direction — false positives ("Active" but no events)
+    would silently break dictation; false negatives ("Permission
+    needed" prompt to press the key) just nudge the user to test.
     """
 
-    if not heartbeat_path.exists():
-        return False
     try:
-        age_s = time.time() - heartbeat_path.stat().st_mtime
+        heartbeat_mtime = heartbeat_path.stat().st_mtime
     except OSError:
         return False
-    return age_s < _INPUT_MONITORING_HEARTBEAT_FRESH_S
+    age_s = time.time() - heartbeat_mtime
+    if age_s >= _INPUT_MONITORING_HEARTBEAT_FRESH_S:
+        return False
+    # The startup stamp was added in PRα-3. Legacy helpers from before
+    # that PR write only the heartbeat — for those, fall back to the
+    # original "heartbeat freshness" probe so an in-place agent-doctor
+    # upgrade does not falsely report Input Monitoring missing. Codex
+    # review caught this regression path; users see "Permission needed"
+    # only AFTER their next dictate-hotkey-install rebuilds the helper
+    # to the version that writes im-startup.
+    try:
+        startup_mtime = startup_path.stat().st_mtime
+    except OSError:
+        return True
+    # New-protocol helpers: heartbeat must be strictly newer than the
+    # startup stamp, otherwise we're looking at events from a previous
+    # daemon lifetime (or no events at all yet from this one).
+    return heartbeat_mtime > startup_mtime
 
 
 def check_macos_permissions(
