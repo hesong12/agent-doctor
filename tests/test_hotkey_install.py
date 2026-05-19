@@ -134,9 +134,10 @@ def test_pause_runs_bootout_without_removing_plist(
 def test_resume_rebuilds_and_bootstraps(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``resume()`` is an alias for ``install()`` — both paths must rebuild
-    the helper so upgraded users with stale on-disk binaries from previous
-    versions get the current Swift source recompiled."""
+    """``resume()`` is an alias for ``install()`` and must produce a
+    bootstrapped helper. The first call always builds (helper absent);
+    rebuild-or-skip decisions on subsequent calls are covered by the
+    idempotency tests below."""
 
     bin_dir = _make_fake_swiftc(tmp_path)
     monkeypatch.setenv("PATH", str(bin_dir))
@@ -160,6 +161,207 @@ def test_resume_rebuilds_and_bootstraps(
     # launchctl bootstrap was called.
     assert any(arg[:2] == ["launchctl", "bootstrap"] for arg in calls)
     assert "helper" in result and "plist" in result
+
+
+def test_install_skips_rebuild_when_sidecar_matches_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the sidecar SHA-256 file next to the helper matches the current
+    Swift source hash, install() must not recompile. This preserves the
+    binary's cdhash so macOS Input Monitoring (TCC) does not silently
+    invalidate the user's granted permission on every toggle of the
+    Background daemon switch.
+    """
+
+    bin_dir = _make_fake_swiftc(tmp_path)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    helper = tmp_path / "helper"
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", helper)
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "plist")
+    src = tmp_path / "HotkeyHelper.swift"
+    monkeypatch.setattr(hi, "SWIFT_SOURCE", src)
+    src.write_text("// fake source")
+    # Pre-existing helper + matching sidecar from a previous successful
+    # install (this is the state install() leaves behind on first run).
+    helper.write_text("#!/bin/sh\necho fake-prebuilt\n")
+    helper.chmod(0o755)
+    sidecar = helper.with_name(helper.name + ".source-sha256")
+    sidecar.write_text(hi._source_fingerprint(src), encoding="utf-8")
+    prebuilt_bytes = helper.read_bytes()
+    prebuilt_ino = helper.stat().st_ino
+
+    monkeypatch.setattr(
+        hi,
+        "_run_launchctl",
+        lambda argv, **_kw: subprocess.CompletedProcess(argv, 0, b"", b""),
+    )
+    result = hi.install(agent_doctor_bin="/usr/local/bin/agent-doctor")
+    # Helper bytes and inode are unchanged — same physical file,
+    # so cdhash is identical and TCC permission remains valid.
+    assert helper.read_bytes() == prebuilt_bytes
+    assert helper.stat().st_ino == prebuilt_ino
+    assert result.get("rebuilt") is False
+
+
+def test_install_rebuilds_when_source_hash_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the Swift source content has changed (upgrade path), install()
+    must recompile so a stale on-disk helper from a previous agent-doctor
+    version gets the current Swift source compiled in. Content-based so
+    it survives mtime perturbations (tarball restore, scp -p, etc.) —
+    motivated by codex review feedback against the initial mtime-only
+    implementation.
+    """
+
+    bin_dir = _make_fake_swiftc(tmp_path)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    helper = tmp_path / "helper"
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", helper)
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "plist")
+    src = tmp_path / "HotkeyHelper.swift"
+    monkeypatch.setattr(hi, "SWIFT_SOURCE", src)
+    helper.write_text("#!/bin/sh\necho stale\n")
+    helper.chmod(0o755)
+    stale_bytes = helper.read_bytes()
+    # Old sidecar recorded a different hash (last build was from a
+    # different source revision).
+    sidecar = helper.with_name(helper.name + ".source-sha256")
+    sidecar.write_text("0" * 64, encoding="utf-8")
+    # Current source content differs from what built the on-disk helper.
+    src.write_text("// upgraded source")
+
+    monkeypatch.setattr(
+        hi,
+        "_run_launchctl",
+        lambda argv, **_kw: subprocess.CompletedProcess(argv, 0, b"", b""),
+    )
+    result = hi.install(agent_doctor_bin="/usr/local/bin/agent-doctor")
+    assert helper.read_bytes() != stale_bytes  # fake swiftc rewrote it
+    assert result.get("rebuilt") is True
+    # Post-rebuild the sidecar records the new source hash.
+    assert sidecar.read_text(encoding="utf-8").strip() == hi._source_fingerprint(src)
+
+
+def test_install_rebuilds_when_sidecar_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-existing helper without a sidecar (e.g. left over from a
+    pre-v0.4 install) is treated as unknown provenance and rebuilt. After
+    one rebuild the sidecar is written and subsequent toggles are
+    idempotent.
+    """
+
+    bin_dir = _make_fake_swiftc(tmp_path)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    helper = tmp_path / "helper"
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", helper)
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "plist")
+    src = tmp_path / "HotkeyHelper.swift"
+    monkeypatch.setattr(hi, "SWIFT_SOURCE", src)
+    src.write_text("// source")
+    helper.write_text("#!/bin/sh\necho legacy\n")
+    helper.chmod(0o755)
+    sidecar = helper.with_name(helper.name + ".source-sha256")
+    assert not sidecar.exists()
+
+    monkeypatch.setattr(
+        hi,
+        "_run_launchctl",
+        lambda argv, **_kw: subprocess.CompletedProcess(argv, 0, b"", b""),
+    )
+    result = hi.install(agent_doctor_bin="/usr/local/bin/agent-doctor")
+    assert result.get("rebuilt") is True
+    # Sidecar was written so the next call can be idempotent.
+    assert sidecar.exists()
+    assert sidecar.read_text(encoding="utf-8").strip() == hi._source_fingerprint(src)
+
+
+def test_install_rebuilds_when_helper_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bin_dir = _make_fake_swiftc(tmp_path)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    helper = tmp_path / "helper"
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", helper)
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "plist")
+    src = tmp_path / "HotkeyHelper.swift"
+    monkeypatch.setattr(hi, "SWIFT_SOURCE", src)
+    src.write_text("// source")
+    assert not helper.exists()
+
+    monkeypatch.setattr(
+        hi,
+        "_run_launchctl",
+        lambda argv, **_kw: subprocess.CompletedProcess(argv, 0, b"", b""),
+    )
+    result = hi.install(agent_doctor_bin="/usr/local/bin/agent-doctor")
+    assert helper.exists()
+    assert result.get("rebuilt") is True
+
+
+def test_install_rebuilds_when_helper_lost_executable_bit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a previous tarball restore or scp -p stripped the executable
+    bit, ``install()`` must rebuild so launchd doesn't bootstrap a
+    non-executable helper. Caught by codex review on the initial
+    mtime-only check.
+    """
+
+    bin_dir = _make_fake_swiftc(tmp_path)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    helper = tmp_path / "helper"
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", helper)
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "plist")
+    src = tmp_path / "HotkeyHelper.swift"
+    monkeypatch.setattr(hi, "SWIFT_SOURCE", src)
+    src.write_text("// source")
+    # Helper exists and is "fresh" by mtime but missing the executable bit.
+    helper.write_text("#!/bin/sh\necho broken\n")
+    helper.chmod(0o644)
+    import os
+    src_mtime = src.stat().st_mtime - 60
+    os.utime(src, (src_mtime, src_mtime))
+
+    monkeypatch.setattr(
+        hi,
+        "_run_launchctl",
+        lambda argv, **_kw: subprocess.CompletedProcess(argv, 0, b"", b""),
+    )
+    result = hi.install(agent_doctor_bin="/usr/local/bin/agent-doctor")
+    assert result.get("rebuilt") is True
+    # build() chmods 0o755, so post-install the helper is executable.
+    assert helper.stat().st_mode & 0o100
+
+
+def test_install_rebuilds_when_helper_is_not_a_regular_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defensive: if the helper path resolves to a directory (e.g. user
+    rm'd the file and ran `mkdir` by mistake while debugging), install()
+    cannot reuse it. ``_should_rebuild`` must signal a rebuild rather
+    than silently bootstrap launchd on a non-executable target.
+    """
+
+    bin_dir = _make_fake_swiftc(tmp_path)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    helper = tmp_path / "helper"
+    # Simulate "not a regular file" via a directory at the helper path.
+    # _should_rebuild must short-circuit before we ever call swiftc to
+    # overwrite it, so we use a no-op fake swiftc that just records calls.
+    helper.mkdir()
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", helper)
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "plist")
+    src = tmp_path / "HotkeyHelper.swift"
+    monkeypatch.setattr(hi, "SWIFT_SOURCE", src)
+    src.write_text("// source")
+
+    # We only check that _should_rebuild reported "rebuild needed" — the
+    # actual swiftc call would fail on a directory target, but that's
+    # acceptable: the user gets a clear HotkeyInstallError instead of a
+    # silently bootstrapped broken daemon.
+    assert hi._should_rebuild(src, helper) is True
 
 
 def test_status_handles_missing_launchctl(
