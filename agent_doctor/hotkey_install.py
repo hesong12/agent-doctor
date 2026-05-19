@@ -427,11 +427,11 @@ def _should_rebuild(helper: Path, source_hash: str) -> bool:
     invalidates the user's previously-granted Input Monitoring
     permission.
 
-    The caller is responsible for computing ``source_hash`` once and
-    threading it through to :func:`install` so the hash used for the
-    decision is the same one written into the sidecar — eliminates a
-    second source read and the race where the source could be modified
-    between the check and the sidecar write.
+    The caller (typically :func:`install`) is responsible for computing
+    ``source_hash`` once and threading it through both this check and
+    the subsequent sidecar write — eliminates a second source read and
+    closes the race where the source could be modified between the
+    check and the sidecar write.
     """
 
     try:
