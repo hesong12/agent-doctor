@@ -1800,6 +1800,7 @@ def _maybe_deprecate_mode(mode: Optional[str]) -> Optional[str]:
 
 def _cmd_dictate_start(args: argparse.Namespace) -> int:
     from . import dictate as _d
+    from . import pet_transient as _pt
 
     raw_mode = getattr(args, "mode", None)
     mode = _maybe_deprecate_mode(raw_mode) or _d.DEFAULT_MODE
@@ -1810,6 +1811,16 @@ def _cmd_dictate_start(args: argparse.Namespace) -> int:
         if _d.beep_enabled(getattr(args, "beep", None)):
             _d.play_sound(_d.DEFAULT_FAIL_SOUND)
         return 2
+    # Surface recording state on the desktop pet so the user has visible
+    # feedback that the pipeline is live. The TTL is generous (120s)
+    # because we can't reliably clear it from `start` — the actual stop
+    # happens in a separate process. ``_dictate_finish`` (stop path)
+    # overwrites this with "thinking" while LLM runs, and clears on
+    # completion. If the user never releases, TTL handles cleanup.
+    try:
+        _pt.write_transient(state="listening", ttl_seconds=120.0)
+    except Exception:  # noqa: BLE001 — pet feedback must never break dictate
+        pass
     if _d.beep_enabled(getattr(args, "beep", None)):
         _d.play_sound(_d.DEFAULT_START_SOUND)
     print(
@@ -1872,6 +1883,15 @@ def _cmd_dictate_status(_args: argparse.Namespace) -> int:
 
 def _cmd_dictate_cancel(_args: argparse.Namespace) -> int:
     from . import dictate as _d
+    from . import pet_transient as _pt
+
+    # Clear the listening transient unconditionally — codex P2 caught
+    # that cancel left it sitting on the pet for the full 120s TTL.
+    # Best-effort; the cancel itself must not fail because of pet feedback.
+    try:
+        _pt.clear_transient()
+    except Exception:  # noqa: BLE001
+        pass
 
     try:
         state = _d.read_state()
