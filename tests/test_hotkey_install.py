@@ -111,3 +111,143 @@ def test_uninstall_calls_launchctl_bootout(
     monkeypatch.setattr(hi, "_run_launchctl", fake_run)
     hi.uninstall()
     assert any(arg[:2] == ["launchctl", "bootout"] for arg in calls)
+
+
+def test_pause_runs_bootout_without_removing_plist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "x.plist")
+    (tmp_path / "x.plist").write_text("dummy")
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kw: Any) -> subprocess.CompletedProcess:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(hi, "_run_launchctl", fake_run)
+    assert hi.pause() is True
+    assert any("bootout" in " ".join(c) for c in calls)
+    assert (tmp_path / "x.plist").exists()
+
+
+def test_resume_rebuilds_and_bootstraps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``resume()`` is an alias for ``install()`` — both paths must rebuild
+    the helper so upgraded users with stale on-disk binaries from previous
+    versions get the current Swift source recompiled."""
+
+    bin_dir = _make_fake_swiftc(tmp_path)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", tmp_path / "helper")
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "plist")
+    monkeypatch.setattr(hi, "SWIFT_SOURCE", tmp_path / "HotkeyHelper.swift")
+    (tmp_path / "HotkeyHelper.swift").write_text("// fake source")
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kw: Any) -> subprocess.CompletedProcess:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(hi, "_run_launchctl", fake_run)
+    result = hi.resume()
+    # Rebuilt helper exists.
+    assert (tmp_path / "helper").exists()
+    # Plist was written.
+    assert (tmp_path / "plist").exists()
+    # launchctl bootstrap was called.
+    assert any(arg[:2] == ["launchctl", "bootstrap"] for arg in calls)
+    assert "helper" in result and "plist" in result
+
+
+def test_status_handles_missing_launchctl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``status()`` must report ``running=False`` rather than crash when
+    ``launchctl`` is unavailable (non-macOS, sandboxed env, broken PATH)."""
+
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "absent.plist")
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", tmp_path / "absent.helper")
+
+    def boom(*_a: Any, **_k: Any) -> subprocess.CompletedProcess:
+        raise FileNotFoundError("launchctl not on PATH")
+
+    monkeypatch.setattr(hi, "_run_launchctl", boom)
+    status = hi.status()
+    assert status["running"] is False
+    assert status["plist_exists"] is False
+    assert status["helper_exists"] is False
+
+
+def test_read_agent_doctor_bin_from_existing_plist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plist_path = tmp_path / "test.plist"
+    plistlib.dump(
+        {"EnvironmentVariables": {"AGENT_DOCTOR_BIN": "/custom/path/agent-doctor"}},
+        plist_path.open("wb"),
+    )
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", plist_path)
+    assert hi.read_agent_doctor_bin() == "/custom/path/agent-doctor"
+
+
+def test_read_agent_doctor_bin_returns_none_for_missing_plist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", tmp_path / "absent.plist")
+    assert hi.read_agent_doctor_bin() is None
+
+
+def test_read_agent_doctor_bin_returns_none_when_env_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plist_path = tmp_path / "test.plist"
+    plistlib.dump({"Label": "x"}, plist_path.open("wb"))
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", plist_path)
+    assert hi.read_agent_doctor_bin() is None
+
+
+def test_install_preserves_existing_agent_doctor_bin_when_none_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When agent_doctor_bin=None and a plist exists, install() must
+    preserve the existing AGENT_DOCTOR_BIN env var instead of falling
+    back to `which agent-doctor`. This protects power users who installed
+    with --agent-doctor-bin /custom/... and later pause/resume via the UI.
+    """
+
+    # Set up an existing plist with a custom binary path.
+    plist_path = tmp_path / "existing.plist"
+    plistlib.dump(
+        {
+            "Label": "com.agent-doctor.hotkey",
+            "ProgramArguments": ["/tmp/old-helper"],
+            "EnvironmentVariables": {"AGENT_DOCTOR_BIN": "/custom/path/agent-doctor"},
+        },
+        plist_path.open("wb"),
+    )
+    monkeypatch.setattr(hi, "DEFAULT_PLIST_PATH", plist_path)
+    monkeypatch.setattr(hi, "DEFAULT_HELPER_PATH", tmp_path / "helper")
+
+    bin_dir = _make_fake_swiftc(tmp_path)
+    import os
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    monkeypatch.setattr(hi, "SWIFT_SOURCE", tmp_path / "src.swift")
+    (tmp_path / "src.swift").write_text("// fake")
+    monkeypatch.setattr(
+        hi,
+        "_run_launchctl",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0, b"", b""),
+    )
+
+    result = hi.install()  # no agent_doctor_bin kwarg
+    assert result["agent_doctor_bin"] == "/custom/path/agent-doctor"
+
+    # The written plist must also contain the preserved custom path.
+    parsed = plistlib.loads(plist_path.read_bytes())
+    assert (
+        parsed["EnvironmentVariables"]["AGENT_DOCTOR_BIN"]
+        == "/custom/path/agent-doctor"
+    )

@@ -293,3 +293,33 @@ def test_dictate_preferences_subcommand_registered() -> None:
     parser = cli.build_parser()
     dictate_sub = _nested_subparser(parser, "dictate")
     assert "preferences" in _subparser_choices(dictate_sub)
+
+
+def test_cli_hotkey_set_coerces_ptt_on_modifier_only(tmp_path, monkeypatch) -> None:
+    """CLI 'dictate hotkey set right_cmd --toggle' must still persist
+    push_to_talk=True. Regression test for H1: the command used to write
+    settings directly via ds.replace_section(...), bypassing
+    HotkeyState.apply()'s coercion for modifier-only chords (T3). The
+    Swift flagsMonitor ignores toggle mode for modifier-only anyway, so
+    persisting push_to_talk=false silently misled users.
+    """
+
+    from pathlib import Path
+
+    from agent_doctor import dictate_settings as _ds
+    from agent_doctor import hotkey_install as _hi
+
+    monkeypatch.setattr(_ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(_ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    # Point the plist path at a non-existent file so the sighup branch in
+    # HotkeyState.apply() is skipped (we are not testing daemon plumbing
+    # here, only the persistence contract).
+    monkeypatch.setattr(_hi, "DEFAULT_PLIST_PATH", Path(tmp_path / "noplist"))
+
+    rc = cli.main(["dictate", "hotkey", "set", "right_cmd", "--toggle"])
+    assert rc == 0
+    s = _ds.load()
+    assert s.hotkey.binding == "right_cmd"
+    # Coerced True despite the user passing --toggle, because the chord
+    # is modifier-only.
+    assert s.hotkey.push_to_talk is True

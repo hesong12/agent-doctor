@@ -22,6 +22,7 @@ import os
 import platform
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from . import __version__
@@ -2703,6 +2704,7 @@ def _cmd_dictate_llm_test(args: argparse.Namespace) -> int:
 
 
 def _cmd_dictate_hotkey_install(args: argparse.Namespace) -> int:
+    from . import dictate_settings as _ds
     from . import hotkey_install as _hi
 
     try:
@@ -2710,6 +2712,13 @@ def _cmd_dictate_hotkey_install(args: argparse.Namespace) -> int:
     except _hi.HotkeyInstallError as exc:
         print(f"agent-doctor: {exc}", file=sys.stderr)
         return 2
+    # Persist daemon_enabled=True so the snapshot resolver and the UI
+    # treat the daemon as live after install (otherwise the pill flips
+    # to "paused" immediately).
+    s = _ds.load()
+    _ds.save(
+        _ds.replace_section(s, hotkey=replace(s.hotkey, daemon_enabled=True))
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     print(
         "\nNext: grant 'Input Monitoring' permission.\n"
@@ -2721,26 +2730,31 @@ def _cmd_dictate_hotkey_install(args: argparse.Namespace) -> int:
 
 
 def _cmd_dictate_hotkey_set(args: argparse.Namespace) -> int:
+    # Route through HotkeyState.apply() so coercion (push_to_talk forced True
+    # for modifier-only chords, per T3) + canonicalisation + SIGHUP all live
+    # in one place. Writing directly via ds.replace_section bypasses the
+    # coercion and silently persists push_to_talk=false for modifier-only
+    # bindings like 'right_cmd' — which the Swift flagsMonitor ignores
+    # anyway, so the user's --toggle intent is misleading.
     from . import dictate_settings as _ds
-    from . import hotkey_install as _hi
-    from . import hotkey_parse as _hp
-
-    try:
-        chord = _hp.parse(args.binding)
-    except _hp.HotkeyParseError as exc:
-        print(f"agent-doctor: {exc}", file=sys.stderr)
-        return 2
+    from .ui.preferences import hotkey_tab as _ht
 
     settings = _ds.load()
-    new = _ds.HotkeySettings(
-        binding=chord.canonical(),
-        push_to_talk=settings.hotkey.push_to_talk if args.push_to_talk is None else bool(args.push_to_talk),
-        daemon_enabled=settings.hotkey.daemon_enabled,
+    ptt = (
+        settings.hotkey.push_to_talk
+        if args.push_to_talk is None
+        else bool(args.push_to_talk)
     )
-    _ds.save(_ds.replace_section(settings, hotkey=new))
-    if _hi.DEFAULT_PLIST_PATH.exists():
-        _hi.sighup()
-    print(f"binding: {new.binding}\npush_to_talk: {new.push_to_talk}")
+    try:
+        _ht.HotkeyState(binding=args.binding, push_to_talk=ptt).apply()
+    except _ht.HotkeyStateError as exc:
+        print(f"agent-doctor: {exc}", file=sys.stderr)
+        return 2
+    new_settings = _ds.load()
+    print(
+        f"binding: {new_settings.hotkey.binding}\n"
+        f"push_to_talk: {new_settings.hotkey.push_to_talk}"
+    )
     return 0
 
 
@@ -2775,9 +2789,16 @@ def _cmd_dictate_hotkey_test(args: argparse.Namespace) -> int:
 
 
 def _cmd_dictate_hotkey_uninstall(_args: argparse.Namespace) -> int:
+    from . import dictate_settings as _ds
     from . import hotkey_install as _hi
 
     result = _hi.uninstall()
+    # Persist daemon_enabled=False so subsequent snapshots/UI reads agree
+    # with the on-disk LaunchAgent state.
+    s = _ds.load()
+    _ds.save(
+        _ds.replace_section(s, hotkey=replace(s.hotkey, daemon_enabled=False))
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 

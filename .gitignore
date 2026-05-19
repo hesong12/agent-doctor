@@ -1,6 +1,7 @@
 __pycache__/
 .pytest_cache/
 .venv/
+.venv*/
 *.pyc
 *.egg-info/
 dist/
@@ -9,3 +10,4 @@ build/
 /agent-doctor-report/
 /uv.lock
 .gitnexus
+.superpowers/

@@ -423,6 +423,15 @@ agent-doctor dictate hotkey show
 agent-doctor dictate hotkey uninstall
 ```
 
+The global hotkey now defaults to **Right Command (hold)** — the
+Handy-style "single modifier hold to talk" trigger. Open
+`agent-doctor dictate preferences` → Hotkey tab to pick a different key
+or to switch to a chord (`⌃⌥Space`-style). Modifier-only bindings are
+push-to-talk only; chord bindings can be either push-to-talk or toggle.
+The capture overlay live-previews each key event; press for ≥ 400ms and
+release to commit a single modifier, or press a chord and click "Use
+this chord".
+
 The helper is a ~150 LOC Swift binary compiled with `swiftc` (requires Xcode Command Line Tools). It reads `~/.agent-doctor/dictate.json` on launch and on SIGHUP, so `set` updates take effect without re-installing.
 
 You will be prompted to grant **Input Monitoring** in System Settings -> Privacy & Security the first time the daemon registers an `NSEvent` monitor.

@@ -5,6 +5,8 @@ Public API:
 - ``write_plist(path, helper, agent_doctor_bin)`` — produce the LaunchAgent plist.
 - ``install(agent_doctor_bin=None)`` — build, write plist, launchctl bootstrap.
 - ``sighup()`` — kick the running daemon so it re-reads ``dictate.json``.
+- ``pause()`` — stop the running LaunchAgent without removing the plist.
+- ``resume()`` — re-bootstrap an existing plist (no rebuild).
 - ``uninstall()`` — launchctl bootout + remove the plist.
 
 All shell-outs go through ``_run_launchctl`` so tests can stub them.
@@ -103,12 +105,20 @@ def _domain_target() -> str:
 
 
 def install(*, agent_doctor_bin: Optional[str] = None) -> dict[str, str]:
-    """Build the helper, write the plist, and launchctl-bootstrap it."""
+    """Build the helper, write the plist, and launchctl-bootstrap it.
+
+    If ``agent_doctor_bin`` is not provided and an existing plist is on
+    disk, reuse the value from that plist — preserves a power user's
+    custom ``--agent-doctor-bin`` choice across resume/migration paths.
+    Only falls back to ``which agent-doctor`` when there's no existing
+    plist (i.e. true fresh install).
+    """
 
     helper = DEFAULT_HELPER_PATH
     plist = DEFAULT_PLIST_PATH
     bin_path = (
         agent_doctor_bin
+        or read_agent_doctor_bin()
         or shutil.which("agent-doctor")
         or "/usr/local/bin/agent-doctor"
     )
@@ -140,6 +150,34 @@ def sighup() -> bool:
     return proc.returncode == 0
 
 
+def pause() -> bool:
+    """Stop the running LaunchAgent without removing the plist.
+
+    Returns True iff launchctl bootout reported success. The plist itself is
+    untouched so a subsequent :func:`resume` can re-bootstrap without a full
+    rebuild.
+    """
+
+    proc = _run_launchctl(["launchctl", "bootout", f"{_domain_target()}/{LABEL}"])
+    return proc.returncode == 0
+
+
+def resume(*, agent_doctor_bin: Optional[str] = None) -> dict[str, str]:
+    """Rebuild the helper from current Swift source, write the plist, and
+    bootstrap. Equivalent to :func:`install` — kept as a named alias so the
+    UI/CLI can distinguish "resume from pause" intent from "fresh install"
+    in their messaging.
+
+    Both paths must rebuild so an upgraded user with a stale on-disk helper
+    from a previous version gets the current Swift source compiled (e.g.
+    pre-Handy-UX helpers don't understand ``right_cmd`` and would silently
+    fail). The extra ``swiftc`` cost on resume is multi-second but is worth
+    the correctness guarantee.
+    """
+
+    return install(agent_doctor_bin=agent_doctor_bin)
+
+
 def uninstall() -> dict[str, str]:
     """Bootout the LaunchAgent and remove the plist."""
 
@@ -149,15 +187,45 @@ def uninstall() -> dict[str, str]:
     return {"plist_removed": str(plist)}
 
 
+def read_agent_doctor_bin() -> Optional[str]:
+    """Read the AGENT_DOCTOR_BIN value from the currently-installed plist.
+
+    Returns None if the plist doesn't exist or the value isn't present.
+    Used by migration paths to avoid overwriting a power-user's custom
+    --agent-doctor-bin choice when rebuilding the helper.
+    """
+
+    plist = DEFAULT_PLIST_PATH
+    if not plist.exists():
+        return None
+    try:
+        with plist.open("rb") as fp:
+            payload = plistlib.load(fp)
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    env = payload.get("EnvironmentVariables") or {}
+    bin_path = env.get("AGENT_DOCTOR_BIN")
+    return bin_path if isinstance(bin_path, str) else None
+
+
 def status() -> dict[str, object]:
-    """Report whether the plist, helper, and running agent are present."""
+    """Report whether the plist, helper, and running agent are present.
+
+    Defensive against missing ``launchctl`` (non-macOS, sandboxed env, broken
+    PATH): if the subprocess raises :class:`FileNotFoundError` or other OS
+    errors, treat the agent as "not running" rather than crashing the
+    caller.
+    """
 
     plist_exists = DEFAULT_PLIST_PATH.exists()
     helper_exists = DEFAULT_HELPER_PATH.exists()
-    proc = _run_launchctl(
-        ["launchctl", "print", f"{_domain_target()}/{LABEL}"]
-    )
-    running = proc.returncode == 0
+    try:
+        proc = _run_launchctl(
+            ["launchctl", "print", f"{_domain_target()}/{LABEL}"]
+        )
+        running = proc.returncode == 0
+    except (FileNotFoundError, OSError):
+        running = False
     return {
         "plist": str(DEFAULT_PLIST_PATH),
         "plist_exists": plist_exists,

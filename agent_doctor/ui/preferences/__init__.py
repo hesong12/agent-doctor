@@ -189,82 +189,8 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
 
 
 def _build_hotkey_tab(notebook: Any, ht: Any) -> None:
-    import tkinter as tk
-    from tkinter import ttk, messagebox
-
-    frame = ttk.Frame(notebook, padding=12)
-    notebook.add(frame, text="Hotkey")
-
-    state = ht.HotkeyState.from_settings()
-
-    ttk.Label(frame, text="Binding:").grid(row=0, column=0, sticky="w", pady=4)
-    binding_var = tk.StringVar(value=state.binding)
-    ttk.Entry(frame, textvariable=binding_var, width=32).grid(row=0, column=1, sticky="ew", pady=4)
-
-    def record_chord() -> None:
-        dlg = tk.Toplevel(frame)
-        dlg.title("Record chord")
-        dlg.geometry("320x140")
-        tk.Label(dlg, text="Press the chord you want to use.").pack(pady=20)
-        captured = tk.StringVar(value="(waiting…)")
-        tk.Label(dlg, textvariable=captured, font=("Helvetica", 14, "bold")).pack()
-
-        def on_key(event: Any) -> None:
-            mods = []
-            state_bits = event.state
-            if state_bits & 0x10000:
-                mods.append("cmd")
-            if state_bits & 0x4:
-                mods.append("ctrl")
-            if state_bits & 0x8 or state_bits & 0x10:
-                mods.append("option")
-            if state_bits & 0x1:
-                mods.append("shift")
-            key = event.keysym.lower()
-            if key in ("control_l", "control_r", "shift_l", "shift_r", "alt_l", "alt_r", "meta_l", "meta_r"):
-                return
-            mapping = {"escape": "escape", "return": "return", "tab": "tab", "space": "space"}
-            tok = mapping.get(key, key)
-            chord = "+".join(mods + [tok])
-            captured.set(chord)
-            binding_var.set(chord)
-            dlg.after(400, dlg.destroy)
-
-        dlg.bind("<Key>", on_key)
-        dlg.focus_set()
-
-    ttk.Button(frame, text="Record chord…", command=record_chord).grid(
-        row=0, column=2, sticky="w", padx=6, pady=4
-    )
-
-    ttk.Label(frame, text="Mode:").grid(row=1, column=0, sticky="w", pady=4)
-    ptt_var = tk.BooleanVar(value=state.push_to_talk)
-    ttk.Radiobutton(frame, text="Push-to-talk", variable=ptt_var, value=True).grid(row=1, column=1, sticky="w")
-    ttk.Radiobutton(frame, text="Toggle", variable=ptt_var, value=False).grid(row=2, column=1, sticky="w")
-
-    def commit() -> None:
-        try:
-            ht.HotkeyState(binding=binding_var.get(), push_to_talk=bool(ptt_var.get())).apply()
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("Preferences", str(exc))
-
-    binding_var.trace_add("write", lambda *_: commit())
-    ptt_var.trace_add("write", lambda *_: commit())
-
-    def install() -> None:
-        try:
-            result = ht.install_daemon()
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("Preferences", str(exc))
-            return
-        messagebox.showinfo("Preferences", f"Installed:\n{result}")
-
-    def uninstall() -> None:
-        ht.uninstall_daemon()
-        messagebox.showinfo("Preferences", "Uninstalled.")
-
-    ttk.Button(frame, text="Install daemon", command=install).grid(row=3, column=0, pady=12)
-    ttk.Button(frame, text="Uninstall daemon", command=uninstall).grid(row=3, column=1, pady=12, sticky="w")
+    from . import hotkey_tab_view
+    hotkey_tab_view.build(notebook)
 
 
 def _build_paste_tab(notebook: Any, pat: Any) -> None:
