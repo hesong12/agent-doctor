@@ -17,10 +17,16 @@ from agent_doctor.ui.preferences import hotkey_tab as ht
 from agent_doctor.ui.preferences import permission_probe as pp
 
 _PILL_TEXT = {
-    "listening": ("Listening", "#2a8a4a", "#e5f7eb"),
+    # Aligned with spec §10's 4-state status pill: Active / Paused /
+    # Missing helper / Permission needed. "Daemon stopped" was an
+    # off-spec 5th state that confused users who had granted permission
+    # and seen the daemon process running — it's now "Missing helper",
+    # which matches the actual condition (LaunchAgent plist absent) and
+    # nudges the user to toggle Background daemon on.
+    "listening": ("Active", "#2a8a4a", "#e5f7eb"),
     "permission_needed": ("Permission needed", "#a45c10", "#fef0e0"),
     "paused": ("Paused", "#6a6a6a", "#ececec"),
-    "daemon_stopped": ("Daemon stopped", "#6a6a6a", "#ececec"),
+    "daemon_stopped": ("Missing helper", "#6a6a6a", "#ececec"),
 }
 
 _LOG_PATH = Path("~/Library/Logs/agent-doctor-hotkey.log").expanduser()
@@ -42,8 +48,20 @@ def build(notebook: Any) -> None:
     pill_label.pack(side="right")
 
     ttk.Label(frame, text="Trigger dictation from anywhere on the system.", foreground="#777").pack(
-        anchor="w", pady=(0, 8)
+        anchor="w", pady=(0, 4)
     )
+
+    # --- numbered setup hint (onboarding) --------------------------
+    # Users opening this tab for the first time saw five controls with
+    # no ordering and no idea where to click first. Numbering matches
+    # spec §10's three setup steps so the path from "fresh install" to
+    # "voice transcription works" is visible at a glance.
+    ttk.Label(
+        frame,
+        text="①  Click Record to set a key    ②  Turn on Background daemon    ③  Grant Input Monitoring when asked",
+        foreground="#555",
+        font=("Helvetica", 11),
+    ).pack(anchor="w", pady=(0, 10))
 
     # --- permission banner -----------------------------------------
     # Start hidden — _refresh() packs/forgets based on whether a permission
@@ -57,17 +75,30 @@ def build(notebook: Any) -> None:
     banner_action.pack(side="right", padx=6)
 
     # --- shortcut tile ---------------------------------------------
+    # Layout: keycap on the left, Record + Test buttons on the right,
+    # hint label as its own row under the controls. The previous design
+    # crammed all three (keycap + hint + buttons) into one horizontal
+    # row, which on Aqua often clipped "Record…" down to a tiny
+    # unlabeled square (reported in PR #34 smoke). Width=10 forces the
+    # button to render its label fully even when packed in a narrow
+    # cell.
     tile = ttk.LabelFrame(frame, text="Shortcut")
     tile.pack(fill="x", pady=(0, 12))
+    top_row = ttk.Frame(tile)
+    top_row.pack(fill="x", padx=12, pady=(10, 4))
     binding_var = tk.StringVar(value="")
-    binding_label = tk.Label(tile, textvariable=binding_var, font=("Helvetica", 16))
-    binding_label.pack(side="left", padx=12, pady=10)
-    hint_label = tk.Label(tile, text="Hold to record · click Record to change", foreground="#777")
-    hint_label.pack(side="left", padx=4, pady=10)
-    record_btn = ttk.Button(tile, text="Record…")
-    record_btn.pack(side="right", padx=6, pady=10)
-    test_btn = ttk.Button(tile, text="Test")
-    test_btn.pack(side="right", padx=2, pady=10)
+    binding_label = tk.Label(top_row, textvariable=binding_var, font=("Helvetica", 16))
+    binding_label.pack(side="left")
+    record_btn = ttk.Button(top_row, text="Record key…", width=12)
+    record_btn.pack(side="right", padx=(6, 0))
+    test_btn = ttk.Button(top_row, text="Test", width=8)
+    test_btn.pack(side="right", padx=4)
+    hint_label = tk.Label(
+        tile,
+        text="Hold this key while you speak; release to send.",
+        foreground="#777",
+    )
+    hint_label.pack(anchor="w", padx=12, pady=(0, 10))
 
     # --- mode segmented --------------------------------------------
     mode_frame = ttk.Frame(frame)
@@ -82,7 +113,13 @@ def build(notebook: Any) -> None:
     # --- daemon toggle ---------------------------------------------
     daemon_frame = ttk.Frame(frame)
     daemon_frame.pack(fill="x", pady=(0, 10))
-    ttk.Label(daemon_frame, text="Background daemon").pack(side="left")
+    # "Background daemon" was ambiguous about WHAT runs in the
+    # background. Rename so the user can see at a glance that toggling
+    # this is what makes the hotkey actually fire system-wide.
+    ttk.Label(
+        daemon_frame,
+        text="Run hotkey listener in background",
+    ).pack(side="left")
     daemon_var = tk.BooleanVar(value=False)
     daemon_chk = ttk.Checkbutton(daemon_frame, variable=daemon_var)
     daemon_chk.pack(side="right")
@@ -277,12 +314,18 @@ def build(notebook: Any) -> None:
 
 
 def _render_binding(canonical: str) -> str:
+    # English reading order is "Right Command", not "Command Right" — the
+    # original "⌘ Right" rendering put the qualifier after the symbol,
+    # which read awkwardly when shown as the only label on the keycap
+    # tile (user feedback during PR #34 smoke). Modifier-only tokens now
+    # render as "Right ⌘"; multi-key chord tokens still render symbol
+    # first because they read as the canonical key sequence (⌃ ⌥ Space).
     glyphs = {
         "cmd": "⌘", "ctrl": "⌃", "option": "⌥", "shift": "⇧", "fn": "🌐",
-        "right_cmd": "⌘ Right", "left_cmd": "⌘ Left",
-        "right_option": "⌥ Right", "left_option": "⌥ Left",
-        "right_ctrl": "⌃ Right", "left_ctrl": "⌃ Left",
-        "right_shift": "⇧ Right", "left_shift": "⇧ Left",
+        "right_cmd": "Right ⌘", "left_cmd": "Left ⌘",
+        "right_option": "Right ⌥", "left_option": "Left ⌥",
+        "right_ctrl": "Right ⌃", "left_ctrl": "Left ⌃",
+        "right_shift": "Right ⇧", "left_shift": "Left ⇧",
     }
     if "+" not in canonical:
         return glyphs.get(canonical, canonical)
