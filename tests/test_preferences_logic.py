@@ -634,6 +634,56 @@ def test_list_gemini_models_returns_models_on_success(
     assert models == ["models/gemini-2.5-flash", "models/gemini-2.5-pro"]
 
 
+def test_gemini_models_status_returns_error_string_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: "bad-key")
+
+    def fake_probe(base_url, models_endpoint, *, timeout, api_key=None):
+        return dl.ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=False,
+            models=[],
+            error="HTTP 400 Bad Request",
+        )
+
+    monkeypatch.setattr(dl, "probe", fake_probe)
+    models, error = lt.gemini_models_status(timeout=0.1)
+    assert models == []
+    assert error == "HTTP 400 Bad Request"
+
+
+def test_gemini_models_status_returns_no_error_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: "ok-key")
+
+    def fake_probe(base_url, models_endpoint, *, timeout, api_key=None):
+        return dl.ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=True,
+            models=["models/gemini-2.5-flash"],
+            error=None,
+        )
+
+    monkeypatch.setattr(dl, "probe", fake_probe)
+    models, error = lt.gemini_models_status(timeout=0.1)
+    assert models == ["models/gemini-2.5-flash"]
+    assert error is None
+
+
 def test_list_gemini_models_returns_empty_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

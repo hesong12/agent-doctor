@@ -123,6 +123,21 @@ def list_gemini_models(*, timeout: float = 3.0) -> List[str]:
     return list(result.models)
 
 
+def gemini_models_status(*, timeout: float = 3.0) -> tuple[List[str], Optional[str]]:
+    """Like :func:`list_gemini_models` but also returns the upstream error.
+
+    The LLM tab uses the error string to render a hint (e.g. "API key not
+    valid") next to an empty dropdown so the user understands why no models
+    showed up, instead of staring at a silently empty Combobox.
+    Returns ``(models, error)`` where ``error`` is ``None`` on success.
+    """
+
+    result = probe_one("gemini", timeout=timeout)
+    if not result.reachable:
+        return [], result.error
+    return list(result.models), None
+
+
 def fetch_models_for(provider_id: str, base_url: Optional[str] = None, *, timeout: float = 5.0):
     p = dl.get_provider(provider_id)
     url = base_url or p.base_url

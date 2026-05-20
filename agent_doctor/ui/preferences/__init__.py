@@ -160,16 +160,20 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
     model_combo = ttk.Combobox(txn_frame, textvariable=model_var, values=())
     model_combo.grid(row=2, column=1, sticky="ew", pady=4)
 
+    model_hint_var = tk.StringVar(value="")
+    model_hint = ttk.Label(txn_frame, textvariable=model_hint_var, foreground="#888")
+    model_hint.grid(row=3, column=1, sticky="w", pady=(0, 4))
+
     reuse_var = tk.BooleanVar(value=state.reuse_gemini_key)
     reuse_chk = ttk.Checkbutton(
         txn_frame,
         text="Reuse Gemini API key from image generation",
         variable=reuse_var,
     )
-    reuse_chk.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 4))
+    reuse_chk.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 4))
 
     txn_btn_row = ttk.Frame(txn_frame)
-    txn_btn_row.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+    txn_btn_row.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     # ---- Helpers: refresh status / visibility ----
 
@@ -226,19 +230,26 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
         combobox degrades to a free-form entry). Also clears the model value
         when it no longer fits the new provider (a gemini id picked while on
         lm_studio, or a non-gemini id left over after switching to gemini).
+        Surfaces upstream errors via ``model_hint_var`` so an empty dropdown
+        explains itself instead of failing silently.
         """
 
         provider_id = prov_var.get()
         current = model_var.get().strip()
         if provider_id == "gemini":
-            models = lt.list_gemini_models(timeout=3.0)
+            models, fetch_error = lt.gemini_models_status(timeout=3.0)
             model_combo.configure(values=tuple(models))
             if not lt.looks_like_gemini_model(current):
                 model_var.set(models[0] if models else "")
+            if fetch_error:
+                model_hint_var.set(f"could not fetch Gemini models: {fetch_error}")
+            else:
+                model_hint_var.set("")
         else:
             model_combo.configure(values=())
             if lt.looks_like_gemini_model(current):
                 model_var.set("")
+            model_hint_var.set("")
 
     def on_provider_change(*_args: Any) -> None:
         from agent_doctor import dictate_llm as _dl

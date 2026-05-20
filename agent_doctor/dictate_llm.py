@@ -126,8 +126,12 @@ def probe(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(url, headers=headers, method="GET")
+    context = None
+    if url.lower().startswith("https"):
+        from agent_doctor._https import make_https_context
+        context = make_https_context()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         return ProbeResult(
