@@ -599,6 +599,46 @@ def test_dictate_llm_gemini_provider_shape() -> None:
     assert p.allow_base_url_edit is False
 
 
+def test_llm_state_probe_one_passes_gemini_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """probe_one must pass the stored Gemini key as the Bearer token when
+    the selected provider is ``gemini``, even if probe() can't actually reach
+    the network (the assertion is about *what* is passed, not whether the
+    upstream call succeeds)."""
+
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: "gemini-key-X")
+
+    ds.save(ds.replace_section(
+        ds.default_settings(),
+        llm=ds.LLMSettings(provider_id="gemini"),
+    ))
+
+    captured: dict[str, object] = {}
+
+    def fake_probe(base_url: str, models_endpoint: str, *, timeout: float, api_key=None):
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        return dl.ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=True,
+            models=["gemini-2.5-flash"],
+            error=None,
+        )
+
+    monkeypatch.setattr(dl, "probe", fake_probe)
+    result = lt.probe_one("gemini", timeout=0.1)
+    assert result.reachable is True
+    assert captured["api_key"] == "gemini-key-X"
+    assert captured["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+
+
 def test_llm_state_threads_reuse_gemini_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
