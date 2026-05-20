@@ -36,7 +36,8 @@ def open_window() -> None:
 
     win = tk.Tk()
     win.title("agent-doctor — Preferences")
-    win.geometry("520x440")
+    win.geometry("640x560")
+    win.resizable(True, True)
 
     notebook = ttk.Notebook(win)
     notebook.pack(fill="both", expand=True, padx=12, pady=12)
@@ -107,29 +108,101 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
     import tkinter as tk
     from tkinter import ttk, messagebox
 
+    from agent_doctor import dictate_settings as ds
+    from agent_doctor import settings as gs
+    from agent_doctor.gemini_image import NANO_BANANA_2_MODEL
+
     frame = ttk.Frame(notebook, padding=12)
+    frame.columnconfigure(0, weight=1)
     notebook.add(frame, text="LLM")
 
     state = lt.LLMState.from_settings()
 
-    ttk.Label(frame, text="Provider:").grid(row=0, column=0, sticky="w", pady=4)
+    # ---- Image generation section ----
+    img_frame = ttk.LabelFrame(frame, text="Image generation (Gemini only)", padding=10)
+    img_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+    img_frame.columnconfigure(1, weight=1)
+
+    ttk.Label(img_frame, text="Provider:").grid(row=0, column=0, sticky="w", pady=2)
+    ttk.Label(img_frame, text="Gemini (Nano Banana 2)").grid(row=0, column=1, sticky="w", pady=2)
+
+    ttk.Label(img_frame, text="Model:").grid(row=1, column=0, sticky="w", pady=2)
+    ttk.Label(img_frame, text=NANO_BANANA_2_MODEL).grid(row=1, column=1, sticky="w", pady=2)
+
+    ttk.Label(img_frame, text="API key:").grid(row=2, column=0, sticky="w", pady=2)
+    api_status_var = tk.StringVar()
+    ttk.Label(img_frame, textvariable=api_status_var).grid(row=2, column=1, sticky="w", pady=2)
+
+    btn_row = ttk.Frame(img_frame)
+    btn_row.grid(row=3, column=1, sticky="w", pady=(4, 0))
+
+    # ---- Transcription section ----
+    txn_frame = ttk.LabelFrame(frame, text="Transcribed message handling", padding=10)
+    txn_frame.grid(row=1, column=0, sticky="ew")
+    txn_frame.columnconfigure(1, weight=1)
+
+    ttk.Label(txn_frame, text="Provider:").grid(row=0, column=0, sticky="w", pady=4)
     prov_var = tk.StringVar(value=state.provider_id)
     ttk.Combobox(
-        frame, textvariable=prov_var,
-        values=["lm_studio", "ollama", "custom"], state="readonly", width=14,
+        txn_frame,
+        textvariable=prov_var,
+        values=["lm_studio", "ollama", "custom", "gemini"],
+        state="readonly",
+        width=18,
     ).grid(row=0, column=1, sticky="w", pady=4)
 
-    ttk.Label(frame, text="Base URL:").grid(row=1, column=0, sticky="w", pady=4)
+    ttk.Label(txn_frame, text="Base URL:").grid(row=1, column=0, sticky="w", pady=4)
     url_var = tk.StringVar(value=state.base_url)
-    url_entry = ttk.Entry(frame, textvariable=url_var, width=42)
-    url_entry.grid(row=1, column=1, sticky="ew", pady=4)
+    ttk.Entry(txn_frame, textvariable=url_var).grid(row=1, column=1, sticky="ew", pady=4)
 
-    ttk.Label(frame, text="Model:").grid(row=2, column=0, sticky="w", pady=4)
+    ttk.Label(txn_frame, text="Model:").grid(row=2, column=0, sticky="w", pady=4)
     model_var = tk.StringVar(value=state.model or "")
-    model_entry = ttk.Entry(frame, textvariable=model_var, width=42)
-    model_entry.grid(row=2, column=1, sticky="ew", pady=4)
+    ttk.Entry(txn_frame, textvariable=model_var).grid(row=2, column=1, sticky="ew", pady=4)
 
-    def commit(_event: Any = None) -> None:
+    reuse_var = tk.BooleanVar(value=state.reuse_gemini_key)
+    reuse_chk = ttk.Checkbutton(
+        txn_frame,
+        text="Reuse Gemini API key from image generation",
+        variable=reuse_var,
+    )
+    reuse_chk.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 4))
+
+    txn_btn_row = ttk.Frame(txn_frame)
+    txn_btn_row.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+    # ---- Helpers: refresh status / visibility ----
+
+    def render_key_status() -> str:
+        status = gs.settings_status()
+        if not status.configured:
+            return "not configured"
+        if status.backend is gs.Backend.KEYRING:
+            return "configured (Keychain)"
+        if status.backend is gs.Backend.FILE:
+            return "configured (file)"
+        return "configured"
+
+    def key_is_configured() -> bool:
+        return gs.settings_status().configured
+
+    def refresh_visibility(_event: Any = None) -> None:
+        api_status_var.set(render_key_status())
+        # Hide the reuse checkbox when provider == "gemini" (redundant), grey
+        # it when provider != gemini AND no key is configured, otherwise show
+        # and enable.
+        if prov_var.get() == "gemini":
+            reuse_chk.grid_remove()
+        else:
+            reuse_chk.grid()
+            if key_is_configured():
+                reuse_chk.state(["!disabled"])
+            else:
+                reuse_chk.state(["disabled"])
+                reuse_var.set(False)
+
+    # ---- Commit on edit (txn section) ----
+
+    def commit_txn(_event: Any = None) -> None:
         new_state = lt.LLMState(
             provider_id=prov_var.get(),
             base_url=url_var.get(),
@@ -137,27 +210,85 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
             api_key=None,
             timeout_s=state.timeout_s,
             optimize_prompt=state.optimize_prompt,
+            reuse_gemini_key=bool(reuse_var.get()),
         )
         try:
             new_state.apply()
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Preferences", str(exc))
 
-    prov_var.trace_add("write", lambda *_: commit())
-    url_var.trace_add("write", lambda *_: commit())
-    model_var.trace_add("write", lambda *_: commit())
+    def on_provider_change(*_args: Any) -> None:
+        from agent_doctor import dictate_llm as _dl
+        try:
+            p = _dl.get_provider(prov_var.get())
+        except _dl.DictateLLMError:
+            return
+        if not p.allow_base_url_edit:
+            url_var.set(p.base_url)
+        refresh_visibility()
+        commit_txn()
+
+    prov_var.trace_add("write", lambda *_: on_provider_change())
+    url_var.trace_add("write", lambda *_: commit_txn())
+    model_var.trace_add("write", lambda *_: commit_txn())
+    reuse_var.trace_add("write", lambda *_: commit_txn())
+
+    # ---- Image-section actions ----
+
+    def open_set_key_dialog() -> None:
+        dlg = tk.Toplevel(frame)
+        dlg.title("Set Gemini API key")
+        dlg.geometry("420x140")
+        dlg.transient(frame.winfo_toplevel())
+        dlg.grab_set()
+        ttk.Label(dlg, text="Gemini API key:").pack(anchor="w", padx=12, pady=(12, 4))
+        key_var = tk.StringVar()
+        entry = ttk.Entry(dlg, textvariable=key_var, show="*", width=48)
+        entry.pack(fill="x", padx=12)
+        entry.focus_set()
+
+        def save_and_close() -> None:
+            value = key_var.get()
+            if not value.strip():
+                messagebox.showerror("Preferences", "API key cannot be empty.")
+                return
+            try:
+                gs.store_gemini_key(value)
+            except gs.SettingsError as exc:
+                messagebox.showerror("Preferences", str(exc))
+                return
+            dlg.destroy()
+            refresh_visibility()
+
+        btns = ttk.Frame(dlg)
+        btns.pack(fill="x", padx=12, pady=12)
+        ttk.Button(btns, text="Save", command=save_and_close).pack(side="right")
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="right", padx=(0, 6))
+        dlg.bind("<Return>", lambda _e: save_and_close())
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+
+    def clear_key() -> None:
+        if not key_is_configured():
+            return
+        if not messagebox.askyesno(
+            "Preferences",
+            "Clear the stored Gemini API key from all backends?",
+        ):
+            return
+        gs.clear_gemini_key()
+        refresh_visibility()
+
+    ttk.Button(btn_row, text="Set…", command=open_set_key_dialog).pack(side="left")
+    ttk.Button(btn_row, text="Clear", command=clear_key).pack(side="left", padx=(6, 0))
+
+    # ---- Txn-section actions ----
 
     def test_connection() -> None:
-        result = lt.probe_providers(timeout=3.0)
-        row = next((r for r in result if r.provider_id == prov_var.get()), None)
-        if row and row.reachable:
+        row = lt.probe_one(prov_var.get(), timeout=3.0)
+        if row.reachable:
             messagebox.showinfo("Preferences", f"OK — {len(row.models)} model(s)")
         else:
-            messagebox.showerror("Preferences", f"unreachable: {row.error if row else 'no row'}")
-
-    ttk.Button(frame, text="Test connection", command=test_connection).grid(
-        row=3, column=1, sticky="e", pady=8
-    )
+            messagebox.showerror("Preferences", f"unreachable: {row.error or 'no row'}")
 
     def edit_prompt() -> None:
         dlg = tk.Toplevel(frame)
@@ -168,24 +299,28 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
         text.pack(fill="both", expand=True, padx=10, pady=10)
 
         def save_and_close() -> None:
-            from agent_doctor import dictate_settings as ds_local
-            s = ds_local.load()
-            new = ds_local.LLMSettings(
+            s = ds.load()
+            new = ds.LLMSettings(
                 provider_id=s.llm.provider_id,
                 base_url=s.llm.base_url,
                 model=s.llm.model,
                 api_key_ref=s.llm.api_key_ref,
                 timeout_s=s.llm.timeout_s,
                 optimize_prompt=text.get("1.0", "end-1c") or None,
+                reuse_gemini_key=s.llm.reuse_gemini_key,
             )
-            ds_local.save(ds_local.replace_section(s, llm=new))
+            ds.save(ds.replace_section(s, llm=new))
             dlg.destroy()
 
         ttk.Button(dlg, text="Save", command=save_and_close).pack(pady=6)
 
-    ttk.Button(frame, text="Edit optimize prompt…", command=edit_prompt).grid(
-        row=4, column=1, sticky="e", pady=4
+    ttk.Button(txn_btn_row, text="Test connection", command=test_connection).pack(side="left")
+    ttk.Button(txn_btn_row, text="Edit optimize prompt…", command=edit_prompt).pack(
+        side="left", padx=(6, 0)
     )
+
+    # Initial paint.
+    refresh_visibility()
 
 
 def _build_hotkey_tab(notebook: Any, ht: Any) -> None:
