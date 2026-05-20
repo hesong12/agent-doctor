@@ -599,6 +599,64 @@ def test_dictate_llm_gemini_provider_shape() -> None:
     assert p.allow_base_url_edit is False
 
 
+def test_looks_like_gemini_model() -> None:
+    assert lt.looks_like_gemini_model("gemini-2.5-flash") is True
+    assert lt.looks_like_gemini_model("gemini-2.5-pro") is True
+    assert lt.looks_like_gemini_model("models/gemini-2.0-flash") is True
+    assert lt.looks_like_gemini_model("GEMINI-2.5-FLASH") is True  # case-insensitive
+    assert lt.looks_like_gemini_model("qwen3.6-35b") is False
+    assert lt.looks_like_gemini_model("llama3.1:8b") is False
+    assert lt.looks_like_gemini_model("") is False
+    assert lt.looks_like_gemini_model(None) is False
+
+
+def test_list_gemini_models_returns_models_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: "fake-key")
+
+    def fake_probe(base_url, models_endpoint, *, timeout, api_key=None):
+        return dl.ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=True,
+            models=["models/gemini-2.5-flash", "models/gemini-2.5-pro"],
+            error=None,
+        )
+
+    monkeypatch.setattr(dl, "probe", fake_probe)
+    models = lt.list_gemini_models(timeout=0.1)
+    assert models == ["models/gemini-2.5-flash", "models/gemini-2.5-pro"]
+
+
+def test_list_gemini_models_returns_empty_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: None)
+
+    def fake_probe(base_url, models_endpoint, *, timeout, api_key=None):
+        return dl.ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=False,
+            models=[],
+            error="HTTP 401 Unauthorized",
+        )
+
+    monkeypatch.setattr(dl, "probe", fake_probe)
+    assert lt.list_gemini_models(timeout=0.1) == []
+
+
 def test_llm_state_probe_one_passes_gemini_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

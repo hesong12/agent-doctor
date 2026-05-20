@@ -157,7 +157,8 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
 
     ttk.Label(txn_frame, text="Model:").grid(row=2, column=0, sticky="w", pady=4)
     model_var = tk.StringVar(value=state.model or "")
-    ttk.Entry(txn_frame, textvariable=model_var).grid(row=2, column=1, sticky="ew", pady=4)
+    model_combo = ttk.Combobox(txn_frame, textvariable=model_var, values=())
+    model_combo.grid(row=2, column=1, sticky="ew", pady=4)
 
     reuse_var = tk.BooleanVar(value=state.reuse_gemini_key)
     reuse_chk = ttk.Checkbutton(
@@ -217,6 +218,28 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Preferences", str(exc))
 
+    def refresh_model_choices() -> None:
+        """Populate the Model combobox based on the current provider.
+
+        For ``gemini``: synchronously probe Gemini's ``/models`` endpoint and
+        list whatever ids come back. For everything else: empty list (the
+        combobox degrades to a free-form entry). Also clears the model value
+        when it no longer fits the new provider (a gemini id picked while on
+        lm_studio, or a non-gemini id left over after switching to gemini).
+        """
+
+        provider_id = prov_var.get()
+        current = model_var.get().strip()
+        if provider_id == "gemini":
+            models = lt.list_gemini_models(timeout=3.0)
+            model_combo.configure(values=tuple(models))
+            if not lt.looks_like_gemini_model(current):
+                model_var.set(models[0] if models else "")
+        else:
+            model_combo.configure(values=())
+            if lt.looks_like_gemini_model(current):
+                model_var.set("")
+
     def on_provider_change(*_args: Any) -> None:
         from agent_doctor import dictate_llm as _dl
         try:
@@ -226,6 +249,7 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
         if not p.allow_base_url_edit:
             url_var.set(p.base_url)
         refresh_visibility()
+        refresh_model_choices()
         commit_txn()
 
     prov_var.trace_add("write", lambda *_: on_provider_change())
@@ -321,6 +345,7 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
 
     # Initial paint.
     refresh_visibility()
+    refresh_model_choices()
 
 
 def _build_hotkey_tab(notebook: Any, ht: Any) -> None:

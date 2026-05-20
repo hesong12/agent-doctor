@@ -92,6 +92,37 @@ def probe_one(provider_id: str, *, timeout: float = 5.0) -> dl.ProbeResult:
     )
 
 
+def looks_like_gemini_model(model_id: Optional[str]) -> bool:
+    """Heuristic: True if ``model_id`` looks like a Gemini text-model id.
+
+    Used by the LLM tab to decide whether to keep or clear the current model
+    selection when the user switches the provider between gemini and a
+    non-gemini provider. We treat both bare ``gemini-…`` and the API-style
+    ``models/gemini-…`` as valid since Gemini's OpenAI-compatible ``/models``
+    endpoint returns the latter form.
+    """
+
+    if not model_id:
+        return False
+    m = model_id.strip().lower()
+    return m.startswith("gemini-") or m.startswith("models/gemini-")
+
+
+def list_gemini_models(*, timeout: float = 3.0) -> List[str]:
+    """Return Gemini's available text models, or an empty list on failure.
+
+    Wraps :func:`probe_one` for the ``gemini`` provider so the LLM tab can
+    populate its Model combobox dynamically. Failures (no key configured,
+    network unreachable, 401 from upstream) collapse to ``[]`` — the caller
+    decides how to render an empty dropdown.
+    """
+
+    result = probe_one("gemini", timeout=timeout)
+    if not result.reachable:
+        return []
+    return list(result.models)
+
+
 def fetch_models_for(provider_id: str, base_url: Optional[str] = None, *, timeout: float = 5.0):
     p = dl.get_provider(provider_id)
     url = base_url or p.base_url
