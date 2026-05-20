@@ -121,7 +121,7 @@ def test_llm_state_probe_returns_rows() -> None:
 
     rows = lt.probe_providers(timeout=0.5)
     ids = {r.provider_id for r in rows}
-    assert ids == {"lm_studio", "ollama", "custom"}
+    assert ids == {"lm_studio", "ollama", "custom", "gemini"}
 
 
 def test_hotkey_state_apply_persists_and_validates(
@@ -582,6 +582,21 @@ def test_llm_settings_reuse_gemini_key_round_trip(
     ds.save(s)
     loaded = ds.load()
     assert loaded.llm.reuse_gemini_key is True
+
+
+def test_dictate_llm_providers_includes_gemini() -> None:
+    from agent_doctor import dictate_llm as dl
+    ids = {p.id for p in dl.providers()}
+    assert ids == {"lm_studio", "ollama", "custom", "gemini"}
+
+
+def test_dictate_llm_gemini_provider_shape() -> None:
+    from agent_doctor import dictate_llm as dl
+    p = dl.get_provider("gemini")
+    assert p.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert p.models_endpoint == "/models"
+    assert p.requires_api_key is True
+    assert p.allow_base_url_edit is False
 
 
 def test_llm_settings_legacy_json_without_field_defaults_false(

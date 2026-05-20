@@ -70,6 +70,14 @@ _PROVIDERS: tuple[Provider, ...] = (
         requires_api_key=False,
         allow_base_url_edit=True,
     ),
+    Provider(
+        id="gemini",
+        label="Gemini (OpenAI-compatible)",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        models_endpoint="/models",
+        requires_api_key=True,
+        allow_base_url_edit=False,
+    ),
 )
 
 
