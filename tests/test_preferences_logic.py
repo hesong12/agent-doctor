@@ -560,6 +560,54 @@ def test_render_binding_chord_keeps_symbol_first_order() -> None:
     assert htv._render_binding("ctrl+option+space") == "⌃ ⌥ Space"
 
 
+def test_llm_settings_reuse_gemini_key_default_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default value must be False so legacy dictate.json files load unchanged."""
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    s = ds.default_settings()
+    assert s.llm.reuse_gemini_key is False
+
+
+def test_llm_settings_reuse_gemini_key_round_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    s = ds.replace_section(
+        ds.default_settings(),
+        llm=ds.LLMSettings(reuse_gemini_key=True),
+    )
+    ds.save(s)
+    loaded = ds.load()
+    assert loaded.llm.reuse_gemini_key is True
+
+
+def test_llm_settings_legacy_json_without_field_defaults_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-existing dictate.json with no reuse_gemini_key key must load cleanly."""
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    import json as _json
+    legacy_payload = {
+        "version": 1,
+        "llm": {
+            "provider_id": "lm_studio",
+            "base_url": "http://localhost:1234/v1",
+            "model": "qwen3",
+            "api_key_ref": None,
+            "timeout_s": 30,
+            "optimize_prompt": None,
+        },
+    }
+    (tmp_path / "dictate.json").write_text(_json.dumps(legacy_payload), encoding="utf-8")
+    loaded = ds.load()
+    assert loaded.llm.reuse_gemini_key is False
+    assert loaded.llm.provider_id == "lm_studio"
+
+
 def test_pill_text_aligns_with_spec_four_states() -> None:
     """Spec §10 defines exactly four pill states: Active / Paused /
     Missing helper / Permission needed. The original implementation

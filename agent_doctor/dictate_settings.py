@@ -49,6 +49,7 @@ class LLMSettings:
     api_key_ref: Optional[str] = None
     timeout_s: int = 30
     optimize_prompt: Optional[str] = None
+    reuse_gemini_key: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,7 @@ def _to_dict(settings: DictateSettings) -> dict[str, Any]:
             "api_key_ref": settings.llm.api_key_ref,
             "timeout_s": settings.llm.timeout_s,
             "optimize_prompt": settings.llm.optimize_prompt,
+            "reuse_gemini_key": settings.llm.reuse_gemini_key,
         },
         "hotkey": {
             "binding": settings.hotkey.binding,
@@ -159,6 +161,7 @@ def _from_dict(payload: dict[str, Any]) -> DictateSettings:
             api_key_ref=llm_d.get("api_key_ref"),
             timeout_s=timeout_s,
             optimize_prompt=llm_d.get("optimize_prompt"),
+            reuse_gemini_key=bool(llm_d.get("reuse_gemini_key", False)),
         ),
         hotkey=HotkeySettings(
             binding=h.get("binding", "right_cmd"),
