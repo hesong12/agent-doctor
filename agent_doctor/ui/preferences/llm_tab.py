@@ -1,4 +1,4 @@
-"""LLM tab logic (provider, base_url, model, optimize prompt)."""
+"""LLM tab logic (provider, base_url, model, optimize prompt, gemini reuse)."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ class LLMState:
     api_key: Optional[str]
     timeout_s: int
     optimize_prompt: Optional[str]
+    reuse_gemini_key: bool = False
 
     @classmethod
     def from_settings(cls) -> "LLMState":
@@ -32,6 +33,7 @@ class LLMState:
             api_key=None,
             timeout_s=s.llm.timeout_s,
             optimize_prompt=s.llm.optimize_prompt,
+            reuse_gemini_key=s.llm.reuse_gemini_key,
         )
 
     def apply(self) -> None:
@@ -51,12 +53,43 @@ class LLMState:
             api_key_ref=s.llm.api_key_ref,
             timeout_s=int(self.timeout_s),
             optimize_prompt=self.optimize_prompt,
+            reuse_gemini_key=bool(self.reuse_gemini_key),
         )
         ds.save(ds.replace_section(s, llm=new))
 
 
 def probe_providers(timeout: float = 5.0) -> List[dl.ProbeResult]:
     return dl.probe_all(timeout=timeout)
+
+
+def probe_one(provider_id: str, *, timeout: float = 5.0) -> dl.ProbeResult:
+    """Probe a single provider, resolving the API key the same way ``llm_config`` does.
+
+    Used by the "Test connection" button in the LLM tab so the gemini provider
+    (and the reuse-checkbox path) gets the stored Gemini key as a Bearer token
+    instead of always probing anonymously.
+    """
+
+    from agent_doctor import settings as gs
+
+    s = ds.load()
+    provider = dl.get_provider(provider_id)
+    api_key: Optional[str] = None
+    if provider_id == "gemini" or s.llm.reuse_gemini_key:
+        api_key = gs.load_gemini_key()
+    result = dl.probe(
+        provider.base_url,
+        provider.models_endpoint,
+        timeout=timeout,
+        api_key=api_key,
+    )
+    return dl.ProbeResult(
+        provider_id=provider_id,
+        base_url=result.base_url,
+        reachable=result.reachable,
+        models=result.models,
+        error=result.error,
+    )
 
 
 def fetch_models_for(provider_id: str, base_url: Optional[str] = None, *, timeout: float = 5.0):

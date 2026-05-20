@@ -599,6 +599,66 @@ def test_dictate_llm_gemini_provider_shape() -> None:
     assert p.allow_base_url_edit is False
 
 
+def test_llm_state_threads_reuse_gemini_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+
+    state = lt.LLMState(
+        provider_id="custom",
+        base_url="http://localhost:8080/v1",
+        model="qwen3",
+        api_key=None,
+        timeout_s=30,
+        optimize_prompt=None,
+        reuse_gemini_key=True,
+    )
+    state.apply()
+    loaded = ds.load()
+    assert loaded.llm.reuse_gemini_key is True
+
+    state2 = lt.LLMState.from_settings()
+    assert state2.reuse_gemini_key is True
+
+
+def test_llm_state_gemini_provider_accepts_default_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+
+    state = lt.LLMState(
+        provider_id="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        model="gemini-2.5-flash",
+        api_key=None,
+        timeout_s=30,
+        optimize_prompt=None,
+        reuse_gemini_key=False,
+    )
+    state.apply()
+    loaded = ds.load()
+    assert loaded.llm.provider_id == "gemini"
+
+
+def test_llm_state_gemini_provider_rejects_custom_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    with pytest.raises(lt.LLMStateError, match="custom"):
+        lt.LLMState(
+            provider_id="gemini",
+            base_url="https://example.com/v1",
+            model=None,
+            api_key=None,
+            timeout_s=30,
+            optimize_prompt=None,
+            reuse_gemini_key=False,
+        ).apply()
+
+
 def test_llm_config_uses_gemini_key_when_provider_is_gemini(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
