@@ -19,6 +19,7 @@ on:
 
 permissions:
   pull-requests: read
+  contents: read
 
 jobs:
   check-primary:
@@ -124,6 +125,59 @@ jobs:
               failed = true;
             } else {
               core.info(`harness-evidence: PASS (${hasEvidence ? 'evidence' : 'bypass'}) ✓`);
+            }
+
+
+            // ── 3. UI-diff conditional check (harness v0.3.1, 2026-05-20) ───────
+            // When a PR diff touches frontend files (tsx/jsx/vue/svelte/astro/
+            // route manifests), require evidence of UI verification in the PR
+            // body. We intentionally do NOT execute tests here — required check
+            // must stay safe / read-only (see docs/operations/ci-self-hosted-fallback.md
+            // footgun #6). The acceptable evidence is one of:
+            //   • UI_PROBE: <name>           — declares UI-layer probe was run
+            //   • UI_JOURNEYS:               — links to job-contract quality.ui_journeys
+            //   • dev-autopilot verify --url — verify gate was invoked
+            //   • coverage.by_layer.ui       — coverage.json reports ui-layer pass
+            //   • ui-bypass: <reason>        — explicit override (Song-approved scope only)
+            try {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner, repo, pull_number: prNumber, per_page: 100,
+              });
+              // FRONTEND_RE: extension OR routes/pages/app directory OR a route
+              // manifest filename (route-manifest, routes-manifest, route_manifest,
+              // routes). Includes deleted files — removing a page or route file
+              // also changes user-visible behavior and must trigger the gate.
+              const FRONTEND_RE = /\.(tsx|jsx|vue|svelte|astro)$|(^|\/)(routes|pages|app)\/.+\.(ts|js|mjs|cjs)$|(^|\/)(routes?|route|routes?[-_]manifest)\.(json|yml|yaml|ts|js)$/i;
+              const touched = files.filter(f => FRONTEND_RE.test(f.filename));
+              if (touched.length === 0) {
+                core.info('ui-conditional: no frontend files touched ✓');
+              } else {
+                const UI_EVIDENCE = [
+                  'UI_PROBE:', 'UI_JOURNEYS:', 'dev-autopilot verify --url',
+                  'coverage.by_layer.ui', 'by_layer.ui',
+                ];
+                const UI_BYPASS = ['ui-bypass:', 'harness-bypass:', '--no-contract'];
+                const hasUiEvidence = UI_EVIDENCE.some(m => body.includes(m));
+                const hasUiBypass   = UI_BYPASS.some(m => body.includes(m));
+                if (!hasUiEvidence && !hasUiBypass) {
+                  const sample = touched.slice(0, 5).map(f => `  • ${f.filename} (${f.status})`).join('\n');
+                  core.error([
+                    `ui-conditional: PR touches ${touched.length} frontend file(s) but PR body has no UI evidence.`,
+                    sample,
+                    'Add one of (in PR body):',
+                    '  UI_PROBE: <story-id>            — name of the UI-layer probe exercised',
+                    '  UI_JOURNEYS: <count or list>    — refers to job-contract quality.ui_journeys',
+                    '  dev-autopilot verify --url …    — verify gate output attached',
+                    '  coverage.by_layer.ui >= 1       — quote from coverage.json',
+                    'Or bypass with:  ui-bypass: <reason>',
+                  ].join('\n'));
+                  failed = true;
+                } else {
+                  core.info(`ui-conditional: PASS (${hasUiEvidence ? 'evidence' : 'bypass'}, ${touched.length} frontend file(s)) ✓`);
+                }
+              }
+            } catch (e) {
+              core.warning(`ui-conditional: could not enumerate PR files: ${e.message} — skipping`);
             }
 
             if (failed) {
@@ -234,6 +288,59 @@ jobs:
               failed = true;
             } else {
               core.info(`harness-evidence: PASS (${hasEvidence ? 'evidence' : 'bypass'}) ✓`);
+            }
+
+
+            // ── 3. UI-diff conditional check (harness v0.3.1, 2026-05-20) ───────
+            // When a PR diff touches frontend files (tsx/jsx/vue/svelte/astro/
+            // route manifests), require evidence of UI verification in the PR
+            // body. We intentionally do NOT execute tests here — required check
+            // must stay safe / read-only (see docs/operations/ci-self-hosted-fallback.md
+            // footgun #6). The acceptable evidence is one of:
+            //   • UI_PROBE: <name>           — declares UI-layer probe was run
+            //   • UI_JOURNEYS:               — links to job-contract quality.ui_journeys
+            //   • dev-autopilot verify --url — verify gate was invoked
+            //   • coverage.by_layer.ui       — coverage.json reports ui-layer pass
+            //   • ui-bypass: <reason>        — explicit override (Song-approved scope only)
+            try {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner, repo, pull_number: prNumber, per_page: 100,
+              });
+              // FRONTEND_RE: extension OR routes/pages/app directory OR a route
+              // manifest filename (route-manifest, routes-manifest, route_manifest,
+              // routes). Includes deleted files — removing a page or route file
+              // also changes user-visible behavior and must trigger the gate.
+              const FRONTEND_RE = /\.(tsx|jsx|vue|svelte|astro)$|(^|\/)(routes|pages|app)\/.+\.(ts|js|mjs|cjs)$|(^|\/)(routes?|route|routes?[-_]manifest)\.(json|yml|yaml|ts|js)$/i;
+              const touched = files.filter(f => FRONTEND_RE.test(f.filename));
+              if (touched.length === 0) {
+                core.info('ui-conditional: no frontend files touched ✓');
+              } else {
+                const UI_EVIDENCE = [
+                  'UI_PROBE:', 'UI_JOURNEYS:', 'dev-autopilot verify --url',
+                  'coverage.by_layer.ui', 'by_layer.ui',
+                ];
+                const UI_BYPASS = ['ui-bypass:', 'harness-bypass:', '--no-contract'];
+                const hasUiEvidence = UI_EVIDENCE.some(m => body.includes(m));
+                const hasUiBypass   = UI_BYPASS.some(m => body.includes(m));
+                if (!hasUiEvidence && !hasUiBypass) {
+                  const sample = touched.slice(0, 5).map(f => `  • ${f.filename} (${f.status})`).join('\n');
+                  core.error([
+                    `ui-conditional: PR touches ${touched.length} frontend file(s) but PR body has no UI evidence.`,
+                    sample,
+                    'Add one of (in PR body):',
+                    '  UI_PROBE: <story-id>            — name of the UI-layer probe exercised',
+                    '  UI_JOURNEYS: <count or list>    — refers to job-contract quality.ui_journeys',
+                    '  dev-autopilot verify --url …    — verify gate output attached',
+                    '  coverage.by_layer.ui >= 1       — quote from coverage.json',
+                    'Or bypass with:  ui-bypass: <reason>',
+                  ].join('\n'));
+                  failed = true;
+                } else {
+                  core.info(`ui-conditional: PASS (${hasUiEvidence ? 'evidence' : 'bypass'}, ${touched.length} frontend file(s)) ✓`);
+                }
+              }
+            } catch (e) {
+              core.warning(`ui-conditional: could not enumerate PR files: ${e.message} — skipping`);
             }
 
             if (failed) {
