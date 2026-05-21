@@ -283,10 +283,25 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
         entry.focus_set()
 
         def save_and_close() -> None:
-            value = key_var.get()
-            if not value.strip():
+            value = key_var.get().strip()
+            if not value:
                 messagebox.showerror("Preferences", "API key cannot be empty.")
                 return
+            # Defensive: a common paste accident on macOS Tk Entry produces a
+            # doubled key (the same string concatenated to itself). Google
+            # then rejects it with "API_KEY_INVALID". Detect and offer the
+            # halved version before saving so the user doesn't spend an hour
+            # blaming the harness.
+            half = len(value) // 2
+            if len(value) % 2 == 0 and half > 0 and value[:half] == value[half:]:
+                if messagebox.askyesno(
+                    "Preferences",
+                    "The pasted key looks doubled (the same value concatenated "
+                    "to itself). Save just one copy?",
+                ):
+                    value = value[:half]
+                else:
+                    return
             try:
                 gs.store_gemini_key(value)
             except gs.SettingsError as exc:
@@ -294,6 +309,7 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
                 return
             dlg.destroy()
             refresh_visibility()
+            refresh_model_choices()
 
         btns = ttk.Frame(dlg)
         btns.pack(fill="x", padx=12, pady=12)
@@ -312,6 +328,7 @@ def _build_llm_tab(notebook: Any, lt: Any) -> None:
             return
         gs.clear_gemini_key()
         refresh_visibility()
+        refresh_model_choices()
 
     ttk.Button(btn_row, text="Set…", command=open_set_key_dialog).pack(side="left")
     ttk.Button(btn_row, text="Clear", command=clear_key).pack(side="left", padx=(6, 0))
