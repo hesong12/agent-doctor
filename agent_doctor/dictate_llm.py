@@ -70,6 +70,14 @@ _PROVIDERS: tuple[Provider, ...] = (
         requires_api_key=False,
         allow_base_url_edit=True,
     ),
+    Provider(
+        id="gemini",
+        label="Gemini (OpenAI-compatible)",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        models_endpoint="/models",
+        requires_api_key=True,
+        allow_base_url_edit=False,
+    ),
 )
 
 
@@ -118,8 +126,12 @@ def probe(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(url, headers=headers, method="GET")
+    context = None
+    if url.lower().startswith("https"):
+        from agent_doctor._https import make_https_context
+        context = make_https_context()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         return ProbeResult(
@@ -215,13 +227,23 @@ def llm_config(
         (settings.llm.base_url or provider.base_url).rstrip("/") + "/chat/completions"
     )
     settings_model = settings.llm.model
-    settings_key = None  # api_key_ref handling deferred to Phase 6; settings does not store secrets
 
     resolved_url = url or os.environ.get(ENV_LLM_URL) or settings_url
     resolved_model = (
         model or os.environ.get(ENV_LLM_MODEL) or settings_model or "default"
     )
-    resolved_key = api_key or os.environ.get(ENV_LLM_KEY) or settings_key
+
+    # api_key precedence: explicit kwarg > env > gemini-reuse fallback > None.
+    # The gemini-reuse fallback fires when the user picked the gemini provider
+    # (its endpoint requires a key) or ticked the "reuse Gemini API key"
+    # checkbox while on another provider. Local import keeps the
+    # dictate_llm <-> settings module pair acyclic.
+    resolved_key: Optional[str] = api_key or os.environ.get(ENV_LLM_KEY)
+    if resolved_key is None and (
+        settings.llm.provider_id == "gemini" or settings.llm.reuse_gemini_key
+    ):
+        from . import settings as _gs
+        resolved_key = _gs.load_gemini_key()
 
     return LLMConfig(
         url=resolved_url,

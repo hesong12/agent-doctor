@@ -786,8 +786,12 @@ def _default_llm_call(cfg: LLMConfig, messages: List[Dict[str, str]]) -> str:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
 
     request = urllib.request.Request(cfg.url, data=body, headers=headers, method="POST")
+    context = None
+    if cfg.url.lower().startswith("https"):
+        from agent_doctor._https import make_https_context
+        context = make_https_context()
     try:
-        with urllib.request.urlopen(request, timeout=cfg.timeout) as response:
+        with urllib.request.urlopen(request, timeout=cfg.timeout, context=context) as response:
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         # Surface the HTTP status and the response body so users can diagnose

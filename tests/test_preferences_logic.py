@@ -121,7 +121,7 @@ def test_llm_state_probe_returns_rows() -> None:
 
     rows = lt.probe_providers(timeout=0.5)
     ids = {r.provider_id for r in rows}
-    assert ids == {"lm_studio", "ollama", "custom"}
+    assert ids == {"lm_studio", "ollama", "custom", "gemini"}
 
 
 def test_hotkey_state_apply_persists_and_validates(
@@ -558,6 +558,376 @@ def test_render_binding_chord_keeps_symbol_first_order() -> None:
     from agent_doctor.ui.preferences import hotkey_tab_view as htv
 
     assert htv._render_binding("ctrl+option+space") == "⌃ ⌥ Space"
+
+
+def test_llm_settings_reuse_gemini_key_default_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default value must be False so legacy dictate.json files load unchanged."""
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    s = ds.default_settings()
+    assert s.llm.reuse_gemini_key is False
+
+
+def test_llm_settings_reuse_gemini_key_round_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    s = ds.replace_section(
+        ds.default_settings(),
+        llm=ds.LLMSettings(reuse_gemini_key=True),
+    )
+    ds.save(s)
+    loaded = ds.load()
+    assert loaded.llm.reuse_gemini_key is True
+
+
+def test_dictate_llm_providers_includes_gemini() -> None:
+    from agent_doctor import dictate_llm as dl
+    ids = {p.id for p in dl.providers()}
+    assert ids == {"lm_studio", "ollama", "custom", "gemini"}
+
+
+def test_dictate_llm_gemini_provider_shape() -> None:
+    from agent_doctor import dictate_llm as dl
+    p = dl.get_provider("gemini")
+    assert p.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert p.models_endpoint == "/models"
+    assert p.requires_api_key is True
+    assert p.allow_base_url_edit is False
+
+
+def test_looks_like_gemini_model() -> None:
+    assert lt.looks_like_gemini_model("gemini-2.5-flash") is True
+    assert lt.looks_like_gemini_model("gemini-2.5-pro") is True
+    assert lt.looks_like_gemini_model("models/gemini-2.0-flash") is True
+    assert lt.looks_like_gemini_model("GEMINI-2.5-FLASH") is True  # case-insensitive
+    assert lt.looks_like_gemini_model("qwen3.6-35b") is False
+    assert lt.looks_like_gemini_model("llama3.1:8b") is False
+    assert lt.looks_like_gemini_model("") is False
+    assert lt.looks_like_gemini_model(None) is False
+
+
+def test_list_gemini_models_returns_models_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: "fake-key")
+
+    def fake_probe(base_url, models_endpoint, *, timeout, api_key=None):
+        return dl.ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=True,
+            models=["models/gemini-2.5-flash", "models/gemini-2.5-pro"],
+            error=None,
+        )
+
+    monkeypatch.setattr(dl, "probe", fake_probe)
+    models = lt.list_gemini_models(timeout=0.1)
+    assert models == ["models/gemini-2.5-flash", "models/gemini-2.5-pro"]
+
+
+def test_gemini_models_status_returns_error_string_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: "bad-key")
+
+    def fake_probe(base_url, models_endpoint, *, timeout, api_key=None):
+        return dl.ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=False,
+            models=[],
+            error="HTTP 400 Bad Request",
+        )
+
+    monkeypatch.setattr(dl, "probe", fake_probe)
+    models, error = lt.gemini_models_status(timeout=0.1)
+    assert models == []
+    assert error == "HTTP 400 Bad Request"
+
+
+def test_gemini_models_status_returns_no_error_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: "ok-key")
+
+    def fake_probe(base_url, models_endpoint, *, timeout, api_key=None):
+        return dl.ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=True,
+            models=["models/gemini-2.5-flash"],
+            error=None,
+        )
+
+    monkeypatch.setattr(dl, "probe", fake_probe)
+    models, error = lt.gemini_models_status(timeout=0.1)
+    assert models == ["models/gemini-2.5-flash"]
+    assert error is None
+
+
+def test_list_gemini_models_returns_empty_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: None)
+
+    def fake_probe(base_url, models_endpoint, *, timeout, api_key=None):
+        return dl.ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=False,
+            models=[],
+            error="HTTP 401 Unauthorized",
+        )
+
+    monkeypatch.setattr(dl, "probe", fake_probe)
+    assert lt.list_gemini_models(timeout=0.1) == []
+
+
+def test_llm_state_probe_one_passes_gemini_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """probe_one must pass the stored Gemini key as the Bearer token when
+    the selected provider is ``gemini``, even if probe() can't actually reach
+    the network (the assertion is about *what* is passed, not whether the
+    upstream call succeeds)."""
+
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: "gemini-key-X")
+
+    ds.save(ds.replace_section(
+        ds.default_settings(),
+        llm=ds.LLMSettings(provider_id="gemini"),
+    ))
+
+    captured: dict[str, object] = {}
+
+    def fake_probe(base_url: str, models_endpoint: str, *, timeout: float, api_key=None):
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        return dl.ProbeResult(
+            provider_id="",
+            base_url=base_url,
+            reachable=True,
+            models=["gemini-2.5-flash"],
+            error=None,
+        )
+
+    monkeypatch.setattr(dl, "probe", fake_probe)
+    result = lt.probe_one("gemini", timeout=0.1)
+    assert result.reachable is True
+    assert captured["api_key"] == "gemini-key-X"
+    assert captured["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+
+
+def test_llm_state_threads_reuse_gemini_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+
+    state = lt.LLMState(
+        provider_id="custom",
+        base_url="http://localhost:8080/v1",
+        model="qwen3",
+        api_key=None,
+        timeout_s=30,
+        optimize_prompt=None,
+        reuse_gemini_key=True,
+    )
+    state.apply()
+    loaded = ds.load()
+    assert loaded.llm.reuse_gemini_key is True
+
+    state2 = lt.LLMState.from_settings()
+    assert state2.reuse_gemini_key is True
+
+
+def test_llm_state_gemini_provider_accepts_default_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+
+    state = lt.LLMState(
+        provider_id="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        model="gemini-2.5-flash",
+        api_key=None,
+        timeout_s=30,
+        optimize_prompt=None,
+        reuse_gemini_key=False,
+    )
+    state.apply()
+    loaded = ds.load()
+    assert loaded.llm.provider_id == "gemini"
+
+
+def test_llm_state_gemini_provider_rejects_custom_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    with pytest.raises(lt.LLMStateError, match="custom"):
+        lt.LLMState(
+            provider_id="gemini",
+            base_url="https://example.com/v1",
+            model=None,
+            api_key=None,
+            timeout_s=30,
+            optimize_prompt=None,
+            reuse_gemini_key=False,
+        ).apply()
+
+
+def test_llm_config_uses_gemini_key_when_provider_is_gemini(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_URL", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: "gemini-key-A")
+
+    ds.save(ds.replace_section(
+        ds.default_settings(),
+        llm=ds.LLMSettings(
+            provider_id="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-2.5-flash",
+            reuse_gemini_key=False,
+        ),
+    ))
+
+    cfg = dl.llm_config()
+    assert cfg.api_key == "gemini-key-A"
+
+
+def test_llm_config_uses_gemini_key_when_reuse_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_URL", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: "gemini-key-B")
+
+    ds.save(ds.replace_section(
+        ds.default_settings(),
+        llm=ds.LLMSettings(
+            provider_id="custom",
+            base_url="http://localhost:8080/v1",
+            model="qwen3",
+            reuse_gemini_key=True,
+        ),
+    ))
+
+    cfg = dl.llm_config()
+    assert cfg.api_key == "gemini-key-B"
+
+
+def test_llm_config_explicit_kwarg_beats_gemini_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_URL", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: "should-be-ignored")
+
+    ds.save(ds.replace_section(
+        ds.default_settings(),
+        llm=ds.LLMSettings(provider_id="gemini", reuse_gemini_key=True),
+    ))
+
+    cfg = dl.llm_config(api_key="explicit-kwarg")
+    assert cfg.api_key == "explicit-kwarg"
+
+
+def test_llm_config_returns_none_key_when_neither_provider_nor_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: non-gemini provider + reuse=False must NOT pick up the gemini key."""
+    from agent_doctor import dictate_llm as dl
+    from agent_doctor import settings as gs
+
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_URL", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setattr(gs, "load_gemini_key", lambda: "must-not-leak")
+
+    ds.save(ds.replace_section(
+        ds.default_settings(),
+        llm=ds.LLMSettings(provider_id="lm_studio", reuse_gemini_key=False),
+    ))
+
+    cfg = dl.llm_config()
+    assert cfg.api_key is None
+
+
+def test_llm_settings_legacy_json_without_field_defaults_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-existing dictate.json with no reuse_gemini_key key must load cleanly."""
+    monkeypatch.setattr(ds, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ds, "CONFIG_FILE", tmp_path / "dictate.json")
+    import json as _json
+    legacy_payload = {
+        "version": 1,
+        "llm": {
+            "provider_id": "lm_studio",
+            "base_url": "http://localhost:1234/v1",
+            "model": "qwen3",
+            "api_key_ref": None,
+            "timeout_s": 30,
+            "optimize_prompt": None,
+        },
+    }
+    (tmp_path / "dictate.json").write_text(_json.dumps(legacy_payload), encoding="utf-8")
+    loaded = ds.load()
+    assert loaded.llm.reuse_gemini_key is False
+    assert loaded.llm.provider_id == "lm_studio"
 
 
 def test_pill_text_aligns_with_spec_four_states() -> None:

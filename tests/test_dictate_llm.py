@@ -14,10 +14,10 @@ import pytest
 from agent_doctor import dictate_llm as dl
 
 
-def test_catalog_has_three_known_providers() -> None:
+def test_catalog_has_four_known_providers() -> None:
     providers = dl.providers()
     ids = {p.id for p in providers}
-    assert ids == {"lm_studio", "ollama", "custom"}
+    assert ids == {"lm_studio", "ollama", "custom", "gemini"}
 
 
 def test_get_returns_provider_by_id() -> None:
@@ -134,7 +134,7 @@ def test_probe_all_returns_one_row_per_provider(
     )
     monkeypatch.setattr(dl, "_PROVIDERS", fake_providers)
     rows = dl.probe_all(timeout=1.0)
-    assert {r.provider_id for r in rows} == {"lm_studio", "ollama", "custom"}
+    assert {r.provider_id for r in rows} == {"lm_studio", "ollama", "custom", "gemini"}
     for row in rows:
         assert row.reachable is True
         assert row.models == ["stub"]

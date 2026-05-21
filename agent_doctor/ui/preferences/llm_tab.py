@@ -1,4 +1,4 @@
-"""LLM tab logic (provider, base_url, model, optimize prompt)."""
+"""LLM tab logic (provider, base_url, model, optimize prompt, gemini reuse)."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ class LLMState:
     api_key: Optional[str]
     timeout_s: int
     optimize_prompt: Optional[str]
+    reuse_gemini_key: bool = False
 
     @classmethod
     def from_settings(cls) -> "LLMState":
@@ -32,6 +33,7 @@ class LLMState:
             api_key=None,
             timeout_s=s.llm.timeout_s,
             optimize_prompt=s.llm.optimize_prompt,
+            reuse_gemini_key=s.llm.reuse_gemini_key,
         )
 
     def apply(self) -> None:
@@ -51,12 +53,89 @@ class LLMState:
             api_key_ref=s.llm.api_key_ref,
             timeout_s=int(self.timeout_s),
             optimize_prompt=self.optimize_prompt,
+            reuse_gemini_key=bool(self.reuse_gemini_key),
         )
         ds.save(ds.replace_section(s, llm=new))
 
 
 def probe_providers(timeout: float = 5.0) -> List[dl.ProbeResult]:
     return dl.probe_all(timeout=timeout)
+
+
+def probe_one(provider_id: str, *, timeout: float = 5.0) -> dl.ProbeResult:
+    """Probe a single provider, resolving the API key the same way ``llm_config`` does.
+
+    Used by the "Test connection" button in the LLM tab so the gemini provider
+    (and the reuse-checkbox path) gets the stored Gemini key as a Bearer token
+    instead of always probing anonymously.
+    """
+
+    from agent_doctor import settings as gs
+
+    s = ds.load()
+    provider = dl.get_provider(provider_id)
+    api_key: Optional[str] = None
+    if provider_id == "gemini" or s.llm.reuse_gemini_key:
+        api_key = gs.load_gemini_key()
+    result = dl.probe(
+        provider.base_url,
+        provider.models_endpoint,
+        timeout=timeout,
+        api_key=api_key,
+    )
+    return dl.ProbeResult(
+        provider_id=provider_id,
+        base_url=result.base_url,
+        reachable=result.reachable,
+        models=result.models,
+        error=result.error,
+    )
+
+
+def looks_like_gemini_model(model_id: Optional[str]) -> bool:
+    """Heuristic: True if ``model_id`` looks like a Gemini text-model id.
+
+    Used by the LLM tab to decide whether to keep or clear the current model
+    selection when the user switches the provider between gemini and a
+    non-gemini provider. We treat both bare ``gemini-…`` and the API-style
+    ``models/gemini-…`` as valid since Gemini's OpenAI-compatible ``/models``
+    endpoint returns the latter form.
+    """
+
+    if not model_id:
+        return False
+    m = model_id.strip().lower()
+    return m.startswith("gemini-") or m.startswith("models/gemini-")
+
+
+def list_gemini_models(*, timeout: float = 3.0) -> List[str]:
+    """Return Gemini's available text models, or an empty list on failure.
+
+    Wraps :func:`probe_one` for the ``gemini`` provider so the LLM tab can
+    populate its Model combobox dynamically. Failures (no key configured,
+    network unreachable, 401 from upstream) collapse to ``[]`` — the caller
+    decides how to render an empty dropdown.
+    """
+
+    result = probe_one("gemini", timeout=timeout)
+    if not result.reachable:
+        return []
+    return list(result.models)
+
+
+def gemini_models_status(*, timeout: float = 3.0) -> tuple[List[str], Optional[str]]:
+    """Like :func:`list_gemini_models` but also returns the upstream error.
+
+    The LLM tab uses the error string to render a hint (e.g. "API key not
+    valid") next to an empty dropdown so the user understands why no models
+    showed up, instead of staring at a silently empty Combobox.
+    Returns ``(models, error)`` where ``error`` is ``None`` on success.
+    """
+
+    result = probe_one("gemini", timeout=timeout)
+    if not result.reachable:
+        return [], result.error
+    return list(result.models), None
 
 
 def fetch_models_for(provider_id: str, base_url: Optional[str] = None, *, timeout: float = 5.0):
