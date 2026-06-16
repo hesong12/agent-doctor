@@ -10,7 +10,7 @@ Any agent (Claude Code, Codex, sub-agents, Hermes daemons) reading the parent `A
 
 ## Hard rules (machine-enforced where possible)
 
-1. **PR Harness mandatory** — every code PR must go through `dev-autopilot submit <repo>`. The pre-push hook in `.git/hooks/pre-push` blocks pushes without a job-contract. To bypass, set `HARNESS_BYPASS=1` in the environment AND document the bypass in the PR body.
+1. **PR Harness mandatory** — every code PR must go through `dev-autopilot submit <repo>`. The pre-push hook in `.git/hooks/pre-push` blocks pushes without a job-contract. To bypass, set `HARNESS_BYPASS=1` in the environment AND document the bypass in the PR body. The hook also auto-allows branches whose names start with `auto-backup/`, `harness-bypass/`, `renovate/`, or `dependabot/` (use these prefixes instead of `HARNESS_BYPASS=1` for those branch types). Note the hook **fails open**: if the audit root (`$HOME/.openclaw/workspace/audit/submit`, override with `HARNESS_AUDIT_ROOT`) is absent — fresh clone, CI, or a worktree without the workspace — the push is allowed with only a stderr warning. The authoritative gate is the server-side `harness-evidence` check, not the local hook.
 2. **No direct push to `main`** — enforced by branch protection in production/development repos.
 3. **Required check `harness-evidence`** — PR body must include one of: `ready_for_song` · `job-contract.json` · `closure.json` · `dev-autopilot submit` · `harness-bypass:` · `--no-contract`. Workflow uses hybrid runner (GitHub-hosted primary → Hermes self-hosted fallback) per `docs/operations/ci-self-hosted-fallback.md` in song-ai-harness.
    **v0.3.1 ui-conditional check (2026-05-20):** when the diff touches frontend files (`tsx/jsx/vue/svelte/astro`, `routes|pages|app/**`, route manifest), the PR body must ALSO include one of `UI_PROBE: <story-id>`, `UI_JOURNEYS:`, `dev-autopilot verify --url …`, `coverage.by_layer.ui`, or an explicit `ui-bypass: <reason>` / `harness-bypass:` / `--no-contract`. See ADR-0009.
@@ -36,4 +36,4 @@ If a rule below conflicts with a rule in `~/.openclaw/workspace/AGENTS.md`, the 
 
 To verify these rules are reaching your agent: respond with the string `HARNESS_AGENTS_INCLUDE_SEEN` followed by the current repo name when first asked.
 
-<!-- harness template version: 2026-05-15 (sync-all live test) -->
+<!-- harness template version: 2026-06-06 (pre-push bypass-prefix + fail-open documentation) -->
