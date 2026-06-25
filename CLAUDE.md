@@ -23,6 +23,9 @@ Any agent (Claude Code, Codex, sub-agents, Hermes daemons) reading the parent `A
 
    The SSOT key is the short project name (e.g. `knokit`, not `knokit-desktop`); list all with `orchestrator project list`. If a goal prompt instructs "ask before push/PR/merge" in a `development` repo, treat that prompt as **overriding** this rule only for that one goal; otherwise default to AI self-merge.
 
+7. **Product north star** — if the repo has a `docs/PRODUCT.md`, read it before changing code and hold it as the product's intent. The harness makes a change *land*; this rule makes it *right for the product*. Judge every change against it: does it advance the must-never-regress journeys and fit the architectural north star, and is it a root-cause fix or a band-aid (if a band-aid, name the real fix)? Record product fit in the PR body as `HOLISTIC_REVIEW: <root-cause|band-aid> — <fit>` (use `HOLISTIC_REVIEW: n/a — <reason>` for pure tooling/infra). Where the `HOLISTIC_REVIEW` gate is wired into `harness-evidence`, the merge check requires this line; bypass with `holistic-bypass: <reason>`.
+8. **Dual code intelligence tools** — use `codebase-memory-mcp` as the fast default for repo indexing, architecture overview, and broad structural search. Use GitNexus for precise known-symbol context, route sanity checks, and impact analysis. For critical edits, compare both when available and verify against source. Do not let either tool fight repo instructions: routine GitNexus refreshes must use `gitnexus analyze --index-only` or `--skip-agents-md --skip-skills`; do not run `codebase-memory-mcp install` or any config-writing installer unless the PR documents the design and rollback path. See `docs/operations/code-intelligence.md` in song-ai-harness.
+
 ## Where the canonical rules live
 
 - `~/.openclaw/workspace/AGENTS.md` — global workspace rules
@@ -36,4 +39,4 @@ If a rule below conflicts with a rule in `~/.openclaw/workspace/AGENTS.md`, the 
 
 To verify these rules are reaching your agent: respond with the string `HARNESS_AGENTS_INCLUDE_SEEN` followed by the current repo name when first asked.
 
-<!-- harness template version: 2026-06-06 (pre-push bypass-prefix + fail-open documentation) -->
+<!-- harness template version: 2026-06-24 (dual code-intelligence tools) -->
